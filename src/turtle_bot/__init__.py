@@ -6,12 +6,14 @@ from .domain import (
     Signal,
     SignalKind,
     Side,
+    PositionStatus,
     StrategyState,
     TradeOutcome,
     TurtleSystem,
     UnitState,
     PositionState,
 )
+from .state_store import SQLiteStateStore
 
 __all__ = [
     "Candle",
@@ -19,11 +21,13 @@ __all__ = [
     "Signal",
     "SignalKind",
     "Side",
+    "PositionStatus",
     "StrategyState",
     "TradeOutcome",
     "TurtleSystem",
     "UnitState",
     "Unit",
+    "SQLiteStateStore",
     "PositionState",
 ]
 
