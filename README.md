@@ -34,6 +34,8 @@ behavior as an explicit deviation and block live trading until approved.
 - Toss OpenAPI read-only client for token issuance, market data, market info,
   accounts, holdings, order lookup, buying power, sellable quantity, and
   commissions. Order create/modify/cancel is intentionally absent.
+- Position reconciliation that compares local Turtle position state with
+  broker holdings/open orders and reports blockers before paper/live decisions.
 
 ## Documentation
 

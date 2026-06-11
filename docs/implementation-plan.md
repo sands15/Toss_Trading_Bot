@@ -117,24 +117,32 @@ Live order create/modify/cancel is still intentionally unimplemented.
 
 Implement:
 
-- SQLite schema and migrations.
-- Watchlist tables.
+- SQLite schema and migrations. Done with idempotent table creation and WAL for
+  file databases.
+- Watchlist tables. Done.
 - Premarket watchlist builder for symbols near 20-day and 55-day breakout
-  levels.
-- Position/state persistence.
-- Broker holdings reconciliation.
-- Open order reconciliation.
-- Manual trade/mismatch detection.
-- Market data snapshot freshness tracking.
+  levels. Done.
+- Position/state persistence. Done.
+- Broker holdings reconciliation. Done through `TossPositionSync`.
+- Open order reconciliation. Done for read-only broker order payloads.
+- Manual trade/mismatch detection. Done by blocking local-only, broker-only,
+  and quantity-mismatch states.
+- Market data snapshot freshness tracking. Done in `MarketDataCache`; broker
+  snapshot persistence added for holdings/open orders.
 
 Acceptance:
 
-- Restart can recover open position state.
-- Local/broker mismatch blocks new orders.
-- Duplicate unresolved client order id blocks new orders.
-- Watchlist generation cannot directly create trades.
+- Restart can recover open position state. Covered by state store tests.
+- Local/broker mismatch blocks new orders. Covered by reconcile tests.
+- Duplicate unresolved client order id blocks new orders. Covered by state
+  store tests.
+- Watchlist generation cannot directly create trades. Covered by watchlist
+  design and tests.
 - Stale current price/orderbook data blocks live and paper order candidates.
-- Durable state can explain why live trading is blocked after restart.
+  Covered by cache freshness tests.
+- Durable state can explain why live trading is blocked after restart. Broker
+  holdings/open order snapshots and reconcile blockers are persisted or
+  serializable for health/reporting.
 
 ## Phase 5: Paper Trading Runtime
 

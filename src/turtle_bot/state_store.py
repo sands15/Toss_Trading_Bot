@@ -155,6 +155,16 @@ class SQLiteStateStore:
             )
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS broker_snapshots (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  kind TEXT NOT NULL,
+                  captured_at TEXT NOT NULL,
+                  payload TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS runtime_events (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   level TEXT NOT NULL,
@@ -432,6 +442,26 @@ class SQLiteStateStore:
             units=units,
         )
 
+    def list_positions(
+        self,
+        *,
+        status: PositionStatus | str | None = None,
+    ) -> list[PositionState]:
+        params: tuple[object, ...] = ()
+        sql = "SELECT symbol FROM positions"
+        if status is not None:
+            status_value = status.value if isinstance(status, PositionStatus) else str(status)
+            sql += " WHERE status = ?"
+            params = (status_value,)
+        sql += " ORDER BY symbol ASC"
+        rows = self._conn.execute(sql, params).fetchall()
+        positions: list[PositionState] = []
+        for row in rows:
+            position = self.load_position(row["symbol"])
+            if position is not None:
+                positions.append(position)
+        return positions
+
     def record_broker_order(
         self,
         client_order_id: str,
@@ -518,6 +548,45 @@ class SQLiteStateStore:
             LIMIT 1
             """,
             (kind, symbol),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._json_load(row["payload"])
+
+    def record_broker_snapshot(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        captured_at: datetime | None = None,
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO broker_snapshots (
+                    kind,
+                    captured_at,
+                    payload
+                )
+                VALUES (?, ?, ?)
+                """,
+                (
+                    kind,
+                    self._now_iso(captured_at),
+                    self._json_dump(payload),
+                ),
+            )
+
+    def latest_broker_snapshot(self, kind: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """
+            SELECT payload
+            FROM broker_snapshots
+            WHERE kind = ?
+            ORDER BY captured_at DESC, id DESC
+            LIMIT 1
+            """,
+            (kind,),
         ).fetchone()
         if row is None:
             return None

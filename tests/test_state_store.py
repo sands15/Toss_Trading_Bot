@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -106,6 +107,42 @@ def test_position_roundtrip_with_units() -> None:
     assert loaded == position
 
 
+def test_list_positions_filters_by_status() -> None:
+    open_position = PositionState(
+        symbol="AAA",
+        system=TurtleSystem.S1,
+        status=PositionStatus.OPEN,
+        total_qty=Decimal("1"),
+        avg_entry_price=Decimal("100"),
+        entry_n=Decimal("2"),
+        current_stop_price=Decimal("96"),
+        last_unit_entry_price=Decimal("100"),
+        units=(
+            UnitState(
+                unit_no=1,
+                qty=Decimal("1"),
+                entry_price=Decimal("100"),
+                n_at_entry=Decimal("2"),
+                stop_price=Decimal("96"),
+            ),
+        ),
+    )
+    closed_position = replace(
+        open_position,
+        symbol="BBB",
+        status=PositionStatus.CLOSED,
+    )
+
+    with SQLiteStateStore() as store:
+        store.save_position(open_position)
+        store.save_position(closed_position)
+
+        assert [position.symbol for position in store.list_positions()] == ["AAA", "BBB"]
+        assert [
+            position.symbol for position in store.list_positions(status=PositionStatus.OPEN)
+        ] == ["AAA"]
+
+
 def test_unresolved_client_order_id_blocks_duplicates_until_resolved() -> None:
     with SQLiteStateStore() as store:
         store.record_broker_order(
@@ -152,6 +189,14 @@ def test_market_data_snapshot_roundtrip() -> None:
         "ask": "123.46",
         "metadata": {"venue": "paper"},
     }
+
+
+def test_broker_snapshot_roundtrip() -> None:
+    with SQLiteStateStore() as store:
+        store.record_broker_snapshot("holdings", {"items": [{"symbol": "005930"}]})
+        snapshot = store.latest_broker_snapshot("holdings")
+
+    assert snapshot == {"items": [{"symbol": "005930"}]}
 
 
 def test_runtime_events_recorded_and_listed_newest_first() -> None:

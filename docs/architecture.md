@@ -331,6 +331,7 @@ Tables:
 - `broker_orders`
 - `broker_order_events`
 - `broker_account_snapshots`
+- `broker_snapshots`
 - `strategy_trade_history`
 - `api_tokens`
 - `api_errors`
@@ -390,6 +391,27 @@ Unknown order result policy:
 2. Query by open orders/list/detail where possible.
 3. Mark local order as `UNKNOWN`.
 4. Block new orders for the symbol until reconciled.
+
+## Position Reconciliation
+
+Position reconciliation is a blocker, not a trade decision engine.
+
+Inputs:
+
+- Local `PositionState` rows with `OPEN` status.
+- Broker holdings from read-only account APIs.
+- Broker open orders from read-only order-list APIs.
+
+Blocking conditions:
+
+- A local open position is missing from broker holdings.
+- Broker has a positive holding that local Turtle state does not know about.
+- Local quantity and broker quantity differ beyond configured tolerance.
+- Any unresolved broker order exists for the symbol.
+- Any unknown future broker order status appears.
+
+When reconciliation is not clean, paper/live order candidates for affected
+symbols must not be created.
 
 ## Observability
 
