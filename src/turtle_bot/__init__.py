@@ -58,6 +58,18 @@ from .paper_runtime import (
     export_paper_report_json,
     paper_run_result_to_dict,
 )
+from .operations import (
+    DEFAULT_SERVICE_LABEL,
+    LaunchdServiceConfig,
+    OperationsCheck,
+    check_operations_config,
+    ensure_runtime_dirs,
+    operations_checks_payload,
+    paper_service_health,
+    render_launchd_plist,
+    run_paper_service,
+    write_launchd_plist,
+)
 
 __all__ = [
     "Candle",
@@ -109,6 +121,16 @@ __all__ = [
     "PaperTradingRuntime",
     "export_paper_report_json",
     "paper_run_result_to_dict",
+    "DEFAULT_SERVICE_LABEL",
+    "LaunchdServiceConfig",
+    "OperationsCheck",
+    "check_operations_config",
+    "ensure_runtime_dirs",
+    "operations_checks_payload",
+    "paper_service_health",
+    "render_launchd_plist",
+    "run_paper_service",
+    "write_launchd_plist",
 ]
 
 Unit = UnitState

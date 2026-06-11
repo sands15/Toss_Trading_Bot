@@ -1,6 +1,12 @@
 toss:
   live_enabled: false
 
+runtime:
+  mode: paper
+  state_db: state/turtle.sqlite3
+  log_dir: logs
+  interval_seconds: 60
+
 strategy:
   minimum_tick: 1
   n_method: turtle

@@ -75,6 +75,47 @@ Expected behavior:
 - Runs paper mode by default.
 - Live mode requires explicit config.
 
+The checked-in template contains placeholder paths. Generate a local plist with
+absolute paths before installing it:
+
+```bash
+python -m turtle_bot \
+  --config config/local.yaml \
+  --state-db state/turtle.sqlite3 \
+  --log-dir logs \
+  --ensure-runtime-dirs
+
+python -m turtle_bot \
+  --config config/local.yaml \
+  --repo-dir "$PWD" \
+  --python-executable "$PWD/.venv/bin/python" \
+  --state-db "$PWD/state/turtle.sqlite3" \
+  --log-dir "$PWD/logs" \
+  --write-launchd-plist "$HOME/Library/LaunchAgents/com.sands15.toss-turtle-bot.plist"
+```
+
+Before bootstrapping, run the paper-mode operations check:
+
+```bash
+python -m turtle_bot \
+  --config config/local.yaml \
+  --state-db state/turtle.sqlite3 \
+  --log-dir logs \
+  --ops-check
+```
+
+The paper service can also be smoke-tested without entering the infinite
+launchd loop:
+
+```bash
+python -m turtle_bot \
+  --config config/local.yaml \
+  --state-db state/turtle.sqlite3 \
+  --log-dir logs \
+  --paper-service \
+  --once
+```
+
 Example commands:
 
 ```bash
@@ -118,6 +159,11 @@ On every process start:
 
 The bot must never submit orders immediately after process start before
 reconciliation.
+
+The current paper-mode service is intentionally conservative: it records startup
+and heartbeat events, exposes a paper health payload, and reports
+`market_data_provider_not_configured` until real market-data wiring exists. It
+does not submit, cancel, or modify broker orders.
 
 ## Runtime Windows
 

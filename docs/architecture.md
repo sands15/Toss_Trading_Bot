@@ -96,6 +96,9 @@ Uses live Toss market/account data but does not submit orders.
 - Paper fill/state simulation updates only paper state tables. It does not
   touch live/reconciliation position tables and does not represent real broker
   execution quality.
+- The macOS paper service shell records startup and heartbeat runtime events,
+  exposes a read-only blocked health payload, and stays blocked with
+  `market_data_provider_not_configured` until market-data wiring is present.
 
 ### Live
 

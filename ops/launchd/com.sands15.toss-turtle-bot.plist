@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+  <key>Label</key>
+  <string>com.sands15.toss-turtle-bot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/TO/REPO/.venv/bin/python</string>
+    <string>-m</string>
+    <string>turtle_bot</string>
+    <string>--config</string>
+    <string>/ABSOLUTE/PATH/TO/REPO/config/local.yaml</string>
+    <string>--state-db</string>
+    <string>/ABSOLUTE/PATH/TO/REPO/state/turtle.sqlite3</string>
+    <string>--log-dir</string>
+    <string>/ABSOLUTE/PATH/TO/REPO/logs</string>
+    <string>--paper-service</string>
+    <string>--interval-seconds</string>
+    <string>60</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/PATH/TO/REPO/logs/turtle-paper.err.log</string>
+  <key>StandardOutPath</key>
+  <string>/ABSOLUTE/PATH/TO/REPO/logs/turtle-paper.out.log</string>
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/PATH/TO/REPO</string>
+</dict>
+</plist>

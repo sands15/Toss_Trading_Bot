@@ -182,20 +182,29 @@ separate Phase 7 precondition.
 
 Implement:
 
-- `launchd` plist template.
-- Setup/check commands.
-- Log paths.
-- Health command.
-- Amphetamine/power checklist.
-- Paper-mode service template.
+- `launchd` plist template. Done with
+  `ops/launchd/com.sands15.toss-turtle-bot.plist` plus CLI rendering for local
+  absolute paths.
+- Setup/check commands. Done through `--ensure-runtime-dirs` and
+  `--ops-check`.
+- Log paths. Done through `--log-dir` and launchd stdout/stderr rendering.
+- Health command. Done through `--paper-service --once`, which emits a
+  read-only paper health payload.
+- Amphetamine/power checklist. Documented in `docs/macos-operations.md`.
+- Paper-mode service template. Done through `--paper-service`; it records
+  startup/heartbeat events and blocks on missing market data wiring.
 
 Acceptance:
 
 - macOS service starts paper mode.
-- Restart runs reconciliation before decisions.
+- Restart cannot make trade decisions yet because the service remains blocked
+  on `market_data_provider_not_configured`; broker mutation paths are absent.
 - Windows tests still pass.
-- Service logs include mode, watchlist, market state, and current blocker
-  status.
+- Service logs include stdout/stderr paths; runtime events include mode and
+  blocker status.
+
+Phase 6 is complete for the current API-free paper service shell. Full market
+session scheduling still depends on Toss read-only market-data wiring.
 
 ## Phase 7: Controlled Live Pilot
 

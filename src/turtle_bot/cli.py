@@ -6,6 +6,15 @@ from pathlib import Path
 
 from . import __version__
 from .config import load_config
+from .operations import (
+    LaunchdServiceConfig,
+    check_operations_config,
+    ensure_runtime_dirs,
+    operations_checks_payload,
+    render_launchd_plist,
+    run_paper_service,
+    write_launchd_plist,
+)
 from .runtime import Runtime
 
 
@@ -35,7 +44,88 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print read-only health payload from default empty runtime state",
     )
+    parser.add_argument(
+        "--state-db",
+        type=Path,
+        default=Path("state/turtle.sqlite3"),
+        help="SQLite state database path for operational commands",
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=Path("logs"),
+        help="Runtime log directory for operational commands",
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--repo-dir",
+        type=Path,
+        default=Path.cwd(),
+        help="Repository working directory for launchd rendering",
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--python-executable",
+        type=Path,
+        help="Python executable path for launchd rendering",
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=int,
+        default=60,
+        help="Paper service heartbeat interval",
+    )
+    parser.add_argument(
+        "--ops-check",
+        action="store_true",
+        help="Validate local paper-mode operational paths and config",
+    )
+    parser.add_argument(
+        "--ensure-runtime-dirs",
+        action="store_true",
+        help="Create state/log directories used by operational commands",
+    )
+    parser.add_argument(
+        "--render-launchd-plist",
+        action="store_true",
+        help="Print a paper-mode launchd plist template",
+    )
+    parser.add_argument(
+        "--write-launchd-plist",
+        type=Path,
+        help="Write a paper-mode launchd plist template to PATH",
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--paper-service",
+        action="store_true",
+        help="Run the paper-mode service heartbeat loop",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one paper service heartbeat and exit",
+    )
     return parser
+
+
+def _require_config(parser: argparse.ArgumentParser, config: Path | None) -> Path:
+    if config is None:
+        parser.error("this command requires --config")
+    return config
+
+
+def _launchd_config(args: argparse.Namespace) -> LaunchdServiceConfig:
+    return LaunchdServiceConfig.default(
+        repo_dir=args.repo_dir,
+        config_path=args.config,
+        state_db=args.state_db,
+        log_dir=args.log_dir,
+        python_executable=args.python_executable,
+        interval_seconds=args.interval_seconds,
+    )
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -51,6 +141,45 @@ def run(argv: list[str] | None = None) -> int:
     if args.health_json:
         payload = Runtime.default().health_snapshot().as_payload()
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    if args.ensure_runtime_dirs:
+        ensure_runtime_dirs(state_db=args.state_db, log_dir=args.log_dir)
+        return 0
+
+    if args.ops_check:
+        config_path = _require_config(parser, args.config)
+        checks = check_operations_config(
+            config_path=config_path,
+            state_db=args.state_db,
+            log_dir=args.log_dir,
+        )
+        payload = operations_checks_payload(checks)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if payload["status"] == "ready" else 2
+
+    if args.render_launchd_plist:
+        _require_config(parser, args.config)
+        print(render_launchd_plist(_launchd_config(args)), end="")
+        return 0
+
+    if args.write_launchd_plist is not None:
+        _require_config(parser, args.config)
+        target = write_launchd_plist(args.write_launchd_plist, _launchd_config(args))
+        print(str(target))
+        return 0
+
+    if args.paper_service:
+        config_path = _require_config(parser, args.config)
+        snapshot = run_paper_service(
+            config_path=config_path,
+            state_db=args.state_db,
+            log_dir=args.log_dir,
+            interval_seconds=args.interval_seconds,
+            once=args.once,
+        )
+        if args.once:
+            print(json.dumps(snapshot.as_payload(), indent=2, sort_keys=True))
         return 0
 
     if args.config is not None:

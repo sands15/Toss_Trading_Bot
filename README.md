@@ -40,6 +40,9 @@ behavior as an explicit deviation and block live trading until approved.
   records would-be order intents through runtime events and notifications.
 - Paper-only guard, fill/state simulator, repeated-iteration scheduler, and
   JSON report export.
+- macOS paper-service shell with launchd plist rendering, runtime directory
+  setup, operations checks, and a read-only blocked health payload until market
+  data wiring is present.
 
 ## Documentation
 
