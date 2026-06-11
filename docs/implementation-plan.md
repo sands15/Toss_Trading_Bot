@@ -3,6 +3,11 @@
 This plan is ordered to avoid accidental live trading before the strategy and
 state model are trustworthy.
 
+Every phase must pass the Turtle Principle Gate in
+[Turtle Rules](turtle-rules.md). A phase is not complete if it makes a workflow
+more convenient while weakening entry, exit, N, stop, skip, pyramiding, unit, or
+reconciliation rules.
+
 ## Phase 0: Repository Skeleton
 
 Create:
@@ -27,6 +32,7 @@ Acceptance:
 - Package installs on macOS and Windows.
 - Tests run without Toss credentials.
 - No live trading code path is enabled by default.
+- No scaffold introduces a path around the Turtle Principle Gate.
 
 ## Phase 1: Domain and Strategy Core
 
@@ -49,6 +55,8 @@ Acceptance tests:
 - Stop exits take priority over pyramids and entries.
 - Pyramiding adds only after favorable 0.5N movement.
 - Four-unit cap is enforced.
+- Each generated signal includes enough context to explain the Turtle rule that
+  produced it.
 
 ## Phase 2: Backtest Engine
 
@@ -65,6 +73,7 @@ Acceptance:
 - Deterministic results from fixture data.
 - Audit log explains every trade.
 - Same-bar stop/pyramid conflict chooses stop.
+- Backtest assumptions are conservative when intraday order is unknowable.
 
 ## Phase 3: Toss Read-only Client
 
@@ -107,6 +116,7 @@ Acceptance:
 - Duplicate unresolved client order id blocks new orders.
 - Watchlist generation cannot directly create trades.
 - Stale current price/orderbook data blocks live and paper order candidates.
+- Durable state can explain why live trading is blocked after restart.
 
 ## Phase 5: Paper Trading Runtime
 

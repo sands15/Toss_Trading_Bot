@@ -15,6 +15,34 @@ this document wins.
 The bot must not place live orders if it cannot prove which rule produced the
 order.
 
+## Turtle Principle Gate
+
+Every implementation step must pass this gate before it can be considered done.
+If any item fails, the feature may remain in a branch or paper-only mode, but it
+must not be used for live trading.
+
+- The feature preserves the rule order in this document.
+- The feature does not replace breakout, exit, sizing, stop, skip, or pyramiding
+  rules with API convenience behavior.
+- The feature can explain which Turtle rule caused each signal, block, order
+  intent, or exit.
+- The feature has tests for the Turtle rule it touches.
+- The feature treats deviations as explicit configuration or explicit blockers,
+  never as silent defaults.
+- The feature keeps AI, notifications, UI, watchlists, and broker adapters
+  outside final trading decisions.
+- The feature blocks live mode when required data is missing, stale, ambiguous,
+  or not reconciled with broker state.
+
+Implementation review must answer these questions:
+
+1. Which Turtle rule does this change implement or protect?
+2. Which Turtle rule could this change accidentally weaken?
+3. What test proves the rule still holds?
+4. What condition blocks live trading if the rule cannot be evaluated?
+
+The default answer to uncertain live behavior is `block`, not `approximate`.
+
 ## Market Scope
 
 Initial scope:
