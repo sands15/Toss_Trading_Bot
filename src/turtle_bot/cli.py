@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import date, datetime
 from pathlib import Path
 
 from . import __version__
@@ -15,7 +16,9 @@ from .operations import (
     run_paper_service,
     write_launchd_plist,
 )
+from .reports import DailyReportConfig, export_daily_report_json
 from .runtime import Runtime
+from .state_store import SQLiteStateStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +111,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run one paper service heartbeat and exit",
     )
+    parser.add_argument(
+        "--daily-report",
+        type=Path,
+        help="Write a postmarket daily JSON report to PATH",
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--report-date",
+        help="Report date in YYYY-MM-DD format; defaults to today in report timezone",
+        metavar="YYYY-MM-DD",
+    )
+    parser.add_argument(
+        "--report-timezone",
+        default="Asia/Seoul",
+        help="Timezone used to group runtime events by trading day",
+    )
     return parser
 
 
@@ -126,6 +145,17 @@ def _launchd_config(args: argparse.Namespace) -> LaunchdServiceConfig:
         python_executable=args.python_executable,
         interval_seconds=args.interval_seconds,
     )
+
+
+def _report_date(value: str | None, timezone_name: str) -> date:
+    if value:
+        return date.fromisoformat(value)
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo(timezone_name)).date()
+    except Exception:
+        return datetime.now().date()
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -180,6 +210,19 @@ def run(argv: list[str] | None = None) -> int:
         )
         if args.once:
             print(json.dumps(snapshot.as_payload(), indent=2, sort_keys=True))
+        return 0
+
+    if args.daily_report is not None:
+        with SQLiteStateStore(args.state_db) as store:
+            report = export_daily_report_json(
+                store,
+                args.daily_report,
+                config=DailyReportConfig(
+                    report_date=_report_date(args.report_date, args.report_timezone),
+                    timezone_name=args.report_timezone,
+                ),
+            )
+        print(json.dumps(report, indent=2, sort_keys=True))
         return 0
 
     if args.config is not None:

@@ -226,6 +226,19 @@ Minimum notifications:
 - Rate-limit pause.
 - End-of-day summary.
 
+### DailyReport
+
+The postmarket daily report is a read-only export from durable state. It
+summarizes runtime events, event levels/messages, blockers, latest watchlist,
+paper positions, and latest read-only broker snapshots.
+
+Constraints:
+
+- Report generation must not mutate trading state or create order intents.
+- AI may summarize the report text for the operator, but AI summaries are not
+  the source of truth.
+- Reports must preserve Decimal-like values as strings when exported to JSON.
+
 ### HealthServer
 
 A small local health interface may be added for local monitoring.

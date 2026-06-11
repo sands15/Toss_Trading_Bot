@@ -165,6 +165,8 @@ Implement:
   fill behavior.
 - Notifier interface and console/log notifier. Done.
 - Reports. Done as JSON paper run export.
+- Postmarket daily report. Done as read-only JSON export from runtime events,
+  latest watchlist, paper positions, and broker snapshots.
 - Local read-only health/status server if it can be kept safe. Done for
   read-only health payload/server; paper runtime exposes health snapshots.
 
@@ -177,6 +179,8 @@ Acceptance:
   source signal, system, kind, trigger/observed price, side, quantity, and
   Turtle reason.
 - Premarket watchlist is logged and included in the daily report.
+- Runtime event summary is included in the daily report with blocker and event
+  counts.
 - Health/status endpoints expose state without mutating trading behavior.
   Covered by read-only health tests.
 

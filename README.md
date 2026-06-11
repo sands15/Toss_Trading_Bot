@@ -56,6 +56,8 @@ behavior as an explicit deviation and block live trading until approved.
 - Planned automatic universe selection through rule-based liquidity, market,
   warning-status, and Turtle-data-readiness filters. AI is reserved for news
   summaries, reports, and situation explanations, not order decisions.
+- Postmarket daily report export with runtime event summary, blockers,
+  watchlist, paper positions, and latest read-only broker snapshots.
 
 ## Documentation
 

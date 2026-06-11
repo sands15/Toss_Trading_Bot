@@ -145,6 +145,21 @@ python -m turtle_bot \
   --once
 ```
 
+Postmarket daily report export:
+
+```bash
+python -m turtle_bot \
+  --state-db state/turtle.sqlite3 \
+  --daily-report reports/daily-$(date +%F).json \
+  --report-date "$(date +%F)" \
+  --report-timezone Asia/Seoul
+```
+
+The report is read-only over SQLite state. It summarizes runtime events,
+blockers, watchlist rows, paper positions, and latest broker snapshots. AI may
+summarize this report for the operator, but the report itself remains the
+auditable source of facts.
+
 Example commands:
 
 ```bash
