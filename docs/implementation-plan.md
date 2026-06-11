@@ -207,9 +207,9 @@ Acceptance:
   blocker status.
 
 Phase 6 is complete for the paper service shell plus Toss read-only market-data
-wiring and a market-calendar gate. Richer premarket/postmarket profile
-scheduling can be added later, but paper intent evaluation is already blocked
-outside a known open session.
+wiring, a market-calendar gate, and premarket watchlist persistence. Richer
+postmarket profile scheduling can be added later, but paper intent evaluation
+is already blocked outside a known open session.
 
 ## Phase 7: Controlled Live Pilot
 

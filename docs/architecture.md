@@ -133,6 +133,9 @@ Responsibilities:
 - Rank symbols nearest to Turtle breakout levels.
 - Mark new candidates compared with the previous watchlist.
 - Persist the watchlist and send a premarket notification.
+- Current paper service integration builds and persists the watchlist during
+  known OPEN/PREOPEN sessions before paper intent evaluation. PREOPEN builds the
+  watchlist but still blocks paper order-intent evaluation.
 
 Constraints:
 
@@ -167,7 +170,8 @@ The calendar gate adapts Toss `GET /api/v1/market-calendar/{market}` into a
 small session state. It treats explicit open states as runnable, explicit
 closed/holiday/weekend states as blocked, and unknown payloads as blocked. This
 keeps the paper service from making Turtle decisions outside a known market
-session.
+session. PREOPEN is also blocked for paper order-intent evaluation, but it is
+allowed to run watchlist generation.
 
 ### RateLimitQueue
 

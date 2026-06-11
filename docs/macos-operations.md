@@ -67,6 +67,9 @@ runtime:
   market: KR
   timezone: Asia/Seoul
   use_market_calendar: true
+  watchlist_enabled: true
+  watchlist_top_n: 20
+  watchlist_name: premarket
   symbols:
     - "005930"
   state_db: state/turtle.sqlite3
@@ -185,9 +188,11 @@ The current paper-mode service is intentionally conservative. Without
 blocked health payload and no trade decision is evaluated. Once those read-only
 inputs exist, it checks the Toss read-only market calendar first. If the session
 is closed or unknown, it records a blocker and stops that iteration. If the
-session is open, it fetches candles/prices, reconciles holdings/open orders
-through read-only endpoints, and then runs the paper Turtle loop. It does not
-submit, cancel, or modify broker orders.
+session is PREOPEN, it builds and persists the premarket watchlist but still
+blocks paper order-intent evaluation. If the session is open, it builds the
+watchlist, reconciles holdings/open orders through read-only endpoints, fetches
+prices, and then runs the paper Turtle loop. It does not submit, cancel, or
+modify broker orders.
 
 ## Runtime Windows
 

@@ -50,6 +50,9 @@ behavior as an explicit deviation and block live trading until approved.
 - Market-calendar gate for the paper service. The service checks the read-only
   Toss calendar before evaluating paper intents and blocks when the session is
   closed or unknown.
+- Premarket watchlist generation inside the paper service. OPEN/PREOPEN
+  sessions build and persist a Turtle breakout-distance watchlist, but the
+  watchlist remains an operational polling/status artifact, not a trade signal.
 
 ## Documentation
 

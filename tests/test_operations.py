@@ -233,13 +233,13 @@ def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
         [
             TossHttpResponse(200, {}, _token_payload()),
             TossHttpResponse(200, {}, {"isOpen": True}),
-            TossHttpResponse(200, {}, {"items": []}),
-            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
             TossHttpResponse(
                 200,
                 {},
                 {"candles": [_api_candle(day) for day in range(21)]},
             ),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
             TossHttpResponse(
                 200,
                 {},
@@ -263,7 +263,9 @@ def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
     assert snapshot.mode == "paper"
     assert snapshot.ready is True
     assert snapshot.open_orders[0]["symbol"] == "TEST"
+    assert snapshot.watchlist[0]["symbol"] == "TEST"
     assert store.load_paper_position("TEST") is not None
+    assert store.load_latest_watchlist(name="premarket").symbols() == ("TEST",)
     assert [request.method for request in transport.requests] == [
         "POST",
         "GET",
@@ -277,6 +279,54 @@ def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
         "paper_fill",
         "paper_order_intent",
         "paper_order_guard",
+    ]
+
+
+def test_paper_service_builds_watchlist_but_blocks_during_preopen(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(config_path, symbols=("TEST",), account_seq="7")
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"status": "PREOPEN"}),
+            TossHttpResponse(
+                200,
+                {},
+                {"candles": [_api_candle(day) for day in range(21)]},
+            ),
+        ]
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    events = store.list_runtime_events(limit=5)
+    assert snapshot.ready is False
+    assert snapshot.blockers == ("market_session_not_open:preopen",)
+    assert snapshot.watchlist[0]["symbol"] == "TEST"
+    assert store.load_paper_position("TEST") is None
+    assert [request.url for request in transport.requests] == [
+        "https://example.test/oauth2/token",
+        "https://example.test/api/v1/market-calendar/KR",
+        "https://example.test/api/v1/candles",
+    ]
+    assert [event["message"] for event in events[:4]] == [
+        "paper_service_heartbeat",
+        "paper_service_market_closed",
+        "premarket_watchlist_generated",
+        "market_session_state",
     ]
 
 

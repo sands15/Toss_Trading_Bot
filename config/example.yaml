@@ -16,6 +16,9 @@ runtime:
   candle_interval: 1d
   candle_count: 100
   exclude_current_session: true
+  watchlist_enabled: true
+  watchlist_top_n: 20
+  watchlist_name: premarket
 
 strategy:
   minimum_tick: 1

@@ -30,6 +30,9 @@ class RuntimeConfig:
     candle_interval: str = "1d"
     candle_count: int = 100
     exclude_current_session: bool = True
+    watchlist_enabled: bool = True
+    watchlist_top_n: int = 20
+    watchlist_name: str = "premarket"
 
 
 @dataclass(frozen=True)
@@ -109,6 +112,9 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             exclude_current_session=bool(
                 runtime.get("exclude_current_session", True)
             ),
+            watchlist_enabled=bool(runtime.get("watchlist_enabled", True)),
+            watchlist_top_n=int(runtime.get("watchlist_top_n", 20)),
+            watchlist_name=str(runtime.get("watchlist_name", "premarket")),
         ),
         minimum_tick=_to_decimal(strategy.get("minimum_tick"), Decimal("1")),
         risk_pct_per_unit=_to_decimal(risk.get("risk_pct_per_unit"), Decimal("0.005")),

@@ -18,6 +18,7 @@ from .position_sync import TossPositionSync
 from .state_store import SQLiteStateStore
 from .toss_client import TOSS_BASE_URL, TossClient, TossCredentials, TossTransport
 from .toss_market_data import TossMarketDataConfig, TossReadOnlyMarketDataProvider
+from .watchlist import Watchlist, WatchlistBuilder, WatchlistRow
 
 
 DEFAULT_SERVICE_LABEL = "com.sands15.toss-turtle-bot"
@@ -198,6 +199,7 @@ def paper_service_health(
     *,
     blockers: Sequence[str] = ("market_data_provider_not_configured",),
     ready: bool = False,
+    watchlist_name: str = "premarket",
 ) -> HealthSnapshot:
     positions = tuple(
         {
@@ -214,7 +216,7 @@ def paper_service_health(
         blockers=tuple(blockers),
         positions=positions,
         open_orders=(),
-        watchlist=(),
+        watchlist=_latest_watchlist_payload(store, name=watchlist_name),
         generated_at=datetime.now(timezone.utc),
     )
 
@@ -282,7 +284,11 @@ def _paper_service_iteration(
     config = load_config(config_path)
     blockers = _paper_service_config_blockers(config, env)
     if blockers:
-        snapshot = paper_service_health(store, blockers=blockers)
+        snapshot = paper_service_health(
+            store,
+            blockers=blockers,
+            watchlist_name=config.runtime.watchlist_name,
+        )
         store.record_runtime_event(
             "WARN",
             "paper_service_blocked",
@@ -301,6 +307,17 @@ def _paper_service_iteration(
         transport=transport,
         now=now,
     )
+    market_data = TossReadOnlyMarketDataProvider(
+        client=client,
+        config=TossMarketDataConfig(
+            candle_interval=config.runtime.candle_interval,
+            candle_count=config.runtime.candle_count,
+            exclude_current_session=config.runtime.exclude_current_session,
+        ),
+        store=store,
+        now=now,
+    )
+    watchlist_built = False
     if config.runtime.use_market_calendar:
         session = MarketCalendarGate(
             client=client,
@@ -315,11 +332,21 @@ def _paper_service_iteration(
             "market_session_state",
             session.as_payload(),
         )
+        if _should_build_watchlist(session.status):
+            _build_and_save_watchlist(
+                config,
+                market_data=market_data,
+                client=None,
+                store=store,
+                now=now,
+            )
+            watchlist_built = True
         if session.blocker is not None:
             snapshot = paper_service_health(
                 store,
                 blockers=(session.blocker,),
                 ready=False,
+                watchlist_name=config.runtime.watchlist_name,
             )
             store.record_runtime_event(
                 "WARN",
@@ -328,16 +355,14 @@ def _paper_service_iteration(
             )
             return snapshot
 
-    market_data = TossReadOnlyMarketDataProvider(
-        client=client,
-        config=TossMarketDataConfig(
-            candle_interval=config.runtime.candle_interval,
-            candle_count=config.runtime.candle_count,
-            exclude_current_session=config.runtime.exclude_current_session,
-        ),
-        store=store,
-        now=now,
-    )
+    if not watchlist_built:
+        _build_and_save_watchlist(
+            config,
+            market_data=market_data,
+            client=None,
+            store=store,
+            now=now,
+        )
     runtime = PaperTradingRuntime(
         config=PaperRuntimeConfig(
             symbols=config.runtime.symbols,
@@ -354,7 +379,11 @@ def _paper_service_iteration(
         now=now,
     )
     runtime.run_once()
-    return runtime.health_snapshot()
+    return _with_latest_watchlist(
+        runtime.health_snapshot(),
+        store,
+        name=config.runtime.watchlist_name,
+    )
 
 
 def _paper_service_config_blockers(config, env: Mapping[str, str]) -> tuple[str, ...]:
@@ -370,3 +399,111 @@ def _paper_service_config_blockers(config, env: Mapping[str, str]) -> tuple[str,
     if config.toss.account_seq is None:
         blockers.append("toss.account_seq is not configured")
     return tuple(blockers)
+
+
+def _should_build_watchlist(status: str) -> bool:
+    return status.upper() in {"OPEN", "PREOPEN"}
+
+
+def _build_and_save_watchlist(
+    config,
+    *,
+    market_data: TossReadOnlyMarketDataProvider | None,
+    client: TossClient | None,
+    store: SQLiteStateStore,
+    now,
+) -> Watchlist | None:
+    if not config.runtime.watchlist_enabled:
+        return None
+    provider = market_data
+    if provider is None:
+        if client is None:
+            raise ValueError("market_data or client is required")
+        provider = TossReadOnlyMarketDataProvider(
+            client=client,
+            config=TossMarketDataConfig(
+                candle_interval=config.runtime.candle_interval,
+                candle_count=config.runtime.candle_count,
+                exclude_current_session=config.runtime.exclude_current_session,
+            ),
+            store=store,
+            now=now,
+        )
+
+    previous = store.load_latest_watchlist(name=config.runtime.watchlist_name)
+    previous_symbols = previous.symbols() if previous is not None else ()
+    symbol_candles = {}
+    blocked: list[str] = []
+    for symbol in config.runtime.symbols:
+        try:
+            symbol_candles[symbol] = tuple(provider.get_completed_candles(symbol))
+        except Exception as exc:
+            blocked.append(f"{symbol} watchlist candles unavailable: {exc}")
+
+    if blocked:
+        store.record_runtime_event(
+            "WARN",
+            "premarket_watchlist_blocked",
+            {"blockers": blocked},
+        )
+    watchlist = WatchlistBuilder(
+        top_n=config.runtime.watchlist_top_n,
+        exclude_current=config.runtime.exclude_current_session,
+    ).build(
+        symbol_candles,
+        previous_watchlist=previous_symbols,
+        generated_at=now(),
+    )
+    store.save_watchlist(watchlist, name=config.runtime.watchlist_name)
+    store.record_runtime_event(
+        "INFO",
+        "premarket_watchlist_generated",
+        {
+            "name": config.runtime.watchlist_name,
+            "count": len(watchlist.rows),
+            "symbols": list(watchlist.symbols()),
+            "blocked": blocked,
+        },
+    )
+    return watchlist
+
+
+def _latest_watchlist_payload(
+    store: SQLiteStateStore,
+    *,
+    name: str,
+) -> tuple[dict[str, Any], ...]:
+    watchlist = store.load_latest_watchlist(name=name)
+    if watchlist is None:
+        return ()
+    return tuple(_watchlist_row_payload(row) for row in watchlist.rows)
+
+
+def _watchlist_row_payload(row: WatchlistRow) -> dict[str, Any]:
+    return {
+        "symbol": row.symbol,
+        "current_price": str(row.current_price),
+        "entry_high_20": str(row.entry_high_20) if row.entry_high_20 is not None else None,
+        "entry_high_55": str(row.entry_high_55) if row.entry_high_55 is not None else None,
+        "distance_to_20": str(row.distance_to_20) if row.distance_to_20 is not None else None,
+        "distance_to_55": str(row.distance_to_55) if row.distance_to_55 is not None else None,
+        "nearest_distance": str(row.nearest_distance),
+        "is_new": row.is_new,
+    }
+
+
+def _with_latest_watchlist(
+    snapshot: HealthSnapshot,
+    store: SQLiteStateStore,
+    *,
+    name: str,
+) -> HealthSnapshot:
+    return HealthSnapshot(
+        mode=snapshot.mode,
+        ready=snapshot.ready,
+        blockers=snapshot.blockers,
+        positions=snapshot.positions,
+        open_orders=snapshot.open_orders,
+        watchlist=_latest_watchlist_payload(store, name=name),
+        generated_at=snapshot.generated_at,
+    )
