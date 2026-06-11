@@ -79,6 +79,9 @@ def _write_config(
                 "  base_url: https://example.test",
                 "runtime:",
                 "  mode: paper",
+                "  market: KR",
+                "  timezone: Asia/Seoul",
+                "  use_market_calendar: true",
                 *symbol_lines,
                 "  candle_count: 25",
                 "  exclude_current_session: true",
@@ -229,6 +232,7 @@ def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
     transport = FakeTransport(
         [
             TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
             TossHttpResponse(200, {}, {"items": []}),
             TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
             TossHttpResponse(
@@ -266,12 +270,52 @@ def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
         "GET",
         "GET",
         "GET",
+        "GET",
     ]
     assert [event["message"] for event in events[:4]] == [
         "paper_service_heartbeat",
         "paper_fill",
         "paper_order_intent",
         "paper_order_guard",
+    ]
+
+
+def test_paper_service_blocks_when_market_calendar_is_closed(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(config_path, symbols=("TEST",), account_seq="7")
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"status": "HOLIDAY"}),
+        ]
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    events = store.list_runtime_events(limit=4)
+    assert snapshot.ready is False
+    assert snapshot.blockers == ("market_session_not_open:holiday",)
+    assert [request.url for request in transport.requests] == [
+        "https://example.test/oauth2/token",
+        "https://example.test/api/v1/market-calendar/KR",
+    ]
+    assert [event["message"] for event in events[:3]] == [
+        "paper_service_heartbeat",
+        "paper_service_market_closed",
+        "market_session_state",
     ]
 
 

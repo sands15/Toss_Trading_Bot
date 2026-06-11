@@ -102,6 +102,9 @@ Uses live Toss market/account data but does not submit orders.
 - When configured, paper service uses the read-only Toss market-data provider
   for candles/prices, runs broker reconciliation through read-only holdings and
   open-order endpoints, and only then evaluates Turtle paper intents.
+- The read-only market-calendar gate runs before paper intent evaluation. A
+  closed or unknown session records a blocker and prevents market/account data
+  polling beyond the calendar check for that iteration.
 
 ### Live
 
@@ -157,6 +160,14 @@ account positions. Broker holdings and open orders still come from Toss.
 `TossClient.get_prices` into the paper runtime's market-data interface. It
 stores snapshots, caches candles/prices, and excludes the current local session
 candle by default so Turtle channels are based on completed candles.
+
+### MarketCalendarGate
+
+The calendar gate adapts Toss `GET /api/v1/market-calendar/{market}` into a
+small session state. It treats explicit open states as runnable, explicit
+closed/holiday/weekend states as blocked, and unknown payloads as blocked. This
+keeps the paper service from making Turtle decisions outside a known market
+session.
 
 ### RateLimitQueue
 

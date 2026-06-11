@@ -47,6 +47,9 @@ behavior as an explicit deviation and block live trading until approved.
   `toss.account_seq`, and `runtime.symbols` are configured, the paper service
   fetches candles/prices through read-only endpoints, reconciles account state,
   and then runs the paper Turtle loop.
+- Market-calendar gate for the paper service. The service checks the read-only
+  Toss calendar before evaluating paper intents and blocks when the session is
+  closed or unknown.
 
 ## Documentation
 

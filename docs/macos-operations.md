@@ -64,6 +64,9 @@ toss:
 
 runtime:
   mode: paper
+  market: KR
+  timezone: Asia/Seoul
+  use_market_calendar: true
   symbols:
     - "005930"
   state_db: state/turtle.sqlite3
@@ -180,14 +183,18 @@ reconciliation.
 The current paper-mode service is intentionally conservative. Without
 `runtime.symbols`, Toss env credentials, and `toss.account_seq`, it records a
 blocked health payload and no trade decision is evaluated. Once those read-only
-inputs exist, it fetches candles/prices, reconciles holdings/open orders through
-read-only endpoints, and then runs the paper Turtle loop. It does not submit,
-cancel, or modify broker orders.
+inputs exist, it checks the Toss read-only market calendar first. If the session
+is closed or unknown, it records a blocker and stops that iteration. If the
+session is open, it fetches candles/prices, reconciles holdings/open orders
+through read-only endpoints, and then runs the paper Turtle loop. It does not
+submit, cancel, or modify broker orders.
 
 ## Runtime Windows
 
 Times must be based on market calendar APIs, not hard-coded clocks. Static
-times may be used only as fallback in paper/backtest mode.
+times may be used only as fallback in paper/backtest mode. The current paper
+service uses the Toss market-calendar endpoint as a gate before evaluating
+paper intents.
 
 Loop profiles:
 

@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .config import load_config
 from .health import HealthSnapshot
+from .market_calendar import MarketCalendarConfig, MarketCalendarGate
 from .notifier import MemoryNotifier
 from .paper_runtime import PaperRuntimeConfig, PaperTradingRuntime
 from .position_sync import TossPositionSync
@@ -300,6 +301,33 @@ def _paper_service_iteration(
         transport=transport,
         now=now,
     )
+    if config.runtime.use_market_calendar:
+        session = MarketCalendarGate(
+            client=client,
+            config=MarketCalendarConfig(
+                market=config.runtime.market,
+                timezone_name=config.runtime.timezone_name,
+            ),
+            now=now,
+        ).current_session()
+        store.record_runtime_event(
+            "INFO" if session.is_open else "WARN",
+            "market_session_state",
+            session.as_payload(),
+        )
+        if session.blocker is not None:
+            snapshot = paper_service_health(
+                store,
+                blockers=(session.blocker,),
+                ready=False,
+            )
+            store.record_runtime_event(
+                "WARN",
+                "paper_service_market_closed",
+                snapshot.as_payload() | {"market_session": session.as_payload()},
+            )
+            return snapshot
+
     market_data = TossReadOnlyMarketDataProvider(
         client=client,
         config=TossMarketDataConfig(

@@ -6,6 +6,9 @@ toss:
 
 runtime:
   mode: paper
+  market: KR
+  timezone: Asia/Seoul
+  use_market_calendar: true
   symbols: []
   state_db: state/turtle.sqlite3
   log_dir: logs
