@@ -44,6 +44,7 @@ class RuntimeConfig:
 @dataclass(frozen=True)
 class AiConfig:
     enabled: bool = False
+    provider: str = "openai_compatible"
     model: str = "bRadu/gemma-4-E2B-it-textonly"
     base_url: str = "http://localhost:8000/v1"
     api_key_env: str = "TURTLE_AI_API_KEY"
@@ -153,6 +154,7 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
         ),
         ai=AiConfig(
             enabled=bool(ai.get("enabled", False)),
+            provider=str(ai.get("provider", "openai_compatible")),
             model=str(ai.get("model", "bRadu/gemma-4-E2B-it-textonly")),
             base_url=str(ai.get("base_url", "http://localhost:8000/v1")).rstrip("/"),
             api_key_env=str(ai.get("api_key_env", "TURTLE_AI_API_KEY")),

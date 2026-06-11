@@ -6,6 +6,7 @@ toss:
 
 ai:
   enabled: false
+  provider: openai_compatible
   model: bRadu/gemma-4-E2B-it-textonly
   base_url: http://localhost:8000/v1
   api_key_env: TURTLE_AI_API_KEY

@@ -243,6 +243,11 @@ Implement:
   - daily report summaries.
   - runtime blocker/situation explanations.
   - human-readable explanations of rule-based universe/watchlist results.
+- Model-agnostic AI API boundary. Done through `AiClient`,
+  `NullAiClient`, and `OpenAICompatibleAiClient`.
+- Mac-first serving note: final operation should prefer an Apple Silicon MLX
+  int4 model behind an OpenAI-compatible local API. NVIDIA/vLLM experiments are
+  optional validation paths, not the project boundary.
 
 Acceptance:
 
@@ -252,6 +257,7 @@ Acceptance:
 - Missing/ambiguous market-info or warning data excludes or blocks the symbol
   rather than guessing.
 - Reports clearly separate rule-based facts from AI-written summaries.
+- AI timeout, failure, or model replacement does not change trading behavior.
 
 ## Phase 7: Controlled Live Pilot
 

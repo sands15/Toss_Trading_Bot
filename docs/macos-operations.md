@@ -77,6 +77,7 @@ runtime:
 
 ai:
   enabled: false
+  provider: openai_compatible
   model: bRadu/gemma-4-E2B-it-textonly
   base_url: http://localhost:8000/v1
   api_key_env: TURTLE_AI_API_KEY
@@ -178,10 +179,14 @@ python -m turtle_bot \
   --daily-report-ai-summary
 ```
 
-The default model is `bRadu/gemma-4-E2B-it-textonly`. The configured server
-must expose `/v1/chat/completions`, such as a vLLM or SGLang server. AI summary
-output is operator-facing prose only; it must not feed back into universe
-selection, watchlist ranking, Turtle signals, sizing, or guards.
+The configured server must expose `/v1/chat/completions`. The default model
+string is `bRadu/gemma-4-E2B-it-textonly`, but the bot treats the model as an
+API implementation detail. On Apple Silicon, the preferred future local path is
+an MLX int4 model served behind an OpenAI-compatible API. NVIDIA/vLLM,
+Transformers, or llama.cpp servers are acceptable test or alternate backends as
+long as they preserve the same API contract. AI summary output is
+operator-facing prose only; it must not feed back into universe selection,
+watchlist ranking, Turtle signals, sizing, or guards.
 
 Example commands:
 

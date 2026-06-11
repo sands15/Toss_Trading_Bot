@@ -517,10 +517,17 @@ AI is an explanation and summarization layer only.
 
 Current implementation:
 
-- `OpenAICompatibleSummaryClient` calls `/v1/chat/completions`.
-- Default model is `bRadu/gemma-4-E2B-it-textonly`.
-- Intended serving path is an OpenAI-compatible API server such as vLLM or
-  SGLang.
+- `AiClient` is the code boundary. Trading code talks to the AI layer through
+  summary/explanation methods, not through a concrete model runtime.
+- `NullAiClient` is the disabled/default-safe path. Missing AI must not stop the
+  trading loop.
+- `OpenAICompatibleAiClient` calls `/v1/chat/completions`.
+- Default model string remains `bRadu/gemma-4-E2B-it-textonly`, but the model is
+  an implementation detail behind the API.
+- Primary operating target is macOS. A local MLX int4 server is the preferred
+  eventual serving path on Apple Silicon if it exposes an OpenAI-compatible API.
+- Windows/NVIDIA experiments such as vLLM, Transformers, or llama.cpp are
+  validation paths only unless deployment moves to an NVIDIA Linux server.
 
 Allowed:
 
@@ -530,6 +537,8 @@ Allowed:
   logs in human-readable Korean.
 - Explain why a symbol appeared in the universe or watchlist based on recorded
   rule outputs.
+- Explain the current situation from read-only context such as broker snapshots,
+  runtime events, blockers, watchlists, and reports.
 - Draft operator-facing messages for review.
 
 Disallowed:
@@ -541,3 +550,11 @@ Disallowed:
   calendar blockers, or warning-status filters.
 - Changing universe, watchlist, risk, or live-mode config without explicit
   operator approval.
+
+Operational constraints:
+
+- AI receives read-only context only.
+- AI response failure, timeout, or invalid JSON must degrade to no summary, not
+  to a trading failure.
+- AI output is never persisted as the source of truth for signals, positions,
+  orders, blockers, or universe inclusion.

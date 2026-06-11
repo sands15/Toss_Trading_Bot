@@ -58,9 +58,11 @@ behavior as an explicit deviation and block live trading until approved.
   summaries, reports, and situation explanations, not order decisions.
 - Postmarket daily report export with runtime event summary, blockers,
   watchlist, paper positions, and latest read-only broker snapshots.
-- AI daily report summary adapter for OpenAI-compatible chat-completions APIs,
-  configured for `bRadu/gemma-4-E2B-it-textonly` by default. AI output remains
-  explanation-only and cannot affect Turtle decisions.
+- Model-agnostic AI explanation boundary with `NullAiClient` and
+  `OpenAICompatibleAiClient`. It can summarize news, daily reports, runtime
+  events, and situations through `/v1/chat/completions`. AI output remains
+  explanation-only and cannot affect Turtle decisions. On macOS, a local MLX
+  int4 server can sit behind the same API boundary later.
 
 ## Documentation
 

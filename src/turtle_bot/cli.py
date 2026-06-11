@@ -7,7 +7,7 @@ from os import environ
 from pathlib import Path
 
 from . import __version__
-from .ai_summary import AiSummaryConfig, OpenAICompatibleSummaryClient
+from .ai_summary import AiSummaryConfig, OpenAICompatibleAiClient
 from .config import load_config
 from .operations import (
     LaunchdServiceConfig,
@@ -233,8 +233,13 @@ def run(argv: list[str] | None = None) -> int:
         if args.daily_report_ai_summary:
             if loaded_config is None:
                 parser.error("--daily-report-ai-summary requires --config")
+            if loaded_config.ai.provider != "openai_compatible":
+                parser.error(
+                    "--daily-report-ai-summary currently supports only "
+                    "ai.provider=openai_compatible"
+                )
             api_key = environ.get(loaded_config.ai.api_key_env)
-            summary = OpenAICompatibleSummaryClient(
+            summary = OpenAICompatibleAiClient(
                 config=AiSummaryConfig(
                     base_url=loaded_config.ai.base_url,
                     model=loaded_config.ai.model,
