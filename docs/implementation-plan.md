@@ -62,8 +62,8 @@ Acceptance tests:
 
 Implement:
 
-- CSV candle loader. Done for single-symbol daily candles.
-- Simulated broker. Done for single-symbol daily-bar fills.
+- CSV candle loader. Done for daily candles.
+- Simulated broker. Done for single-symbol and multi-symbol daily-bar fills.
 - Conservative same-bar ordering. Done: exits are checked before pyramids and
   entries.
 - Fees/slippage/tax hooks. Done as configurable cost hooks.
@@ -78,12 +78,10 @@ Acceptance:
 - Same-bar stop/pyramid conflict chooses stop. Covered by tests.
 - Backtest assumptions are conservative when intraday order is unknowable.
   Covered for stop before pyramid and gap fills at open.
-
-Remaining before treating Phase 2 as complete:
-
-- Multi-symbol portfolio loop.
-- Configurable unit sizing from account equity and N.
-- Report export format for review.
+- Multi-symbol portfolio loop. Covered by tests.
+- Configurable unit sizing from account equity and N. Covered by tests.
+- Report export format for review. Done as JSON with Decimal values preserved
+  as strings.
 
 ## Phase 3: Toss Read-only Client
 

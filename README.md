@@ -28,8 +28,9 @@ behavior as an explicit deviation and block live trading until approved.
 - API-free operational primitives: rate-limit queue, market data cache,
   watchlist builder, notifier, read-only health payload/server, runtime shell,
   and SQLite state store.
-- Daily-bar single-symbol backtest engine with CSV loading, simulated fills,
-  fees/slippage/tax hooks, trade output, equity curve, and audit log.
+- Daily-bar backtest engine with CSV loading, single-symbol and portfolio
+  loops, Turtle risk-based unit sizing, simulated fills, fees/slippage/tax
+  hooks, trade output, equity curve, JSON report export, and audit log.
 
 ## Documentation
 

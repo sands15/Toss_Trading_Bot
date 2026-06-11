@@ -22,6 +22,8 @@ from .backtest import (
     BacktestResult,
     BacktestTrade,
     EquityPoint,
+    backtest_result_to_dict,
+    export_backtest_report_json,
     load_candles_csv,
 )
 
@@ -46,6 +48,8 @@ __all__ = [
     "BacktestResult",
     "BacktestTrade",
     "EquityPoint",
+    "backtest_result_to_dict",
+    "export_backtest_report_json",
     "load_candles_csv",
 ]
 

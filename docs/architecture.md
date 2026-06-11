@@ -66,9 +66,9 @@ Runs from historical candles only.
 - No network required.
 - Uses simulated broker.
 - Produces trades, equity curve, and rule audit logs.
-- Initial implementation is daily-bar and single-symbol. Portfolio-level
-  backtests should be added only after the single-symbol Turtle behavior is
-  fully accepted.
+- Initial implementation is daily-bar with single-symbol and multi-symbol
+  portfolio loops. Intraday simulation should be added only after daily-bar
+  Turtle behavior is accepted.
 - Daily OHLC ambiguity is handled conservatively: exits are checked before
   pyramids or entries, and gap fills use the open instead of assuming a better
   trigger fill.
