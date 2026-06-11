@@ -1,0 +1,12 @@
+toss:
+  live_enabled: false
+
+strategy:
+  minimum_tick: 1
+  n_method: turtle
+  risk:
+    risk_pct_per_unit: 0.007
+    stop_n: 2.0
+    pyramid_step_n: 0.5
+    max_units_per_symbol: 4
+    max_total_long_units: 12
