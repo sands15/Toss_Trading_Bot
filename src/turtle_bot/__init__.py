@@ -45,6 +45,12 @@ from .position_sync import (
     normalize_orders,
     reconcile_positions,
 )
+from .paper_runtime import (
+    PaperOrderIntent,
+    PaperRunResult,
+    PaperRuntimeConfig,
+    PaperTradingRuntime,
+)
 
 __all__ = [
     "Candle",
@@ -85,6 +91,10 @@ __all__ = [
     "normalize_holdings",
     "normalize_orders",
     "reconcile_positions",
+    "PaperOrderIntent",
+    "PaperRunResult",
+    "PaperRuntimeConfig",
+    "PaperTradingRuntime",
 ]
 
 Unit = UnitState

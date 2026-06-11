@@ -90,6 +90,9 @@ Uses live Toss market/account data but does not submit orders.
 - Builds order intents.
 - Applies OrderGuard.
 - Logs what would have been submitted.
+- Current implementation records paper-only order intents as runtime events and
+  notifications after reconciliation passes. It does not simulate broker fills
+  yet.
 
 ### Live
 

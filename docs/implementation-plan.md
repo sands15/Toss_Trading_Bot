@@ -148,24 +148,38 @@ Acceptance:
 
 Implement:
 
-- Runtime loop.
+- Runtime loop. Partially done as one-shot `PaperTradingRuntime.run_once`.
 - Scheduler.
-- Price polling.
+- Price polling. Done behind `PaperMarketDataProvider` protocol.
 - MarketDataCache.
-- OrderIntent generation.
-- OrderGuard.
+- OrderIntent generation. Done as paper-only `PaperOrderIntent`.
+- OrderGuard. Partially done through mandatory position reconciliation and
+  market-data blockers.
 - Paper broker recording.
-- Notifier interface and console/log notifier.
+- Notifier interface and console/log notifier. Done.
 - Reports.
-- Local read-only health/status server if it can be kept safe.
+- Local read-only health/status server if it can be kept safe. Done for
+  read-only health payload/server; paper runtime exposes health snapshots.
 
 Acceptance:
 
-- Paper mode can run without sending orders.
-- Every signal has a guard result.
-- Every would-be order has a reason and rule snapshot.
+- Paper mode can run without sending orders. Covered by tests; no order
+  mutation methods are called or exposed.
+- Every signal has a guard result. Reconcile and market-data blockers are
+  recorded; full `OrderGuard` remains before live.
+- Every would-be order has a reason and rule snapshot. Paper intents include
+  source signal, system, kind, trigger/observed price, side, quantity, and
+  Turtle reason.
 - Premarket watchlist is logged and included in the daily report.
 - Health/status endpoints expose state without mutating trading behavior.
+  Covered by read-only health tests.
+
+Remaining before treating Phase 5 as complete:
+
+- Scheduler and repeated loop cadence.
+- Paper broker fill/state simulation.
+- Daily report export including watchlist and paper intents.
+- Full OrderGuard object with per-rule guard result records.
 
 ## Phase 6: macOS Operations
 

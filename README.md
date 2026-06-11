@@ -36,6 +36,8 @@ behavior as an explicit deviation and block live trading until approved.
   commissions. Order create/modify/cancel is intentionally absent.
 - Position reconciliation that compares local Turtle position state with
   broker holdings/open orders and reports blockers before paper/live decisions.
+- Paper runtime loop that runs reconcile first, evaluates Turtle signals, and
+  records would-be order intents through runtime events and notifications.
 
 ## Documentation
 
