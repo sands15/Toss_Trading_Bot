@@ -12,7 +12,10 @@ macOS launchd
       -> Runtime
           -> Scheduler
           -> StateStore
+          -> WatchlistBuilder
           -> MarketDataClient
+          -> MarketDataCache
+          -> RateLimitQueue
           -> IndicatorEngine
           -> TurtleSignalEngine
           -> RiskManager
@@ -22,6 +25,7 @@ macOS launchd
           -> PositionSync
           -> Logger
           -> Notifier
+          -> HealthServer
 ```
 
 Windows must be able to run the same Python package for tests, backtests, and
@@ -36,6 +40,8 @@ runtime -> strategy -> domain
 runtime -> broker -> domain
 runtime -> storage -> domain
 runtime -> config
+runtime -> notifier
+runtime -> health
 ```
 
 Forbidden:
@@ -46,6 +52,8 @@ strategy -> sqlite
 strategy -> launchd
 domain -> requests/httpx
 domain -> operating system APIs
+strategy -> notifier
+strategy -> health server
 ```
 
 ## Execution Modes
@@ -85,6 +93,91 @@ Submits real orders.
 - Requires explicit config flag.
 - Requires clean position reconciliation.
 - Requires successful paper-mode rehearsal.
+
+## Operational Components
+
+These components are inspired by a reviewed KIS-based automation project, but
+adapted to this repository's stricter Turtle and broker-safety rules.
+
+### WatchlistBuilder
+
+The watchlist is prepared before the market opens. It is not a strategy rule;
+it is an operational filter that decides which symbols deserve active polling.
+
+Responsibilities:
+
+- Load the configured universe.
+- Fetch completed daily candles.
+- Calculate distance to previous 20-day and 55-day breakout levels.
+- Rank symbols nearest to Turtle breakout levels.
+- Mark new candidates compared with the previous watchlist.
+- Persist the watchlist and send a premarket notification.
+
+Constraints:
+
+- Watchlist ranking must not create trades by itself.
+- A symbol outside the watchlist may still be evaluated in backtests.
+- Live mode must log the universe and watchlist used for the session.
+
+### MarketDataCache
+
+The runtime should avoid repeated REST calls for the same price, orderbook, and
+candle data.
+
+Responsibilities:
+
+- Store current prices with timestamps.
+- Store orderbook snapshots with timestamps.
+- Store completed candle pages.
+- Expose freshness checks.
+- Block signal evaluation when required data is stale.
+
+The cache is an optimization and safety layer, not the source of truth for
+account positions. Broker holdings and open orders still come from Toss.
+
+### RateLimitQueue
+
+Toss rate-limit headers must drive request pacing.
+
+Responsibilities:
+
+- Serialize requests by API group where needed.
+- Track `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `Retry-After`.
+- Slow polling before 429 responses become frequent.
+- Block non-urgent requests when order/account safety checks need quota.
+
+Order and account reconciliation requests have higher priority than watchlist
+screening.
+
+### Notifier
+
+The notifier reports system state and decisions, but it must not decide trades.
+
+Minimum notifications:
+
+- Startup and mode.
+- Premarket watchlist.
+- Account reconciliation mismatch.
+- Paper order candidate.
+- Live order submitted, rejected, filled, canceled, or unknown.
+- Rate-limit pause.
+- End-of-day summary.
+
+### HealthServer
+
+A small local health interface may be added for local monitoring.
+
+Allowed endpoints:
+
+- `GET /health`
+- `GET /status`
+- `GET /positions`
+- `GET /orders/open`
+- `GET /watchlist`
+
+Unsafe actions such as start/stop trading, close-all, config mutation, and live
+enablement must not be exposed until authentication and operator confirmation
+are designed.
 
 ## Core Domain Objects
 
@@ -194,12 +287,15 @@ while process is running:
   if premarket preparation window:
     fetch completed candles
     calculate channels and N
+    build and persist watchlist
+    send premarket watchlist notification
     persist indicators
 
   if active trading window:
     sync positions and open orders
     block if critical mismatch
-    fetch current prices/orderbook
+    fetch or refresh current prices/orderbook through MarketDataCache
+    check data freshness
     evaluate exits, pyramids, entries
     convert approved signals to order intents
     run OrderGuard
@@ -233,6 +329,9 @@ Tables:
 - `api_tokens`
 - `api_errors`
 - `runtime_events`
+- `watchlists`
+- `watchlist_items`
+- `market_data_snapshots`
 
 Sensitive token values must not be stored. Store expiry metadata and masked
 hashes only.
@@ -270,6 +369,15 @@ HTTP handling policy:
 - 429: obey `Retry-After`; reduce loop speed.
 - 500 class: retry with small cap, then reconcile unknown order state.
 
+Request priority under limited quota:
+
+1. Unknown order reconciliation.
+2. Open order and holdings sync.
+3. Buying power and sellable quantity checks.
+4. Current price/orderbook for active positions.
+5. Current price/orderbook for watchlist entries.
+6. Premarket broad-universe screening.
+
 Unknown order result policy:
 
 1. Do not send a replacement order.
@@ -288,8 +396,20 @@ Every loop decision must be reconstructable:
 - Guard checks and result.
 - Broker request id when available.
 - Broker response or error.
+- Data freshness age.
+- Rate-limit budget at decision time.
 
 Logs should be human-readable, but DB events are the audit source.
+
+## Reference Project Lessons
+
+The reviewed KIS/Node.js automation project confirms that a practical trading
+daemon benefits from a central manager, market scheduler, data cache, notifier,
+watchlist generation, and health surface. This project adopts those operational
+ideas while rejecting direct reuse of its Turtle strategy logic because it does
+not preserve the full rules required here: System 1 skip, System 2 failsafe,
+0.5N pyramiding, strict N handling, and broker/local reconciliation before
+orders.
 
 ## AI Boundary
 

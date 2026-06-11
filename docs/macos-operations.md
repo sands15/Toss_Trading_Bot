@@ -112,7 +112,9 @@ On every process start:
 9. Block live orders if mismatch exists.
 10. Fetch latest completed candles.
 11. Calculate indicator snapshots.
-12. Enter runtime loop.
+12. Build or load the premarket watchlist.
+13. Start health/status surface if enabled.
+14. Enter runtime loop.
 
 The bot must never submit orders immediately after process start before
 reconciliation.
@@ -125,9 +127,25 @@ times may be used only as fallback in paper/backtest mode.
 Loop profiles:
 
 - Premarket: fetch candles, prepare channels, verify account.
-- Market open: price/orderbook polling, order guard, state sync.
+- Premarket watchlist: rank symbols near 20-day and 55-day breakout levels,
+  persist the session watchlist, and notify.
+- Market open: price/orderbook polling through cache, order guard, state sync.
 - Postmarket: final order reconciliation, report, candle cache refresh.
 - Closed: slow health loop only.
+
+## Daily Operating Rhythm
+
+Suggested KST rhythm for KR market operation:
+
+- 07:00: token/account readiness check.
+- 07:30: completed candle refresh and Turtle watchlist generation.
+- 08:00: system-active notification with current blockers.
+- 09:00: market-open reconciliation and paper/live loop activation.
+- 15:30: market-close handling and order reconciliation.
+- 16:00: final daily report.
+
+These are operational checkpoints, not trading rules. The scheduler should use
+Toss market-calendar APIs for actual market sessions.
 
 ## Failure Policies
 
@@ -143,6 +161,8 @@ Loop profiles:
 - Obey `Retry-After`.
 - Reduce polling frequency.
 - Do not compensate by bursting later.
+- Preserve quota for account reconciliation and order-state checks before
+  broad watchlist or universe refreshes.
 
 ### Process Crash
 
@@ -176,3 +196,24 @@ May be macOS-only:
 - Amphetamine assumptions.
 
 Use `pathlib.Path`, not hard-coded `/` or `\`.
+
+## Health Surface
+
+The local health/status service must be read-only until authentication and
+operator confirmation are designed.
+
+Allowed:
+
+- Current mode.
+- Market session state.
+- Current blockers.
+- Latest watchlist.
+- Cached data freshness.
+- Open positions and unresolved orders.
+
+Disallowed for now:
+
+- Enabling live mode.
+- Starting or stopping trading.
+- Closing all positions.
+- Editing credentials or account settings.

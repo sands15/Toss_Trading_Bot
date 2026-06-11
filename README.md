@@ -28,6 +28,7 @@ behavior as an explicit deviation and block live trading until approved.
 - [Toss API Contract](docs/toss-api-contract.md)
 - [macOS Operations](docs/macos-operations.md)
 - [Implementation Plan](docs/implementation-plan.md)
+- [Reference Project Notes](docs/reference-project-notes.md)
 
 ## Official References
 

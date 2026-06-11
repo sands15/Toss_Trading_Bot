@@ -75,6 +75,7 @@ Implement:
 - Account client.
 - Holdings/open orders client.
 - Rate-limit metadata capture.
+- RateLimitQueue with request priority classes.
 - HTTP mock tests.
 
 Acceptance:
@@ -83,22 +84,29 @@ Acceptance:
 - Decimal string values never become floats.
 - Account/order APIs include `X-Tossinvest-Account`.
 - 401, 409, 422, 429 are handled by policy.
+- Order/account requests can be prioritized over broad watchlist screening.
 
-## Phase 4: State Store and Position Sync
+## Phase 4: State Store, Watchlist, and Position Sync
 
 Implement:
 
 - SQLite schema and migrations.
+- Watchlist tables.
+- Premarket watchlist builder for symbols near 20-day and 55-day breakout
+  levels.
 - Position/state persistence.
 - Broker holdings reconciliation.
 - Open order reconciliation.
 - Manual trade/mismatch detection.
+- Market data snapshot freshness tracking.
 
 Acceptance:
 
 - Restart can recover open position state.
 - Local/broker mismatch blocks new orders.
 - Duplicate unresolved client order id blocks new orders.
+- Watchlist generation cannot directly create trades.
+- Stale current price/orderbook data blocks live and paper order candidates.
 
 ## Phase 5: Paper Trading Runtime
 
@@ -107,16 +115,21 @@ Implement:
 - Runtime loop.
 - Scheduler.
 - Price polling.
+- MarketDataCache.
 - OrderIntent generation.
 - OrderGuard.
 - Paper broker recording.
+- Notifier interface and console/log notifier.
 - Reports.
+- Local read-only health/status server if it can be kept safe.
 
 Acceptance:
 
 - Paper mode can run without sending orders.
 - Every signal has a guard result.
 - Every would-be order has a reason and rule snapshot.
+- Premarket watchlist is logged and included in the daily report.
+- Health/status endpoints expose state without mutating trading behavior.
 
 ## Phase 6: macOS Operations
 
@@ -126,12 +139,16 @@ Implement:
 - Setup/check commands.
 - Log paths.
 - Health command.
+- Amphetamine/power checklist.
+- Paper-mode service template.
 
 Acceptance:
 
 - macOS service starts paper mode.
 - Restart runs reconciliation before decisions.
 - Windows tests still pass.
+- Service logs include mode, watchlist, market state, and current blocker
+  status.
 
 ## Phase 7: Controlled Live Pilot
 
@@ -153,6 +170,8 @@ Pilot constraints:
 - Hard daily order cap.
 - Hard daily loss cap.
 - Immediate alert on every order.
+- Health API remains read-only.
+- Any unknown broker state blocks all new orders for the affected symbol.
 
 ## Initial Work Package for Spark
 
@@ -167,3 +186,17 @@ Implement only Phases 0 and part of Phase 1:
 - Unit tests for channel exclusion, N calculation, and basic signals.
 
 Do not implement live Toss order submission in the first work package.
+
+## Reference-Informed Work Package
+
+After the strategy core, implement the operational layer in this order:
+
+1. `RateLimitQueue`
+2. `MarketDataCache`
+3. `WatchlistBuilder`
+4. `Notifier`
+5. Read-only `HealthServer`
+6. Runtime integration in paper mode
+
+This ordering is intentional. It gives the paper runtime the same operational
+shape as live mode before any live order path exists.
