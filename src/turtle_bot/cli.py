@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from . import __version__
 from .config import load_config
+from .runtime import Runtime
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate config file and exit",
     )
+    parser.add_argument(
+        "--health-json",
+        action="store_true",
+        help="Print read-only health payload from default empty runtime state",
+    )
     return parser
 
 
@@ -41,9 +48,13 @@ def run(argv: list[str] | None = None) -> int:
         load_config(args.config)
         return 0
 
+    if args.health_json:
+        payload = Runtime.default().health_snapshot().as_payload()
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
     if args.config is not None:
         parser.print_usage()
         return 1
 
     return 0
-
