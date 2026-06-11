@@ -53,6 +53,9 @@ behavior as an explicit deviation and block live trading until approved.
 - Premarket watchlist generation inside the paper service. OPEN/PREOPEN
   sessions build and persist a Turtle breakout-distance watchlist, but the
   watchlist remains an operational polling/status artifact, not a trade signal.
+- Planned automatic universe selection through rule-based liquidity, market,
+  warning-status, and Turtle-data-readiness filters. AI is reserved for news
+  summaries, reports, and situation explanations, not order decisions.
 
 ## Documentation
 

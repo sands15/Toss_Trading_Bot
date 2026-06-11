@@ -119,6 +119,9 @@ Implement:
 
 - SQLite schema and migrations. Done with idempotent table creation and WAL for
   file databases.
+- Rule-based `UniverseBuilder` for automatic stock selection. Planned. It
+  should use read-only market-info data, warning/status filters, liquidity
+  filters, and Turtle-data-readiness checks. AI must not select symbols.
 - Watchlist tables. Done.
 - Premarket watchlist builder for symbols near 20-day and 55-day breakout
   levels. Done.
@@ -143,6 +146,8 @@ Acceptance:
 - Durable state can explain why live trading is blocked after restart. Broker
   holdings/open order snapshots and reconcile blockers are persisted or
   serializable for health/reporting.
+- Automatic universe selection records inclusion/exclusion reasons and cannot
+  directly create trades.
 
 ## Phase 5: Paper Trading Runtime
 
@@ -210,6 +215,36 @@ Phase 6 is complete for the paper service shell plus Toss read-only market-data
 wiring, a market-calendar gate, and premarket watchlist persistence. Richer
 postmarket profile scheduling can be added later, but paper intent evaluation
 is already blocked outside a known open session.
+
+## Phase 6.5: Automatic Universe and AI Explanation Layer
+
+Implement:
+
+- `UniverseBuilder` using Toss read-only stock/market-info APIs.
+- Configurable universe policy:
+  - markets to include.
+  - ETF/include-exclude policy.
+  - warning, management, suspension, delisting, and trading-halt exclusions.
+  - minimum price.
+  - minimum average daily traded value.
+  - minimum completed candle count for 20-day, 55-day, exit, and N rules.
+- Persisted universe snapshot with inclusion/exclusion reasons.
+- Watchlist generation from the selected universe, not only manually configured
+  `runtime.symbols`.
+- AI explanation adapter for:
+  - news summaries.
+  - daily report summaries.
+  - runtime blocker/situation explanations.
+  - human-readable explanations of rule-based universe/watchlist results.
+
+Acceptance:
+
+- The selected universe is reproducible from recorded inputs and config.
+- AI output is never an input to Turtle signal generation, universe inclusion,
+  watchlist ranking, order guard, sizing, or live enablement.
+- Missing/ambiguous market-info or warning data excludes or blocks the symbol
+  rather than guessing.
+- Reports clearly separate rule-based facts from AI-written summaries.
 
 ## Phase 7: Controlled Live Pilot
 

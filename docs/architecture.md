@@ -12,6 +12,7 @@ macOS launchd
       -> Runtime
           -> Scheduler
           -> StateStore
+          -> UniverseBuilder
           -> WatchlistBuilder
           -> MarketDataClient
           -> MarketDataCache
@@ -142,6 +143,30 @@ Constraints:
 - Watchlist ranking must not create trades by itself.
 - A symbol outside the watchlist may still be evaluated in backtests.
 - Live mode must log the universe and watchlist used for the session.
+
+### UniverseBuilder
+
+The universe builder automatically selects which stocks are eligible for
+watchlist screening. It must be deterministic and rule-based, not AI-selected.
+
+Responsibilities:
+
+- Load exchange-listed stocks from read-only Toss market-info endpoints.
+- Exclude instruments by configured market, asset type, warning status,
+  suspension/delisting/management flags, and optional ETF policy.
+- Apply liquidity filters such as minimum average daily traded value, minimum
+  price, and minimum candle history.
+- Keep only symbols with enough completed candles to calculate Turtle channels
+  and N.
+- Persist the universe snapshot used for a session so reports can explain why a
+  symbol was included or excluded.
+
+Constraints:
+
+- Universe selection is not a buy recommendation.
+- AI must not add symbols to the tradable universe by opinion or narrative.
+- A symbol excluded for missing data, stale data, warning status, or broker
+  mismatch must remain blocked until the rule-based blocker clears.
 
 ### MarketDataCache
 
@@ -475,5 +500,24 @@ orders.
 
 ## AI Boundary
 
-AI may summarize reports, detect anomalies, and help debug logs. AI must not
-decide entries, exits, sizing, or whether to override OrderGuard.
+AI is an explanation and summarization layer only.
+
+Allowed:
+
+- Summarize market/news context for symbols already selected by rule-based
+  universe/watchlist logic.
+- Summarize daily reports, paper/live blockers, runtime events, and anomalous
+  logs in human-readable Korean.
+- Explain why a symbol appeared in the universe or watchlist based on recorded
+  rule outputs.
+- Draft operator-facing messages for review.
+
+Disallowed:
+
+- Selecting tradable symbols by opinion, news sentiment, or discretionary
+  preference.
+- Deciding entries, exits, pyramids, stops, position sizing, or skips.
+- Overriding Turtle signals, `OrderGuard`, reconciliation blockers, market
+  calendar blockers, or warning-status filters.
+- Changing universe, watchlist, risk, or live-mode config without explicit
+  operator approval.

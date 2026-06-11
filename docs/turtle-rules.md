@@ -31,6 +31,9 @@ must not be used for live trading.
   never as silent defaults.
 - The feature keeps AI, notifications, UI, watchlists, and broker adapters
   outside final trading decisions.
+- Automatic universe selection is deterministic screening only. AI may explain
+  news, reports, blockers, and screening results, but it must not choose symbols
+  by discretion or override rule-based filters.
 - The feature blocks live mode when required data is missing, stale, ambiguous,
   or not reconciled with broker state.
 
