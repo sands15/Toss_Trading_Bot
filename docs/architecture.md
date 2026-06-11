@@ -91,8 +91,11 @@ Uses live Toss market/account data but does not submit orders.
 - Applies OrderGuard.
 - Logs what would have been submitted.
 - Current implementation records paper-only order intents as runtime events and
-  notifications after reconciliation passes. It does not simulate broker fills
-  yet.
+  notifications after reconciliation passes.
+- Paper-only guard results explain why a would-be order is allowed or blocked.
+- Paper fill/state simulation updates only paper state tables. It does not
+  touch live/reconciliation position tables and does not represent real broker
+  execution quality.
 
 ### Live
 
@@ -329,6 +332,8 @@ Tables:
 - `indicator_snapshots`
 - `positions`
 - `position_units`
+- `paper_positions`
+- `paper_position_units`
 - `signals`
 - `order_intents`
 - `broker_orders`

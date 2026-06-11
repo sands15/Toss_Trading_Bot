@@ -143,6 +143,38 @@ def test_list_positions_filters_by_status() -> None:
         ] == ["AAA"]
 
 
+def test_paper_positions_are_separate_from_live_positions() -> None:
+    live_position = PositionState(
+        symbol="AAA",
+        system=TurtleSystem.S1,
+        status=PositionStatus.OPEN,
+        total_qty=Decimal("1"),
+        avg_entry_price=Decimal("100"),
+        entry_n=Decimal("2"),
+        current_stop_price=Decimal("96"),
+        last_unit_entry_price=Decimal("100"),
+        units=(
+            UnitState(
+                unit_no=1,
+                qty=Decimal("1"),
+                entry_price=Decimal("100"),
+                n_at_entry=Decimal("2"),
+                stop_price=Decimal("96"),
+            ),
+        ),
+    )
+    paper_position = replace(live_position, total_qty=Decimal("2"))
+
+    with SQLiteStateStore() as store:
+        store.save_position(live_position)
+        store.save_paper_position(paper_position)
+
+        assert store.load_position("AAA").total_qty == Decimal("1")
+        assert store.load_paper_position("AAA").total_qty == Decimal("2")
+        assert [position.total_qty for position in store.list_positions()] == [Decimal("1")]
+        assert [position.total_qty for position in store.list_paper_positions()] == [Decimal("2")]
+
+
 def test_unresolved_client_order_id_blocks_duplicates_until_resolved() -> None:
     with SQLiteStateStore() as store:
         store.record_broker_order(

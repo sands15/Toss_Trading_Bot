@@ -38,6 +38,8 @@ behavior as an explicit deviation and block live trading until approved.
   broker holdings/open orders and reports blockers before paper/live decisions.
 - Paper runtime loop that runs reconcile first, evaluates Turtle signals, and
   records would-be order intents through runtime events and notifications.
+- Paper-only guard, fill/state simulator, repeated-iteration scheduler, and
+  JSON report export.
 
 ## Documentation
 

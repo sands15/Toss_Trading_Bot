@@ -148,16 +148,18 @@ Acceptance:
 
 Implement:
 
-- Runtime loop. Partially done as one-shot `PaperTradingRuntime.run_once`.
-- Scheduler.
+- Runtime loop. Done as one-shot `PaperTradingRuntime.run_once`.
+- Scheduler. Done as repeated-iteration `PaperRuntimeScheduler`.
 - Price polling. Done behind `PaperMarketDataProvider` protocol.
 - MarketDataCache.
 - OrderIntent generation. Done as paper-only `PaperOrderIntent`.
-- OrderGuard. Partially done through mandatory position reconciliation and
-  market-data blockers.
-- Paper broker recording.
+- OrderGuard. Done for paper mode through `PaperOrderGuard`, mandatory
+  reconciliation, quantity, N, and sell-position checks.
+- Paper broker recording. Done as local `PaperBrokerSimulator` fill/state
+  updates in separate paper position tables. This is not a claim of real broker
+  fill behavior.
 - Notifier interface and console/log notifier. Done.
-- Reports.
+- Reports. Done as JSON paper run export.
 - Local read-only health/status server if it can be kept safe. Done for
   read-only health payload/server; paper runtime exposes health snapshots.
 
@@ -165,8 +167,7 @@ Acceptance:
 
 - Paper mode can run without sending orders. Covered by tests; no order
   mutation methods are called or exposed.
-- Every signal has a guard result. Reconcile and market-data blockers are
-  recorded; full `OrderGuard` remains before live.
+- Every signal has a guard result. Covered by paper guard tests.
 - Every would-be order has a reason and rule snapshot. Paper intents include
   source signal, system, kind, trigger/observed price, side, quantity, and
   Turtle reason.
@@ -174,12 +175,8 @@ Acceptance:
 - Health/status endpoints expose state without mutating trading behavior.
   Covered by read-only health tests.
 
-Remaining before treating Phase 5 as complete:
-
-- Scheduler and repeated loop cadence.
-- Paper broker fill/state simulation.
-- Daily report export including watchlist and paper intents.
-- Full OrderGuard object with per-rule guard result records.
+Phase 5 is complete for paper mode. A stricter live `OrderGuard` remains a
+separate Phase 7 precondition.
 
 ## Phase 6: macOS Operations
 

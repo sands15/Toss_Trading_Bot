@@ -132,6 +132,36 @@ class SQLiteStateStore:
             )
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS paper_positions (
+                  symbol TEXT PRIMARY KEY,
+                  system TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  total_qty TEXT NOT NULL,
+                  avg_entry_price TEXT NOT NULL,
+                  entry_n TEXT NOT NULL,
+                  current_stop_price TEXT NOT NULL,
+                  last_unit_entry_price TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS paper_position_units (
+                  position_symbol TEXT NOT NULL,
+                  unit_no INTEGER NOT NULL,
+                  qty TEXT NOT NULL,
+                  entry_price TEXT NOT NULL,
+                  n_at_entry TEXT NOT NULL,
+                  stop_price TEXT NOT NULL,
+                  broker_order_id TEXT,
+                  client_order_id TEXT,
+                  PRIMARY KEY (position_symbol, unit_no),
+                  FOREIGN KEY (position_symbol) REFERENCES paper_positions(symbol) ON DELETE CASCADE
+                )
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS broker_orders (
                   client_order_id TEXT PRIMARY KEY,
                   symbol TEXT NOT NULL,
@@ -315,10 +345,44 @@ class SQLiteStateStore:
         return Watchlist(generated_at=generated_at, rows=rows)
 
     def save_position(self, position: PositionState) -> None:
+        self._save_position_to_tables(
+            position,
+            positions_table="positions",
+            units_table="position_units",
+        )
+
+    def load_position(self, symbol: str) -> PositionState | None:
+        return self._load_position_from_tables(
+            symbol,
+            positions_table="positions",
+            units_table="position_units",
+        )
+
+    def save_paper_position(self, position: PositionState) -> None:
+        self._save_position_to_tables(
+            position,
+            positions_table="paper_positions",
+            units_table="paper_position_units",
+        )
+
+    def load_paper_position(self, symbol: str) -> PositionState | None:
+        return self._load_position_from_tables(
+            symbol,
+            positions_table="paper_positions",
+            units_table="paper_position_units",
+        )
+
+    def _save_position_to_tables(
+        self,
+        position: PositionState,
+        *,
+        positions_table: str,
+        units_table: str,
+    ) -> None:
         with self._conn:
             self._conn.execute(
-                """
-                INSERT INTO positions (
+                f"""
+                INSERT INTO {positions_table} (
                     symbol,
                     system,
                     status,
@@ -350,13 +414,13 @@ class SQLiteStateStore:
                 ),
             )
             self._conn.execute(
-                "DELETE FROM position_units WHERE position_symbol = ?",
+                f"DELETE FROM {units_table} WHERE position_symbol = ?",
                 (position.symbol,),
             )
             for unit in position.units:
                 self._conn.execute(
-                    """
-                    INSERT INTO position_units (
+                    f"""
+                    INSERT INTO {units_table} (
                         position_symbol,
                         unit_no,
                         qty,
@@ -380,7 +444,13 @@ class SQLiteStateStore:
                     ),
                 )
 
-    def load_position(self, symbol: str) -> PositionState | None:
+    def _load_position_from_tables(
+        self,
+        symbol: str,
+        *,
+        positions_table: str,
+        units_table: str,
+    ) -> PositionState | None:
         position_row = self._conn.execute(
             """
             SELECT
@@ -391,9 +461,9 @@ class SQLiteStateStore:
                 entry_n,
                 current_stop_price,
                 last_unit_entry_price
-            FROM positions
+            FROM {positions_table}
             WHERE symbol = ?
-            """,
+            """.format(positions_table=positions_table),
             (symbol,),
         ).fetchone()
 
@@ -410,10 +480,10 @@ class SQLiteStateStore:
                 stop_price,
                 broker_order_id,
                 client_order_id
-            FROM position_units
+            FROM {units_table}
             WHERE position_symbol = ?
             ORDER BY unit_no ASC
-            """,
+            """.format(units_table=units_table),
             (symbol,),
         ).fetchall()
 
@@ -447,8 +517,32 @@ class SQLiteStateStore:
         *,
         status: PositionStatus | str | None = None,
     ) -> list[PositionState]:
+        return self._list_positions_from_tables(
+            positions_table="positions",
+            units_table="position_units",
+            status=status,
+        )
+
+    def list_paper_positions(
+        self,
+        *,
+        status: PositionStatus | str | None = None,
+    ) -> list[PositionState]:
+        return self._list_positions_from_tables(
+            positions_table="paper_positions",
+            units_table="paper_position_units",
+            status=status,
+        )
+
+    def _list_positions_from_tables(
+        self,
+        *,
+        positions_table: str,
+        units_table: str,
+        status: PositionStatus | str | None = None,
+    ) -> list[PositionState]:
         params: tuple[object, ...] = ()
-        sql = "SELECT symbol FROM positions"
+        sql = f"SELECT symbol FROM {positions_table}"
         if status is not None:
             status_value = status.value if isinstance(status, PositionStatus) else str(status)
             sql += " WHERE status = ?"
@@ -457,7 +551,11 @@ class SQLiteStateStore:
         rows = self._conn.execute(sql, params).fetchall()
         positions: list[PositionState] = []
         for row in rows:
-            position = self.load_position(row["symbol"])
+            position = self._load_position_from_tables(
+                row["symbol"],
+                positions_table=positions_table,
+                units_table=units_table,
+            )
             if position is not None:
                 positions.append(position)
         return positions

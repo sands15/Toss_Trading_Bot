@@ -6,7 +6,12 @@ from typing import Sequence
 
 from turtle_bot.domain import Candle, PositionState, PositionStatus, TurtleSystem, UnitState
 from turtle_bot.notifier import MemoryNotifier
-from turtle_bot.paper_runtime import PaperRuntimeConfig, PaperTradingRuntime
+from turtle_bot.paper_runtime import (
+    PaperRuntimeConfig,
+    PaperRuntimeScheduler,
+    PaperTradingRuntime,
+    export_paper_report_json,
+)
 from turtle_bot.position_sync import BrokerHolding, ReconcileIssue, ReconcileResult
 from turtle_bot.state_store import SQLiteStateStore
 
@@ -138,9 +143,11 @@ def test_paper_runtime_records_entry_intent_without_submitting_order():
             notifier=notifier,
         )
         result = runtime.run_once()
-        events = store.list_runtime_events(limit=1)
+        events = store.list_runtime_events(limit=3)
         health = runtime.health_snapshot()
         broker_order_guard = store.has_unresolved_client_order_id(result.intents[0].intent_id)
+        saved_position = store.load_paper_position("TEST")
+        live_position = store.load_position("TEST")
 
     assert result.ready is True
     assert len(result.intents) == 1
@@ -149,11 +156,21 @@ def test_paper_runtime_records_entry_intent_without_submitting_order():
     assert intent.side == "BUY"
     assert intent.quantity == Decimal("2")
     assert intent.reason == "s1_breakout"
-    assert events[0]["message"] == "paper_order_intent"
+    assert intent.entry_n == Decimal("2")
+    assert intent.stop_price == Decimal("101")
+    assert [event["message"] for event in events] == [
+        "paper_fill",
+        "paper_order_intent",
+        "paper_order_guard",
+    ]
     assert notifier.snapshot()[0].message == "paper_order_intent"
     assert health.mode == "paper"
     assert health.open_orders[0]["mode"] == "paper"
     assert broker_order_guard is False
+    assert saved_position is not None
+    assert saved_position.status == PositionStatus.OPEN
+    assert saved_position.total_qty == Decimal("2")
+    assert live_position is None
 
 
 def test_paper_runtime_stop_intent_uses_open_position_quantity():
@@ -164,7 +181,7 @@ def test_paper_runtime_stop_intent_uses_open_position_quantity():
     notifier = MemoryNotifier()
 
     with SQLiteStateStore() as store:
-        store.save_position(_position("TEST", qty="3"))
+        store.save_paper_position(_position("TEST", qty="3"))
         runtime = PaperTradingRuntime(
             config=PaperRuntimeConfig(symbols=("TEST",), unit_qty=Decimal("1")),
             market_data=market_data,
@@ -173,6 +190,7 @@ def test_paper_runtime_stop_intent_uses_open_position_quantity():
             notifier=notifier,
         )
         result = runtime.run_once()
+        saved_position = store.load_paper_position("TEST")
 
     assert len(result.intents) == 1
     intent = result.intents[0]
@@ -180,6 +198,9 @@ def test_paper_runtime_stop_intent_uses_open_position_quantity():
     assert intent.side == "SELL"
     assert intent.quantity == Decimal("3")
     assert intent.trigger_price == Decimal("97")
+    assert saved_position is not None
+    assert saved_position.status == PositionStatus.CLOSED
+    assert saved_position.total_qty == Decimal("0")
 
 
 def test_paper_runtime_market_data_error_blocks_symbol():
@@ -202,3 +223,54 @@ def test_paper_runtime_market_data_error_blocks_symbol():
     assert result.intents == ()
     assert result.blockers == ("TEST market data unavailable: stale candles",)
     assert notifier.snapshot()[0].message == "paper_runtime_blocked"
+
+
+def test_paper_report_export_preserves_intent_and_guard_payloads(tmp_path):
+    market_data = FakeMarketData(
+        candles={"TEST": _history("TEST")},
+        prices={"TEST": Decimal("105")},
+    )
+    notifier = MemoryNotifier()
+    report_path = tmp_path / "paper" / "report.json"
+
+    with SQLiteStateStore() as store:
+        runtime = PaperTradingRuntime(
+            config=PaperRuntimeConfig(symbols=("TEST",), unit_qty=Decimal("2")),
+            market_data=market_data,
+            position_sync=FakePositionSync(_clean_reconcile()),
+            store=store,
+            notifier=notifier,
+        )
+        result = runtime.run_once()
+
+    export_paper_report_json(result, report_path)
+
+    import json
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["ready"] is True
+    assert report["intents"][0]["quantity"] == "2"
+    assert report["guard_results"][0]["passed"] is True
+
+
+def test_paper_scheduler_runs_repeated_iterations_with_sleep():
+    market_data = FakeMarketData(
+        candles={"TEST": _history("TEST")},
+        prices={"TEST": Decimal("100")},
+    )
+    notifier = MemoryNotifier()
+    sleeps: list[float] = []
+
+    with SQLiteStateStore() as store:
+        runtime = PaperTradingRuntime(
+            config=PaperRuntimeConfig(symbols=("TEST",), simulate_fills=False),
+            market_data=market_data,
+            position_sync=FakePositionSync(_clean_reconcile()),
+            store=store,
+            notifier=notifier,
+        )
+        scheduler = PaperRuntimeScheduler(runtime, sleep=sleeps.append)
+        results = scheduler.run_iterations(2, interval_seconds=5)
+
+    assert len(results) == 2
+    assert sleeps == [5]

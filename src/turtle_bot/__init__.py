@@ -46,10 +46,17 @@ from .position_sync import (
     reconcile_positions,
 )
 from .paper_runtime import (
+    GuardCheck,
+    GuardResult,
+    PaperBrokerSimulator,
+    PaperOrderGuard,
     PaperOrderIntent,
     PaperRunResult,
     PaperRuntimeConfig,
+    PaperRuntimeScheduler,
     PaperTradingRuntime,
+    export_paper_report_json,
+    paper_run_result_to_dict,
 )
 
 __all__ = [
@@ -94,7 +101,14 @@ __all__ = [
     "PaperOrderIntent",
     "PaperRunResult",
     "PaperRuntimeConfig",
+    "GuardCheck",
+    "GuardResult",
+    "PaperBrokerSimulator",
+    "PaperOrderGuard",
+    "PaperRuntimeScheduler",
     "PaperTradingRuntime",
+    "export_paper_report_json",
+    "paper_run_result_to_dict",
 ]
 
 Unit = UnitState
