@@ -53,6 +53,23 @@ state/turtle.sqlite3
 logs/
 ```
 
+Minimum paper-mode config once Toss read-only credentials are available:
+
+```yaml
+toss:
+  live_enabled: false
+  account_seq: "7"
+  client_id_env: TOSS_CLIENT_ID
+  client_secret_env: TOSS_CLIENT_SECRET
+
+runtime:
+  mode: paper
+  symbols:
+    - "005930"
+  state_db: state/turtle.sqlite3
+  log_dir: logs
+```
+
 ## launchd Service
 
 Template path in repo:
@@ -160,10 +177,12 @@ On every process start:
 The bot must never submit orders immediately after process start before
 reconciliation.
 
-The current paper-mode service is intentionally conservative: it records startup
-and heartbeat events, exposes a paper health payload, and reports
-`market_data_provider_not_configured` until real market-data wiring exists. It
-does not submit, cancel, or modify broker orders.
+The current paper-mode service is intentionally conservative. Without
+`runtime.symbols`, Toss env credentials, and `toss.account_seq`, it records a
+blocked health payload and no trade decision is evaluated. Once those read-only
+inputs exist, it fetches candles/prices, reconciles holdings/open orders through
+read-only endpoints, and then runs the paper Turtle loop. It does not submit,
+cancel, or modify broker orders.
 
 ## Runtime Windows
 

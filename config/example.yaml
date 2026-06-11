@@ -1,11 +1,18 @@
 toss:
   live_enabled: false
+  account_seq:
+  client_id_env: TOSS_CLIENT_ID
+  client_secret_env: TOSS_CLIENT_SECRET
 
 runtime:
   mode: paper
+  symbols: []
   state_db: state/turtle.sqlite3
   log_dir: logs
   interval_seconds: 60
+  candle_interval: 1d
+  candle_count: 100
+  exclude_current_session: true
 
 strategy:
   minimum_tick: 1

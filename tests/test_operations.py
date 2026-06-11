@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import plistlib
 import sys
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
+from typing import Any, Mapping
 
 from turtle_bot.cli import run
+from turtle_bot.domain import Candle
 from turtle_bot.operations import (
     LaunchdServiceConfig,
     check_operations_config,
@@ -14,15 +19,69 @@ from turtle_bot.operations import (
     run_paper_service,
 )
 from turtle_bot.state_store import SQLiteStateStore
+from turtle_bot.toss_client import TossHttpResponse
 
 
-def _write_config(path: Path, *, live_enabled: bool = False) -> None:
+@dataclass
+class RecordedRequest:
+    method: str
+    url: str
+    headers: Mapping[str, str]
+    query: Mapping[str, Any] | None
+    form_body: Mapping[str, Any] | None
+
+
+class FakeTransport:
+    def __init__(self, responses: list[TossHttpResponse]) -> None:
+        self.responses = responses
+        self.requests: list[RecordedRequest] = []
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        query: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        form_body: Mapping[str, Any] | None = None,
+    ) -> TossHttpResponse:
+        self.requests.append(
+            RecordedRequest(
+                method=method,
+                url=url,
+                headers=dict(headers),
+                query=dict(query) if query is not None else None,
+                form_body=form_body,
+            )
+        )
+        if not self.responses:
+            raise AssertionError("no fake response queued")
+        return self.responses.pop(0)
+
+
+def _write_config(
+    path: Path,
+    *,
+    live_enabled: bool = False,
+    symbols: tuple[str, ...] = (),
+    account_seq: str | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    symbol_lines = ["  symbols:"]
+    symbol_lines.extend(f"    - {symbol}" for symbol in symbols)
     path.write_text(
         "\n".join(
             [
                 "toss:",
                 f"  live_enabled: {str(live_enabled).lower()}",
+                f"  account_seq: {account_seq or ''}",
+                "  base_url: https://example.test",
+                "runtime:",
+                "  mode: paper",
+                *symbol_lines,
+                "  candle_count: 25",
+                "  exclude_current_session: true",
                 "strategy:",
                 "  minimum_tick: 1",
                 "  n_method: turtle",
@@ -36,6 +95,31 @@ def _write_config(path: Path, *, live_enabled: bool = False) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _token_payload() -> dict[str, Any]:
+    return {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
+
+
+def _api_candle(day: int) -> dict[str, Any]:
+    candle = Candle(
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=day),
+        symbol="TEST",
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("1000"),
+    )
+    return {
+        "timestamp": candle.timestamp.isoformat(),
+        "openPrice": str(candle.open),
+        "highPrice": str(candle.high),
+        "lowPrice": str(candle.low),
+        "closePrice": str(candle.close),
+        "volume": str(candle.volume),
+        "currency": "KRW",
+    }
 
 
 def test_render_launchd_plist_is_valid_paper_service_plist(tmp_path: Path) -> None:
@@ -122,12 +206,73 @@ def test_paper_service_once_records_heartbeat_without_live_orders(tmp_path: Path
     events = store.list_runtime_events(limit=2)
     assert snapshot.mode == "paper"
     assert snapshot.ready is False
-    assert snapshot.blockers == ("market_data_provider_not_configured",)
+    assert snapshot.blockers == (
+        "runtime.symbols is empty",
+        "TOSS_CLIENT_ID is not configured",
+        "TOSS_CLIENT_SECRET is not configured",
+        "toss.account_seq is not configured",
+    )
     assert [event["message"] for event in events] == [
         "paper_service_heartbeat",
-        "paper_service_started",
+        "paper_service_blocked",
     ]
     assert store.has_unresolved_client_order_id("anything") is False
+
+
+def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(config_path, symbols=("TEST",), account_seq="7")
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(
+                200,
+                {},
+                {"candles": [_api_candle(day) for day in range(21)]},
+            ),
+            TossHttpResponse(
+                200,
+                {},
+                {"prices": [{"symbol": "TEST", "lastPrice": "105"}]},
+            ),
+        ]
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    events = store.list_runtime_events(limit=5)
+    assert snapshot.mode == "paper"
+    assert snapshot.ready is True
+    assert snapshot.open_orders[0]["symbol"] == "TEST"
+    assert store.load_paper_position("TEST") is not None
+    assert [request.method for request in transport.requests] == [
+        "POST",
+        "GET",
+        "GET",
+        "GET",
+        "GET",
+    ]
+    assert [event["message"] for event in events[:4]] == [
+        "paper_service_heartbeat",
+        "paper_fill",
+        "paper_order_intent",
+        "paper_order_guard",
+    ]
 
 
 def test_cli_writes_launchd_plist_and_runs_paper_service_once(

@@ -192,19 +192,23 @@ Implement:
   read-only paper health payload.
 - Amphetamine/power checklist. Documented in `docs/macos-operations.md`.
 - Paper-mode service template. Done through `--paper-service`; it records
-  startup/heartbeat events and blocks on missing market data wiring.
+  startup/heartbeat events, blocks on missing read-only configuration, and runs
+  the paper Turtle loop when Toss env credentials, `toss.account_seq`, and
+  `runtime.symbols` are configured.
 
 Acceptance:
 
 - macOS service starts paper mode.
-- Restart cannot make trade decisions yet because the service remains blocked
-  on `market_data_provider_not_configured`; broker mutation paths are absent.
+- Restart cannot make trade decisions unless read-only credentials, account
+  sequence, symbols, and reconciliation are clean; broker mutation paths are
+  absent.
 - Windows tests still pass.
 - Service logs include stdout/stderr paths; runtime events include mode and
   blocker status.
 
-Phase 6 is complete for the current API-free paper service shell. Full market
-session scheduling still depends on Toss read-only market-data wiring.
+Phase 6 is complete for the paper service shell plus Toss read-only market-data
+wiring. Full market session scheduling still depends on market-calendar driven
+profiles.
 
 ## Phase 7: Controlled Live Pilot
 

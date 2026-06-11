@@ -43,6 +43,10 @@ behavior as an explicit deviation and block live trading until approved.
 - macOS paper-service shell with launchd plist rendering, runtime directory
   setup, operations checks, and a read-only blocked health payload until market
   data wiring is present.
+- Toss read-only market-data provider for paper mode. When env credentials,
+  `toss.account_seq`, and `runtime.symbols` are configured, the paper service
+  fetches candles/prices through read-only endpoints, reconciles account state,
+  and then runs the paper Turtle loop.
 
 ## Documentation
 

@@ -97,8 +97,11 @@ Uses live Toss market/account data but does not submit orders.
   touch live/reconciliation position tables and does not represent real broker
   execution quality.
 - The macOS paper service shell records startup and heartbeat runtime events,
-  exposes a read-only blocked health payload, and stays blocked with
-  `market_data_provider_not_configured` until market-data wiring is present.
+  exposes a read-only health payload, and stays blocked until `runtime.symbols`,
+  Toss env credentials, and `toss.account_seq` are configured.
+- When configured, paper service uses the read-only Toss market-data provider
+  for candles/prices, runs broker reconciliation through read-only holdings and
+  open-order endpoints, and only then evaluates Turtle paper intents.
 
 ### Live
 
@@ -149,6 +152,11 @@ Responsibilities:
 
 The cache is an optimization and safety layer, not the source of truth for
 account positions. Broker holdings and open orders still come from Toss.
+
+`TossReadOnlyMarketDataProvider` adapts `TossClient.get_candles` and
+`TossClient.get_prices` into the paper runtime's market-data interface. It
+stores snapshots, caches candles/prices, and excludes the current local session
+candle by default so Turtle channels are based on completed candles.
 
 ### RateLimitQueue
 

@@ -3,14 +3,20 @@ from __future__ import annotations
 import plistlib
 import sys
 import time
+from os import environ
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .config import load_config
 from .health import HealthSnapshot
+from .notifier import MemoryNotifier
+from .paper_runtime import PaperRuntimeConfig, PaperTradingRuntime
+from .position_sync import TossPositionSync
 from .state_store import SQLiteStateStore
+from .toss_client import TOSS_BASE_URL, TossClient, TossCredentials, TossTransport
+from .toss_market_data import TossMarketDataConfig, TossReadOnlyMarketDataProvider
 
 
 DEFAULT_SERVICE_LABEL = "com.sands15.toss-turtle-bot"
@@ -186,7 +192,12 @@ def operations_checks_payload(checks: Sequence[OperationsCheck]) -> dict[str, An
     }
 
 
-def paper_service_health(store: SQLiteStateStore) -> HealthSnapshot:
+def paper_service_health(
+    store: SQLiteStateStore,
+    *,
+    blockers: Sequence[str] = ("market_data_provider_not_configured",),
+    ready: bool = False,
+) -> HealthSnapshot:
     positions = tuple(
         {
             "symbol": position.symbol,
@@ -198,8 +209,8 @@ def paper_service_health(store: SQLiteStateStore) -> HealthSnapshot:
     )
     return HealthSnapshot(
         mode="paper",
-        ready=False,
-        blockers=("market_data_provider_not_configured",),
+        ready=ready,
+        blockers=tuple(blockers),
         positions=positions,
         open_orders=(),
         watchlist=(),
@@ -215,6 +226,9 @@ def run_paper_service(
     interval_seconds: int = 60,
     once: bool = False,
     sleep: Callable[[float], None] = time.sleep,
+    env: Mapping[str, str] | None = None,
+    transport: TossTransport | None = None,
+    now=lambda: datetime.now(timezone.utc),
 ) -> HealthSnapshot:
     config = load_config(config_path)
     if config.live_enabled:
@@ -228,13 +242,26 @@ def run_paper_service(
         {"mode": "paper", "interval_seconds": interval_seconds},
     )
 
-    snapshot = paper_service_health(store)
+    env_values = env if env is not None else environ
+    snapshot = _paper_service_iteration(
+        config_path=config_path,
+        store=store,
+        env=env_values,
+        transport=transport,
+        now=now,
+    )
     if once:
         store.record_runtime_event("INFO", "paper_service_heartbeat", snapshot.as_payload())
         return snapshot
 
     while True:  # pragma: no cover - exercised by launchd, not unit tests
-        snapshot = paper_service_health(store)
+        snapshot = _paper_service_iteration(
+            config_path=config_path,
+            store=store,
+            env=env_values,
+            transport=transport,
+            now=now,
+        )
         store.record_runtime_event(
             "INFO",
             "paper_service_heartbeat",
@@ -242,3 +269,76 @@ def run_paper_service(
         )
         sleep(interval_seconds)
 
+
+def _paper_service_iteration(
+    *,
+    config_path: str | Path,
+    store: SQLiteStateStore,
+    env: Mapping[str, str],
+    transport: TossTransport | None,
+    now,
+) -> HealthSnapshot:
+    config = load_config(config_path)
+    blockers = _paper_service_config_blockers(config, env)
+    if blockers:
+        snapshot = paper_service_health(store, blockers=blockers)
+        store.record_runtime_event(
+            "WARN",
+            "paper_service_blocked",
+            snapshot.as_payload(),
+        )
+        return snapshot
+
+    credentials = TossCredentials(
+        client_id=env[config.toss.client_id_env],
+        client_secret=env[config.toss.client_secret_env],
+    )
+    client = TossClient(
+        credentials=credentials,
+        account_seq=config.toss.account_seq,
+        base_url=config.toss.base_url or TOSS_BASE_URL,
+        transport=transport,
+        now=now,
+    )
+    market_data = TossReadOnlyMarketDataProvider(
+        client=client,
+        config=TossMarketDataConfig(
+            candle_interval=config.runtime.candle_interval,
+            candle_count=config.runtime.candle_count,
+            exclude_current_session=config.runtime.exclude_current_session,
+        ),
+        store=store,
+        now=now,
+    )
+    runtime = PaperTradingRuntime(
+        config=PaperRuntimeConfig(
+            symbols=config.runtime.symbols,
+            minimum_tick=config.minimum_tick,
+            n_method=config.n_method,
+            stop_n=config.stop_n,
+            max_units_per_symbol=config.max_units_per_symbol,
+            pyramid_step_n=config.pyramid_step_n,
+        ),
+        market_data=market_data,
+        position_sync=TossPositionSync(client=client, store=store),
+        store=store,
+        notifier=MemoryNotifier(),
+        now=now,
+    )
+    runtime.run_once()
+    return runtime.health_snapshot()
+
+
+def _paper_service_config_blockers(config, env: Mapping[str, str]) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if config.runtime.mode.lower() != "paper":
+        blockers.append(f"runtime.mode must be paper, got {config.runtime.mode}")
+    if not config.runtime.symbols:
+        blockers.append("runtime.symbols is empty")
+    if not env.get(config.toss.client_id_env):
+        blockers.append(f"{config.toss.client_id_env} is not configured")
+    if not env.get(config.toss.client_secret_env):
+        blockers.append(f"{config.toss.client_secret_env} is not configured")
+    if config.toss.account_seq is None:
+        blockers.append("toss.account_seq is not configured")
+    return tuple(blockers)
