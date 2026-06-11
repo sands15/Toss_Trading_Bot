@@ -76,11 +76,11 @@ runtime:
   log_dir: logs
 ```
 
-`runtime.symbols` is the manual starting point. The planned `UniverseBuilder`
-will replace manual symbol entry for normal operation by selecting an eligible
-universe through deterministic read-only filters: market, instrument type,
-warning status, liquidity, price, and enough completed candle history for
-Turtle rules.
+`runtime.symbols` is the manual starting point. When
+`runtime.universe_enabled=true`, `UniverseBuilder` selects an eligible universe
+from `runtime.universe_candidate_symbols` through deterministic read-only
+filters: market, instrument type, warning status, liquidity, price, and enough
+completed candle history for Turtle rules.
 
 ## launchd Service
 
@@ -227,7 +227,7 @@ Loop profiles:
 - Premarket: fetch candles, prepare channels, verify account.
 - Premarket watchlist: rank symbols near 20-day and 55-day breakout levels,
   persist the session watchlist, and notify.
-- Automatic universe selection: planned rule-based screening before watchlist
+- Automatic universe selection: rule-based screening before watchlist
   generation. AI may summarize the screening result but must not select symbols.
 - Market open: price/orderbook polling through cache, order guard, state sync.
 - Postmarket: final order reconciliation, report, candle cache refresh.

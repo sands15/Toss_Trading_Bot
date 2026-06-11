@@ -66,10 +66,14 @@ def _write_config(
     live_enabled: bool = False,
     symbols: tuple[str, ...] = (),
     account_seq: str | None = None,
+    universe_enabled: bool = False,
+    universe_candidate_symbols: tuple[str, ...] = (),
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     symbol_lines = ["  symbols:"]
     symbol_lines.extend(f"    - {symbol}" for symbol in symbols)
+    universe_symbol_lines = ["  universe_candidate_symbols:"]
+    universe_symbol_lines.extend(f"    - {symbol}" for symbol in universe_candidate_symbols)
     path.write_text(
         "\n".join(
             [
@@ -83,6 +87,11 @@ def _write_config(
                 "  timezone: Asia/Seoul",
                 "  use_market_calendar: true",
                 *symbol_lines,
+                f"  universe_enabled: {str(universe_enabled).lower()}",
+                *universe_symbol_lines,
+                "  universe_min_price: 1000",
+                "  universe_min_average_daily_value: 100000000",
+                "  universe_min_completed_candles: 21",
                 "  candle_count: 25",
                 "  exclude_current_session: true",
                 "strategy:",
@@ -210,7 +219,7 @@ def test_paper_service_once_records_heartbeat_without_live_orders(tmp_path: Path
     assert snapshot.mode == "paper"
     assert snapshot.ready is False
     assert snapshot.blockers == (
-        "runtime.symbols is empty",
+        "runtime.symbols or runtime.universe_candidate_symbols is required",
         "TOSS_CLIENT_ID is not configured",
         "TOSS_CLIENT_SECRET is not configured",
         "toss.account_seq is not configured",
@@ -280,6 +289,86 @@ def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
         "paper_order_intent",
         "paper_order_guard",
     ]
+
+
+def test_paper_service_uses_rule_based_universe_when_enabled(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(
+        config_path,
+        account_seq="7",
+        universe_enabled=True,
+        universe_candidate_symbols=("PASS", "LOW"),
+    )
+    pass_candles = [
+        _api_candle(day)
+        | {
+            "symbol": "PASS",
+            "openPrice": "50000",
+            "highPrice": "50001",
+            "lowPrice": "49999",
+            "closePrice": "50000",
+            "volume": "10000",
+        }
+        for day in range(21)
+    ]
+    low_candles = [
+        _api_candle(day) | {"symbol": "LOW", "closePrice": "500", "volume": "1"}
+        for day in range(21)
+    ]
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "stocks": [
+                        {"symbol": "PASS", "market": "KR", "name": "Pass"},
+                        {"symbol": "LOW", "market": "KR", "name": "Low"},
+                    ]
+                },
+            ),
+            TossHttpResponse(200, {}, {"warnings": []}),
+            TossHttpResponse(200, {}, {"candles": pass_candles}),
+            TossHttpResponse(200, {}, {"warnings": []}),
+            TossHttpResponse(200, {}, {"candles": low_candles}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(
+                200,
+                {},
+                {"prices": [{"symbol": "PASS", "lastPrice": "60000"}]},
+            ),
+        ]
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    events = store.list_runtime_events(limit=8)
+    universe_event = next(event for event in events if event["message"] == "universe_generated")
+    assert snapshot.ready is True
+    assert snapshot.watchlist[0]["symbol"] == "PASS"
+    assert all(item["symbol"] != "LOW" for item in snapshot.watchlist)
+    assert store.load_paper_position("PASS") is not None
+    assert universe_event["payload"]["symbols"] == ["PASS"]
+    assert any(
+        decision["symbol"] == "LOW" and not decision["included"]
+        for decision in universe_event["payload"]["decisions"]
+    )
 
 
 def test_paper_service_builds_watchlist_but_blocks_during_preopen(

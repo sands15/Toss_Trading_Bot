@@ -19,6 +19,12 @@ runtime:
   watchlist_enabled: true
   watchlist_top_n: 20
   watchlist_name: premarket
+  universe_enabled: false
+  universe_candidate_symbols: []
+  universe_include_etfs: false
+  universe_min_price: 1000
+  universe_min_average_daily_value: 100000000
+  universe_min_completed_candles: 56
 
 strategy:
   minimum_tick: 1

@@ -33,6 +33,12 @@ class RuntimeConfig:
     watchlist_enabled: bool = True
     watchlist_top_n: int = 20
     watchlist_name: str = "premarket"
+    universe_enabled: bool = False
+    universe_candidate_symbols: tuple[str, ...] = ()
+    universe_include_etfs: bool = False
+    universe_min_price: Decimal = Decimal("1000")
+    universe_min_average_daily_value: Decimal = Decimal("100000000")
+    universe_min_completed_candles: int = 56
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,22 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             watchlist_enabled=bool(runtime.get("watchlist_enabled", True)),
             watchlist_top_n=int(runtime.get("watchlist_top_n", 20)),
             watchlist_name=str(runtime.get("watchlist_name", "premarket")),
+            universe_enabled=bool(runtime.get("universe_enabled", False)),
+            universe_candidate_symbols=_to_symbols(
+                runtime.get("universe_candidate_symbols")
+            ),
+            universe_include_etfs=bool(runtime.get("universe_include_etfs", False)),
+            universe_min_price=_to_decimal(
+                runtime.get("universe_min_price"),
+                Decimal("1000"),
+            ),
+            universe_min_average_daily_value=_to_decimal(
+                runtime.get("universe_min_average_daily_value"),
+                Decimal("100000000"),
+            ),
+            universe_min_completed_candles=int(
+                runtime.get("universe_min_completed_candles", 56)
+            ),
         ),
         minimum_tick=_to_decimal(strategy.get("minimum_tick"), Decimal("1")),
         risk_pct_per_unit=_to_decimal(risk.get("risk_pct_per_unit"), Decimal("0.005")),

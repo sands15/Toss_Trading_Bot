@@ -18,6 +18,7 @@ from .position_sync import TossPositionSync
 from .state_store import SQLiteStateStore
 from .toss_client import TOSS_BASE_URL, TossClient, TossCredentials, TossTransport
 from .toss_market_data import TossMarketDataConfig, TossReadOnlyMarketDataProvider
+from .universe import Universe, UniverseBuilder, UniversePolicy
 from .watchlist import Watchlist, WatchlistBuilder, WatchlistRow
 
 
@@ -318,6 +319,7 @@ def _paper_service_iteration(
         now=now,
     )
     watchlist_built = False
+    selected_symbols: tuple[str, ...] = config.runtime.symbols
     if config.runtime.use_market_calendar:
         session = MarketCalendarGate(
             client=client,
@@ -333,12 +335,35 @@ def _paper_service_iteration(
             session.as_payload(),
         )
         if _should_build_watchlist(session.status):
+            universe = _build_universe(
+                config,
+                client=client,
+                market_data=market_data,
+                store=store,
+                now=now,
+            )
+            if universe is not None:
+                selected_symbols = universe.symbols()
+                if not selected_symbols:
+                    snapshot = paper_service_health(
+                        store,
+                        blockers=("universe_empty",),
+                        ready=False,
+                        watchlist_name=config.runtime.watchlist_name,
+                    )
+                    store.record_runtime_event(
+                        "WARN",
+                        "paper_service_blocked",
+                        snapshot.as_payload() | {"universe": universe.as_payload()},
+                    )
+                    return snapshot
             _build_and_save_watchlist(
                 config,
                 market_data=market_data,
                 client=None,
                 store=store,
                 now=now,
+                symbols=selected_symbols,
             )
             watchlist_built = True
         if session.blocker is not None:
@@ -356,16 +381,39 @@ def _paper_service_iteration(
             return snapshot
 
     if not watchlist_built:
+        universe = _build_universe(
+            config,
+            client=client,
+            market_data=market_data,
+            store=store,
+            now=now,
+        )
+        if universe is not None:
+            selected_symbols = universe.symbols()
+            if not selected_symbols:
+                snapshot = paper_service_health(
+                    store,
+                    blockers=("universe_empty",),
+                    ready=False,
+                    watchlist_name=config.runtime.watchlist_name,
+                )
+                store.record_runtime_event(
+                    "WARN",
+                    "paper_service_blocked",
+                    snapshot.as_payload() | {"universe": universe.as_payload()},
+                )
+                return snapshot
         _build_and_save_watchlist(
             config,
             market_data=market_data,
             client=None,
             store=store,
             now=now,
+            symbols=selected_symbols,
         )
     runtime = PaperTradingRuntime(
         config=PaperRuntimeConfig(
-            symbols=config.runtime.symbols,
+            symbols=selected_symbols,
             minimum_tick=config.minimum_tick,
             n_method=config.n_method,
             stop_n=config.stop_n,
@@ -390,8 +438,8 @@ def _paper_service_config_blockers(config, env: Mapping[str, str]) -> tuple[str,
     blockers: list[str] = []
     if config.runtime.mode.lower() != "paper":
         blockers.append(f"runtime.mode must be paper, got {config.runtime.mode}")
-    if not config.runtime.symbols:
-        blockers.append("runtime.symbols is empty")
+    if not config.runtime.symbols and not config.runtime.universe_candidate_symbols:
+        blockers.append("runtime.symbols or runtime.universe_candidate_symbols is required")
     if not env.get(config.toss.client_id_env):
         blockers.append(f"{config.toss.client_id_env} is not configured")
     if not env.get(config.toss.client_secret_env):
@@ -412,6 +460,7 @@ def _build_and_save_watchlist(
     client: TossClient | None,
     store: SQLiteStateStore,
     now,
+    symbols: Sequence[str] | None = None,
 ) -> Watchlist | None:
     if not config.runtime.watchlist_enabled:
         return None
@@ -434,7 +483,7 @@ def _build_and_save_watchlist(
     previous_symbols = previous.symbols() if previous is not None else ()
     symbol_candles = {}
     blocked: list[str] = []
-    for symbol in config.runtime.symbols:
+    for symbol in symbols or config.runtime.symbols:
         try:
             symbol_candles[symbol] = tuple(provider.get_completed_candles(symbol))
         except Exception as exc:
@@ -466,6 +515,38 @@ def _build_and_save_watchlist(
         },
     )
     return watchlist
+
+
+def _build_universe(
+    config,
+    *,
+    client: TossClient,
+    market_data: TossReadOnlyMarketDataProvider,
+    store: SQLiteStateStore,
+    now,
+) -> Universe | None:
+    if not config.runtime.universe_enabled:
+        return None
+    policy = UniversePolicy(
+        candidate_symbols=config.runtime.universe_candidate_symbols,
+        markets=(config.runtime.market,),
+        include_etfs=config.runtime.universe_include_etfs,
+        min_price=config.runtime.universe_min_price,
+        min_average_daily_value=config.runtime.universe_min_average_daily_value,
+        min_completed_candles=config.runtime.universe_min_completed_candles,
+    )
+    universe = UniverseBuilder(
+        client=client,
+        market_data=market_data,
+        policy=policy,
+        now=now,
+    ).build()
+    store.record_runtime_event(
+        "INFO",
+        "universe_generated",
+        universe.as_payload(),
+    )
+    return universe
 
 
 def _latest_watchlist_payload(

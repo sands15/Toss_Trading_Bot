@@ -119,9 +119,9 @@ Implement:
 
 - SQLite schema and migrations. Done with idempotent table creation and WAL for
   file databases.
-- Rule-based `UniverseBuilder` for automatic stock selection. Planned. It
-  should use read-only market-info data, warning/status filters, liquidity
-  filters, and Turtle-data-readiness checks. AI must not select symbols.
+- Rule-based `UniverseBuilder` for automatic stock selection. Done with
+  read-only market-info data, warning/status filters, liquidity filters, and
+  Turtle-data-readiness checks. AI must not select symbols.
 - Watchlist tables. Done.
 - Premarket watchlist builder for symbols near 20-day and 55-day breakout
   levels. Done.
@@ -224,7 +224,9 @@ is already blocked outside a known open session.
 
 Implement:
 
-- `UniverseBuilder` using Toss read-only stock/market-info APIs.
+- `UniverseBuilder` using Toss read-only stock/market-info APIs. Done for
+  configured candidate symbols with stock metadata, warnings, candle readiness,
+  price, and liquidity filters.
 - Configurable universe policy:
   - markets to include.
   - ETF/include-exclude policy.
@@ -232,9 +234,10 @@ Implement:
   - minimum price.
   - minimum average daily traded value.
   - minimum completed candle count for 20-day, 55-day, exit, and N rules.
-- Persisted universe snapshot with inclusion/exclusion reasons.
+- Persisted universe snapshot with inclusion/exclusion reasons. Done as
+  `universe_generated` runtime event payload.
 - Watchlist generation from the selected universe, not only manually configured
-  `runtime.symbols`.
+  `runtime.symbols`. Done when `runtime.universe_enabled=true`.
 - AI explanation adapter for:
   - news summaries.
   - daily report summaries.
