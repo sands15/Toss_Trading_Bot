@@ -87,21 +87,31 @@ Acceptance:
 
 Implement:
 
-- Auth client.
-- Market data client.
-- Account client.
-- Holdings/open orders client.
-- Rate-limit metadata capture.
+- Auth client. Done for `client_credentials` token issuance.
+- Market data client. Done for candles, prices, orderbook, trades, and price
+  limits.
+- Market info client. Done for KR/US market calendar, exchange rate, stocks,
+  and stock warnings.
+- Account client. Done for accounts, buying power, sellable quantity, and
+  commissions.
+- Holdings/open orders client. Done for holdings, order list, and order detail.
+- Rate-limit metadata capture. Done through `RateLimitQueue` header updates.
 - RateLimitQueue with request priority classes.
-- HTTP mock tests.
+- HTTP mock tests. Done with fake transport; no Toss credentials required.
 
 Acceptance:
 
-- Official OpenAPI field names are normalized correctly.
-- Decimal string values never become floats.
-- Account/order APIs include `X-Tossinvest-Account`.
-- 401, 409, 422, 429 are handled by policy.
+- Official OpenAPI field names are normalized correctly. Covered for endpoint
+  paths, query names, and account header.
+- Decimal string values never become floats. Covered for candles, prices,
+  quantities, limits, buying power, and exchange rates. Identifier strings such
+  as account numbers remain strings.
+- Account/order APIs include `X-Tossinvest-Account`. Covered by tests.
+- 401, 409, 422, 429 are handled by policy. Covered by tests.
 - Order/account requests can be prioritized over broad watchlist screening.
+  Covered by existing `RateLimitQueue` tests.
+
+Live order create/modify/cancel is still intentionally unimplemented.
 
 ## Phase 4: State Store, Watchlist, and Position Sync
 

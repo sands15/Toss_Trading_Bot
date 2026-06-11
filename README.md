@@ -31,6 +31,9 @@ behavior as an explicit deviation and block live trading until approved.
 - Daily-bar backtest engine with CSV loading, single-symbol and portfolio
   loops, Turtle risk-based unit sizing, simulated fills, fees/slippage/tax
   hooks, trade output, equity curve, JSON report export, and audit log.
+- Toss OpenAPI read-only client for token issuance, market data, market info,
+  accounts, holdings, order lookup, buying power, sellable quantity, and
+  commissions. Order create/modify/cancel is intentionally absent.
 
 ## Documentation
 
