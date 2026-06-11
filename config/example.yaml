@@ -4,6 +4,15 @@ toss:
   client_id_env: TOSS_CLIENT_ID
   client_secret_env: TOSS_CLIENT_SECRET
 
+ai:
+  enabled: false
+  model: bRadu/gemma-4-E2B-it-textonly
+  base_url: http://localhost:8000/v1
+  api_key_env: TURTLE_AI_API_KEY
+  timeout_seconds: 30
+  max_tokens: 700
+  temperature: 0.2
+
 runtime:
   mode: paper
   market: KR

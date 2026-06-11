@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import date, datetime
+from os import environ
 from pathlib import Path
 
 from . import __version__
+from .ai_summary import AiSummaryConfig, OpenAICompatibleSummaryClient
 from .config import load_config
 from .operations import (
     LaunchdServiceConfig,
@@ -127,6 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="Asia/Seoul",
         help="Timezone used to group runtime events by trading day",
     )
+    parser.add_argument(
+        "--daily-report-ai-summary",
+        action="store_true",
+        help="Append an AI Korean summary to --daily-report output",
+    )
     return parser
 
 
@@ -213,6 +220,7 @@ def run(argv: list[str] | None = None) -> int:
         return 0
 
     if args.daily_report is not None:
+        loaded_config = load_config(args.config) if args.config is not None else None
         with SQLiteStateStore(args.state_db) as store:
             report = export_daily_report_json(
                 store,
@@ -221,6 +229,25 @@ def run(argv: list[str] | None = None) -> int:
                     report_date=_report_date(args.report_date, args.report_timezone),
                     timezone_name=args.report_timezone,
                 ),
+            )
+        if args.daily_report_ai_summary:
+            if loaded_config is None:
+                parser.error("--daily-report-ai-summary requires --config")
+            api_key = environ.get(loaded_config.ai.api_key_env)
+            summary = OpenAICompatibleSummaryClient(
+                config=AiSummaryConfig(
+                    base_url=loaded_config.ai.base_url,
+                    model=loaded_config.ai.model,
+                    api_key=api_key,
+                    timeout_seconds=loaded_config.ai.timeout_seconds,
+                    max_tokens=loaded_config.ai.max_tokens,
+                    temperature=float(loaded_config.ai.temperature),
+                )
+            ).summarize_daily_report(report)
+            report = {**report, "ai_summary": summary}
+            args.daily_report.write_text(
+                json.dumps(report, indent=2, sort_keys=True),
+                encoding="utf-8",
             )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0

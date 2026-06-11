@@ -42,9 +42,21 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class AiConfig:
+    enabled: bool = False
+    model: str = "bRadu/gemma-4-E2B-it-textonly"
+    base_url: str = "http://localhost:8000/v1"
+    api_key_env: str = "TURTLE_AI_API_KEY"
+    timeout_seconds: int = 30
+    max_tokens: int = 700
+    temperature: Decimal = Decimal("0.2")
+
+
+@dataclass(frozen=True)
 class TradingConfig:
     toss: TossConfig = field(default_factory=TossConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    ai: AiConfig = field(default_factory=AiConfig)
     minimum_tick: Decimal = Decimal("1")
     risk_pct_per_unit: Decimal = Decimal("0.005")
     stop_n: Decimal = Decimal("2")
@@ -90,6 +102,7 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
     risk = strategy.get("risk", {}) or {}
     toss = raw.get("toss", {}) or {}
     runtime = raw.get("runtime", {}) or {}
+    ai = raw.get("ai", {}) or {}
     return TradingConfig(
         toss=TossConfig(
             live_enabled=bool(toss.get("live_enabled", False)),
@@ -137,6 +150,15 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             universe_min_completed_candles=int(
                 runtime.get("universe_min_completed_candles", 56)
             ),
+        ),
+        ai=AiConfig(
+            enabled=bool(ai.get("enabled", False)),
+            model=str(ai.get("model", "bRadu/gemma-4-E2B-it-textonly")),
+            base_url=str(ai.get("base_url", "http://localhost:8000/v1")).rstrip("/"),
+            api_key_env=str(ai.get("api_key_env", "TURTLE_AI_API_KEY")),
+            timeout_seconds=int(ai.get("timeout_seconds", 30)),
+            max_tokens=int(ai.get("max_tokens", 700)),
+            temperature=_to_decimal(ai.get("temperature"), Decimal("0.2")),
         ),
         minimum_tick=_to_decimal(strategy.get("minimum_tick"), Decimal("1")),
         risk_pct_per_unit=_to_decimal(risk.get("risk_pct_per_unit"), Decimal("0.005")),

@@ -515,6 +515,13 @@ orders.
 
 AI is an explanation and summarization layer only.
 
+Current implementation:
+
+- `OpenAICompatibleSummaryClient` calls `/v1/chat/completions`.
+- Default model is `bRadu/gemma-4-E2B-it-textonly`.
+- Intended serving path is an OpenAI-compatible API server such as vLLM or
+  SGLang.
+
 Allowed:
 
 - Summarize market/news context for symbols already selected by rule-based

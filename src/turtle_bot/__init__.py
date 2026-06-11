@@ -96,6 +96,13 @@ from .universe import (
     normalize_stock_payload,
     warning_blockers,
 )
+from .ai_summary import (
+    DEFAULT_AI_MODEL,
+    AiSummaryConfig,
+    OpenAICompatibleSummaryClient,
+    daily_report_summary_prompt,
+    extract_chat_content,
+)
 
 __all__ = [
     "Candle",
@@ -175,6 +182,11 @@ __all__ = [
     "average_traded_value",
     "normalize_stock_payload",
     "warning_blockers",
+    "DEFAULT_AI_MODEL",
+    "AiSummaryConfig",
+    "OpenAICompatibleSummaryClient",
+    "daily_report_summary_prompt",
+    "extract_chat_content",
 ]
 
 Unit = UnitState

@@ -74,6 +74,12 @@ runtime:
     - "005930"
   state_db: state/turtle.sqlite3
   log_dir: logs
+
+ai:
+  enabled: false
+  model: bRadu/gemma-4-E2B-it-textonly
+  base_url: http://localhost:8000/v1
+  api_key_env: TURTLE_AI_API_KEY
 ```
 
 `runtime.symbols` is the manual starting point. When
@@ -159,6 +165,23 @@ The report is read-only over SQLite state. It summarizes runtime events,
 blockers, watchlist rows, paper positions, and latest broker snapshots. AI may
 summarize this report for the operator, but the report itself remains the
 auditable source of facts.
+
+AI daily report summary through an OpenAI-compatible API:
+
+```bash
+python -m turtle_bot \
+  --config config/local.yaml \
+  --state-db state/turtle.sqlite3 \
+  --daily-report reports/daily-$(date +%F).json \
+  --report-date "$(date +%F)" \
+  --report-timezone Asia/Seoul \
+  --daily-report-ai-summary
+```
+
+The default model is `bRadu/gemma-4-E2B-it-textonly`. The configured server
+must expose `/v1/chat/completions`, such as a vLLM or SGLang server. AI summary
+output is operator-facing prose only; it must not feed back into universe
+selection, watchlist ranking, Turtle signals, sizing, or guards.
 
 Example commands:
 
