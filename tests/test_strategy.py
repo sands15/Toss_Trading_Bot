@@ -216,6 +216,50 @@ def test_pyramid_only_after_favorable_half_n_and_cap_applies():
     assert signals[0].kind == SignalKind.PYRAMID
 
 
+def test_pyramid_uses_entry_n_not_latest_n_snapshot():
+    candles = _trend_candles(60)
+    position = PositionState(
+        symbol="TEST",
+        system=TurtleSystem.S1,
+        status=PositionStatus.OPEN,
+        total_qty=Decimal("1"),
+        avg_entry_price=Decimal("100"),
+        entry_n=Decimal("10"),
+        current_stop_price=Decimal("80"),
+        last_unit_entry_price=Decimal("100"),
+        units=(
+            UnitState(
+                unit_no=1,
+                qty=Decimal("1"),
+                entry_price=Decimal("100"),
+                n_at_entry=Decimal("10"),
+                stop_price=Decimal("80"),
+            ),
+        ),
+    )
+
+    signals, _ = evaluate_signals(
+        symbol="TEST",
+        completed_candles=candles,
+        current_price=Decimal("104.99"),
+        state=StrategyState(),
+        position=position,
+        pyramid_step_n=Decimal("0.5"),
+    )
+    assert signals == []
+
+    signals, _ = evaluate_signals(
+        symbol="TEST",
+        completed_candles=candles,
+        current_price=Decimal("105"),
+        state=StrategyState(),
+        position=position,
+        pyramid_step_n=Decimal("0.5"),
+    )
+    assert len(signals) == 1
+    assert signals[0].trigger_price == Decimal("105.0")
+
+
 def test_decimal_parsing_for_candle_values():
     raw = {
         "timestamp": "2026-01-01T00:00:00+00:00",

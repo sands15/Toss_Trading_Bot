@@ -178,10 +178,10 @@ def evaluate_signals(
                 )
             ], next_state
 
-        if snapshot.n is not None and _should_take_pyramid(
+        if _should_take_pyramid(
             position=position,
             current_price=current_price,
-            n=snapshot.n,
+            n=position.entry_n,
             max_units=max_units_per_symbol,
             pyramid_step_n=pyramid_step_n,
         ):
@@ -191,7 +191,7 @@ def evaluate_signals(
                     system=position.system,
                     kind=SignalKind.PYRAMID,
                     side=Side.BUY,
-                    trigger_price=position.last_unit_entry_price + (pyramid_step_n * snapshot.n),
+                    trigger_price=position.last_unit_entry_price + (pyramid_step_n * position.entry_n),
                     observed_price=current_price,
                     triggered_at=now,
                     reason="pyramid_0.5N",

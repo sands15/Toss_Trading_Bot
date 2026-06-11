@@ -14,6 +14,16 @@ from .domain import (
     PositionState,
 )
 from .state_store import SQLiteStateStore
+from .backtest import (
+    AuditEvent,
+    BacktestConfig,
+    BacktestCosts,
+    BacktestEngine,
+    BacktestResult,
+    BacktestTrade,
+    EquityPoint,
+    load_candles_csv,
+)
 
 __all__ = [
     "Candle",
@@ -29,6 +39,14 @@ __all__ = [
     "Unit",
     "SQLiteStateStore",
     "PositionState",
+    "AuditEvent",
+    "BacktestConfig",
+    "BacktestCosts",
+    "BacktestEngine",
+    "BacktestResult",
+    "BacktestTrade",
+    "EquityPoint",
+    "load_candles_csv",
 ]
 
 Unit = UnitState

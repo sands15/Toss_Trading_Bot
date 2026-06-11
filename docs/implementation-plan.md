@@ -62,18 +62,28 @@ Acceptance tests:
 
 Implement:
 
-- CSV candle loader.
-- Simulated broker.
-- Conservative same-bar ordering.
-- Fees/slippage/tax hooks.
-- Trade and equity output.
+- CSV candle loader. Done for single-symbol daily candles.
+- Simulated broker. Done for single-symbol daily-bar fills.
+- Conservative same-bar ordering. Done: exits are checked before pyramids and
+  entries.
+- Fees/slippage/tax hooks. Done as configurable cost hooks.
+- Trade and equity output. Done with trade records, equity curve, and audit
+  events.
 
 Acceptance:
 
-- Deterministic results from fixture data.
-- Audit log explains every trade.
-- Same-bar stop/pyramid conflict chooses stop.
+- Deterministic results from fixture data. Covered by tests.
+- Audit log explains every trade. Covered by tests for entry, stop, and gap
+  reasons.
+- Same-bar stop/pyramid conflict chooses stop. Covered by tests.
 - Backtest assumptions are conservative when intraday order is unknowable.
+  Covered for stop before pyramid and gap fills at open.
+
+Remaining before treating Phase 2 as complete:
+
+- Multi-symbol portfolio loop.
+- Configurable unit sizing from account equity and N.
+- Report export format for review.
 
 ## Phase 3: Toss Read-only Client
 
