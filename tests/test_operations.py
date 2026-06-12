@@ -13,6 +13,7 @@ from turtle_bot.cli import run
 from turtle_bot.domain import Candle
 from turtle_bot.operations import (
     LaunchdServiceConfig,
+    build_dashboard_server,
     check_operations_config,
     operations_checks_payload,
     render_launchd_plist,
@@ -229,6 +230,37 @@ def test_paper_service_once_records_heartbeat_without_live_orders(tmp_path: Path
         "paper_service_blocked",
     ]
     assert store.has_unresolved_client_order_id("anything") is False
+
+
+def test_dashboard_server_reads_runtime_events_from_sqlite(tmp_path: Path) -> None:
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    with SQLiteStateStore(state_db) as store:
+        store.record_runtime_event(
+            "WARN",
+            "paper_service_blocked",
+            {
+                "mode": "paper",
+                "ready": False,
+                "blockers": ["TOSS_CLIENT_ID is not configured"],
+                "positions": {"count": 0, "items": []},
+                "open_orders": {"count": 0, "items": []},
+                "watchlist": {"count": 0, "items": []},
+                "timestamp": "2026-06-12T01:00:00+00:00",
+            },
+        )
+
+    server = build_dashboard_server(state_db=state_db)
+
+    dashboard = server.payload_for_path("/dashboard")
+    events = server.payload_for_path("/events")
+    summary = server.payload_for_path("/events/summary")
+
+    assert dashboard["status"]["mode"] == "paper"
+    assert dashboard["status"]["ready"] is False
+    assert dashboard["status"]["blockers"] == ["TOSS_CLIENT_ID is not configured"]
+    assert dashboard["runtime_events"]["count"] == 1
+    assert events["items"][0]["message"] == "paper_service_blocked"
+    assert summary["blockers"] == ["TOSS_CLIENT_ID is not configured"]
 
 
 def test_paper_service_with_toss_read_only_data_runs_paper_iteration(

@@ -14,6 +14,7 @@ from .operations import (
     check_operations_config,
     ensure_runtime_dirs,
     operations_checks_payload,
+    run_dashboard_server,
     render_launchd_plist,
     run_paper_service,
     write_launchd_plist,
@@ -48,6 +49,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--health-json",
         action="store_true",
         help="Print read-only health payload from default empty runtime state",
+    )
+    parser.add_argument(
+        "--dashboard-server",
+        action="store_true",
+        help="Run the read-only local dashboard server backed by the SQLite state DB",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host for --dashboard-server",
+        metavar="HOST",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for --dashboard-server",
+        metavar="PORT",
     )
     parser.add_argument(
         "--state-db",
@@ -178,6 +197,15 @@ def run(argv: list[str] | None = None) -> int:
     if args.health_json:
         payload = Runtime.default().health_snapshot().as_payload()
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    if args.dashboard_server:
+        run_dashboard_server(
+            config_path=args.config,
+            state_db=args.state_db,
+            host=args.host,
+            port=args.port,
+        )
         return 0
 
     if args.ensure_runtime_dirs:

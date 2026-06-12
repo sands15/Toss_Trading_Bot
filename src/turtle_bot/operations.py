@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .config import load_config
-from .health import HealthSnapshot
+from .health import HealthServer, HealthSnapshot
 from .market_calendar import MarketCalendarConfig, MarketCalendarGate
 from .notifier import MemoryNotifier
 from .paper_runtime import PaperRuntimeConfig, PaperTradingRuntime
@@ -23,6 +23,12 @@ from .watchlist import Watchlist, WatchlistBuilder, WatchlistRow
 
 
 DEFAULT_SERVICE_LABEL = "com.sands15.toss-turtle-bot"
+DEFAULT_DASHBOARD_BLOCKERS = (
+    "runtime.symbols or runtime.universe_candidate_symbols is required",
+    "TOSS_CLIENT_ID is not configured",
+    "TOSS_CLIENT_SECRET is not configured",
+    "toss.account_seq is not configured",
+)
 
 
 @dataclass(frozen=True)
@@ -195,6 +201,78 @@ def operations_checks_payload(checks: Sequence[OperationsCheck]) -> dict[str, An
     }
 
 
+def build_dashboard_server(
+    *,
+    state_db: str | Path,
+    config_path: str | Path | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    start_server: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> HealthServer:
+    watchlist_name = "premarket"
+    default_blockers: Sequence[str] = DEFAULT_DASHBOARD_BLOCKERS
+    if config_path is not None:
+        config = load_config(config_path)
+        watchlist_name = config.runtime.watchlist_name
+        default_blockers = _paper_service_config_blockers(
+            config,
+            env if env is not None else environ,
+        )
+
+    def snapshot_provider() -> HealthSnapshot:
+        with SQLiteStateStore(state_db) as store:
+            events = store.list_runtime_events(limit=100)
+            latest = _latest_health_event_payload(events)
+            if latest is None:
+                return paper_service_health(
+                    store,
+                    blockers=default_blockers,
+                    ready=not default_blockers,
+                    watchlist_name=watchlist_name,
+                )
+            return _health_snapshot_from_payload(
+                latest,
+                store=store,
+                watchlist_name=watchlist_name,
+            )
+
+    def events_provider(limit: int | None = None) -> list[dict[str, Any]]:
+        with SQLiteStateStore(state_db) as store:
+            return store.list_runtime_events(limit=limit)
+
+    return HealthServer(
+        snapshot_provider,
+        events_provider=events_provider,
+        host=host,
+        port=port,
+        start_server=start_server,
+    )
+
+
+def run_dashboard_server(
+    *,
+    state_db: str | Path,
+    config_path: str | Path | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    env: Mapping[str, str] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    ensure_runtime_dirs(state_db=state_db, log_dir=Path("logs"))
+    build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        host=host,
+        port=port,
+        start_server=True,
+        env=env,
+    )
+    print(f"Turtle Bot dashboard: http://{host}:{port}/", flush=True)
+    while True:  # pragma: no cover - operational host loop
+        sleep(3600)
+
+
 def paper_service_health(
     store: SQLiteStateStore,
     *,
@@ -219,6 +297,59 @@ def paper_service_health(
         open_orders=(),
         watchlist=_latest_watchlist_payload(store, name=watchlist_name),
         generated_at=datetime.now(timezone.utc),
+    )
+
+
+def _latest_health_event_payload(events: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    for event in events:
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        if {"mode", "ready", "blockers"}.issubset(payload.keys()):
+            return payload
+    return None
+
+
+def _payload_items(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if isinstance(value, Mapping):
+        items = value.get("items", ())
+    else:
+        items = value
+    if items is None:
+        return ()
+    return tuple(dict(item) for item in items)
+
+
+def _payload_timestamp(payload: Mapping[str, Any]) -> datetime:
+    raw = payload.get("timestamp")
+    if isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
+def _health_snapshot_from_payload(
+    payload: Mapping[str, Any],
+    *,
+    store: SQLiteStateStore,
+    watchlist_name: str,
+) -> HealthSnapshot:
+    watchlist = _payload_items(payload.get("watchlist"))
+    latest_watchlist = _latest_watchlist_payload(store, name=watchlist_name)
+    if latest_watchlist:
+        watchlist = latest_watchlist
+    return HealthSnapshot(
+        mode=str(payload.get("mode", "paper")),
+        ready=bool(payload.get("ready", False)),
+        blockers=tuple(str(item) for item in payload.get("blockers", ())),
+        positions=_payload_items(payload.get("positions")),
+        open_orders=_payload_items(payload.get("open_orders")),
+        watchlist=watchlist,
+        generated_at=_payload_timestamp(payload),
     )
 
 
