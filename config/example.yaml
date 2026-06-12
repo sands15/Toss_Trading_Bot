@@ -1,6 +1,11 @@
 toss:
   live_enabled: false
+  # Set account_seq in this file only (number/string). No secret value here.
   account_seq:
+  # Environment variable names for Toss credentials.
+  # Keep these values in your shell/OS profile or process manager.
+  # Do not write real client keys in this file.
+  # Default values are used when omitted.
   client_id_env: TOSS_CLIENT_ID
   client_secret_env: TOSS_CLIENT_SECRET
 
@@ -20,6 +25,9 @@ runtime:
   timezone: Asia/Seoul
   use_market_calendar: true
   symbols: []
+# You can also provide universe candidates and enable universe mode.
+# runtime.universe_enabled: false
+# runtime.universe_candidate_symbols: []
   state_db: state/turtle.sqlite3
   log_dir: logs
   interval_seconds: 60

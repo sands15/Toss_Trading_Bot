@@ -88,6 +88,15 @@ def _to_symbols(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def _to_clean_string(value: Any, *, allow_empty: bool = False) -> str | None:
+    if value is None:
+        return "" if allow_empty else None
+    text = str(value).strip()
+    if not text and not allow_empty:
+        return None
+    return text
+
+
 def load_config(path: str | Path | None = None) -> TradingConfig:
     if path is None:
         return TradingConfig()
@@ -108,15 +117,17 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
         toss=TossConfig(
             live_enabled=bool(toss.get("live_enabled", False)),
             base_url=toss.get("base_url"),
-            account_seq=(
-                str(toss["account_seq"])
-                if toss.get("account_seq") is not None
-                else None
-            ),
-            client_id_env=str(toss.get("client_id_env", "TOSS_CLIENT_ID")),
-            client_secret_env=str(
-                toss.get("client_secret_env", "TOSS_CLIENT_SECRET")
-            ),
+            account_seq=_to_clean_string(toss.get("account_seq"), allow_empty=False),
+            client_id_env=_to_clean_string(
+                toss.get("client_id_env", "TOSS_CLIENT_ID"),
+                allow_empty=False,
+            )
+            or "TOSS_CLIENT_ID",
+            client_secret_env=_to_clean_string(
+                toss.get("client_secret_env", "TOSS_CLIENT_SECRET"),
+                allow_empty=False,
+            )
+            or "TOSS_CLIENT_SECRET",
         ),
         runtime=RuntimeConfig(
             mode=str(runtime.get("mode", "paper")),

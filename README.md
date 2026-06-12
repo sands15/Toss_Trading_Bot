@@ -73,6 +73,27 @@ behavior as an explicit deviation and block live trading until approved.
 - [Implementation Plan](docs/implementation-plan.md)
 - [Reference Project Notes](docs/reference-project-notes.md)
 
+## Toss API 연결 준비 체크리스트
+
+Toss API 연결 전, 값만 주입하면 다음 단계로 진행할 수 있게 준비 항목은 아래 3개입니다.
+
+1. `config/local.yaml` (또는 동일 구조의 설정 파일)에 값 채우기
+   - `toss.account_seq` (숫자/문자열)
+   - `runtime.symbols` 또는 `runtime.universe_candidate_symbols`
+   - `toss.client_id_env`, `toss.client_secret_env` (기본값: `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET`)
+2. 운영 환경에 `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET` 실제 값 주입
+3. `--ops-check`로 상태 점검 실행
+
+```bash
+python -m turtle_bot \
+  --config config/local.yaml \
+  --state-db state/turtle.sqlite3 \
+  --log-dir logs \
+  --ops-check
+```
+
+체크가 통과되면 메시지/블로커에 `configured` 상태가 남고, 실제 paper service 점검으로 넘어갈 수 있습니다.
+
 ## Official References
 
 - Toss Open API LLM guide: <https://developers.tossinvest.com/llms.txt>

@@ -24,6 +24,7 @@ from .watchlist import Watchlist, WatchlistBuilder, WatchlistRow
 
 DEFAULT_SERVICE_LABEL = "com.sands15.toss-turtle-bot"
 DEFAULT_DASHBOARD_BLOCKERS = (
+    "runtime.mode must be paper",
     "runtime.symbols or runtime.universe_candidate_symbols is required",
     "TOSS_CLIENT_ID is not configured",
     "TOSS_CLIENT_SECRET is not configured",
@@ -140,8 +141,10 @@ def check_operations_config(
     config_path: str | Path,
     state_db: str | Path,
     log_dir: str | Path,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[OperationsCheck, ...]:
     checks: list[OperationsCheck] = []
+    env = env if env is not None else environ
     config_file = Path(config_path).expanduser()
     state_parent = Path(state_db).expanduser().parent
     log_path = Path(log_dir).expanduser()
@@ -158,6 +161,12 @@ def check_operations_config(
             )
         else:
             checks.append(OperationsCheck("config_loads", True, "config loads"))
+            checks.extend(
+                _build_toss_readiness_checks(
+                    config=config,
+                    env=env,
+                )
+            )
             checks.append(
                 OperationsCheck(
                     "live_disabled",
@@ -566,18 +575,79 @@ def _paper_service_iteration(
 
 
 def _paper_service_config_blockers(config, env: Mapping[str, str]) -> tuple[str, ...]:
-    blockers: list[str] = []
-    if config.runtime.mode.lower() != "paper":
-        blockers.append(f"runtime.mode must be paper, got {config.runtime.mode}")
-    if not config.runtime.symbols and not config.runtime.universe_candidate_symbols:
-        blockers.append("runtime.symbols or runtime.universe_candidate_symbols is required")
-    if not env.get(config.toss.client_id_env):
-        blockers.append(f"{config.toss.client_id_env} is not configured")
-    if not env.get(config.toss.client_secret_env):
-        blockers.append(f"{config.toss.client_secret_env} is not configured")
-    if config.toss.account_seq is None:
-        blockers.append("toss.account_seq is not configured")
-    return tuple(blockers)
+    return tuple(
+        check.message
+        for check in _build_toss_readiness_checks(config=config, env=env)
+        if not check.passed
+    )
+
+
+def _build_toss_readiness_checks(
+    *,
+    config,
+    env: Mapping[str, str],
+) -> tuple[OperationsCheck, ...]:
+    client_id_env = str(config.toss.client_id_env).strip()
+    client_secret_env = str(config.toss.client_secret_env).strip()
+    account_seq = (
+        str(config.toss.account_seq).strip()
+        if config.toss.account_seq is not None
+        else ""
+    )
+    mode = str(config.runtime.mode or "").strip().lower()
+    has_symbols = bool(config.runtime.symbols or config.runtime.universe_candidate_symbols)
+
+    return (
+        OperationsCheck(
+            "runtime_mode",
+            mode == "paper",
+            "runtime.mode is paper"
+            if mode == "paper"
+            else f"runtime.mode must be paper, got {config.runtime.mode}",
+        ),
+        OperationsCheck(
+            "runtime_symbols_or_universe_candidates",
+            has_symbols,
+            "runtime.symbols or runtime.universe_candidate_symbols is configured"
+            if has_symbols
+            else "runtime.symbols or runtime.universe_candidate_symbols is required",
+        ),
+        OperationsCheck(
+            "toss_client_id_env",
+            bool(client_id_env),
+            "toss.client_id_env configured"
+            if client_id_env
+            else "toss.client_id_env is empty",
+        ),
+        OperationsCheck(
+            "toss_client_id",
+            bool(client_id_env) and bool(env.get(client_id_env)),
+            f"{client_id_env} is configured"
+            if bool(client_id_env) and bool(env.get(client_id_env))
+            else f"{client_id_env} is not configured",
+        ),
+        OperationsCheck(
+            "toss_client_secret_env",
+            bool(client_secret_env),
+            "toss.client_secret_env configured"
+            if client_secret_env
+            else "toss.client_secret_env is empty",
+        ),
+        OperationsCheck(
+            "toss_client_secret",
+            bool(client_secret_env) and bool(env.get(client_secret_env)),
+            f"{client_secret_env} is configured"
+            if bool(client_secret_env) and bool(env.get(client_secret_env))
+            else f"{client_secret_env} is not configured",
+        ),
+        OperationsCheck(
+            "toss_account_seq",
+            bool(account_seq),
+            "toss.account_seq is configured"
+            if account_seq
+            else "toss.account_seq is not configured",
+        ),
+    )
 
 
 def _should_build_watchlist(status: str) -> bool:

@@ -69,6 +69,8 @@ def _write_config(
     account_seq: str | None = None,
     universe_enabled: bool = False,
     universe_candidate_symbols: tuple[str, ...] = (),
+    client_id_env: str = "TOSS_CLIENT_ID",
+    client_secret_env: str = "TOSS_CLIENT_SECRET",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     symbol_lines = ["  symbols:"]
@@ -82,6 +84,8 @@ def _write_config(
                 f"  live_enabled: {str(live_enabled).lower()}",
                 f"  account_seq: {account_seq or ''}",
                 "  base_url: https://example.test",
+                f"  client_id_env: {client_id_env}",
+                f"  client_secret_env: {client_secret_env}",
                 "runtime:",
                 "  mode: paper",
                 "  market: KR",
@@ -198,6 +202,61 @@ def test_operations_check_blocks_live_enabled_config(tmp_path: Path) -> None:
 
     assert payload["status"] == "blocked"
     assert any("live trading is enabled" in blocker for blocker in payload["blockers"])
+
+
+def test_operations_check_validates_toss_readiness_with_custom_env_names(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    state_db.parent.mkdir()
+    log_dir.mkdir()
+    _write_config(
+        config_path,
+        symbols=("TEST",),
+        account_seq="7",
+        client_id_env="MY_TOSS_CLIENT_ID",
+        client_secret_env="MY_TOSS_CLIENT_SECRET",
+    )
+
+    payload = operations_checks_payload(
+        check_operations_config(
+            config_path=config_path,
+            state_db=state_db,
+            log_dir=log_dir,
+            env={"MY_TOSS_CLIENT_ID": "id"},
+        )
+    )
+
+    assert payload["status"] == "blocked"
+    assert "MY_TOSS_CLIENT_SECRET is not configured" in payload["blockers"]
+    assert "runtime.symbols or runtime.universe_candidate_symbols is required" not in payload["blockers"]
+
+
+def test_operations_check_treats_blank_account_seq_as_missing(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    state_db.parent.mkdir()
+    log_dir.mkdir()
+    _write_config(
+        config_path,
+        symbols=("TEST",),
+        account_seq="",
+        client_id_env="TOSS_CLIENT_ID",
+        client_secret_env="TOSS_CLIENT_SECRET",
+    )
+
+    payload = operations_checks_payload(
+        check_operations_config(
+            config_path=config_path,
+            state_db=state_db,
+            log_dir=log_dir,
+            env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        )
+    )
+
+    assert "toss.account_seq is not configured" in payload["blockers"]
+    assert payload["status"] == "blocked"
 
 
 def test_paper_service_once_records_heartbeat_without_live_orders(tmp_path: Path) -> None:
