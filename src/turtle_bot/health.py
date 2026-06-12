@@ -1409,11 +1409,48 @@ def dashboard_html() -> str:
 
   <script>
     const ONBOARDING_STEPS = [
-      ["Toss API 인증 정보 등록", "TOSS_CLIENT_ID와 TOSS_CLIENT_SECRET을 로컬 환경변수에 저장하세요."],
-      ["거래 계좌 연결", "config/local.yaml의 toss.account_seq 값을 설정하세요."],
-      ["감시 종목 후보 등록", "runtime.symbols 또는 universe_candidate_symbols를 설정하세요."],
-      ["페이퍼 서비스 확인", "이벤트 탭에서 paper service heartbeat를 확인하세요."]
+      {
+        title: "Toss API 인증 정보",
+        body: "TOSS_CLIENT_ID와 TOSS_CLIENT_SECRET을 로컬 환경변수에 저장하세요.",
+        group: "필수",
+        match: (blocker) => blocker.includes("TOSS_CLIENT_ID") || blocker.includes("TOSS_CLIENT_SECRET")
+      },
+      {
+        title: "거래 계좌 연결",
+        body: "config/local.yaml의 toss.account_seq 값을 설정하세요.",
+        group: "필수",
+        match: (blocker) => blocker.includes("account_seq")
+      },
+      {
+        title: "감시 종목 후보",
+        body: "runtime.symbols 또는 universe_candidate_symbols를 설정하세요.",
+        group: "필수",
+        match: (blocker) => blocker.includes("runtime.symbols") || blocker.includes("universe_candidate_symbols")
+      },
+      {
+        title: "페이퍼 서비스 확인",
+        body: "이벤트 탭에서 페이퍼 서비스 heartbeat가 최근에 기록됐는지 확인하세요.",
+        group: "확인",
+        match: () => false,
+        eventMessage: "paper_service_heartbeat"
+      }
     ];
+
+    const EVENT_LABELS = {
+      paper_service_started: "페이퍼 서비스 시작",
+      paper_service_heartbeat: "페이퍼 서비스 점검 완료",
+      paper_service_blocked: "설정 미완료로 중지",
+      market_session_state: "시장 상태 확인",
+      paper_service_market_closed: "시장 휴장/대기",
+      premarket_watchlist_blocked: "관심 종목 생성 일부 실패",
+      premarket_watchlist_generated: "관심 종목 생성 완료",
+      universe_generated: "후보 종목 필터링 완료",
+      paper_reconcile_blocked: "계좌 대조 차단",
+      paper_order_guard: "주문 안전 조건 확인",
+      paper_order_intent: "페이퍼 주문 후보 기록",
+      paper_fill: "페이퍼 체결 반영",
+      paper_runtime_blocked: "페이퍼 런타임 차단"
+    };
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -1442,6 +1479,65 @@ def dashboard_html() -> str:
         hour: "2-digit",
         minute: "2-digit"
       });
+    }
+
+    function eventLabel(message) {
+      return EVENT_LABELS[message] || String(message || "이벤트");
+    }
+
+    function blockerLabel(blocker) {
+      const text = String(blocker || "");
+      if (text.includes("TOSS_CLIENT_ID") || text.includes("TOSS_CLIENT_SECRET")) {
+        return "Toss API 인증 정보가 아직 없습니다.";
+      }
+      if (text.includes("account_seq")) {
+        return "거래 계좌 번호가 아직 연결되지 않았습니다.";
+      }
+      if (text.includes("runtime.symbols") || text.includes("universe_candidate_symbols")) {
+        return "감시할 종목 후보가 아직 없습니다.";
+      }
+      if (text.includes("market_session_not_open")) {
+        return "현재 시장 세션이 주문 평가 시간대가 아닙니다.";
+      }
+      if (text.includes("market_calendar_unknown")) {
+        return "시장 개장 여부를 확인하지 못했습니다.";
+      }
+      if (text.includes("universe_empty")) {
+        return "조건을 통과한 후보 종목이 없습니다.";
+      }
+      return text;
+    }
+
+    function blockerDetail(blocker) {
+      const friendly = blockerLabel(blocker);
+      const raw = String(blocker || "");
+      return friendly === raw ? friendly : `${friendly} (${raw})`;
+    }
+
+    function groupedBlockerDetails(blockers) {
+      const groups = new Map();
+      blockers.forEach((blocker) => {
+        const friendly = blockerLabel(blocker);
+        const raw = String(blocker || "");
+        const existing = groups.get(friendly) || [];
+        if (friendly !== raw) existing.push(raw);
+        groups.set(friendly, existing);
+      });
+      return [...groups.entries()].map(([friendly, raws]) => {
+        const uniqueRaw = uniqueValues(raws);
+        return uniqueRaw.length ? `${friendly} (${uniqueRaw.join(", ")})` : friendly;
+      });
+    }
+
+    function statusText(kind) {
+      if (kind === "done") return "완료";
+      if (kind === "warn") return "진행 필요";
+      if (kind === "blocked") return "차단";
+      return "확인";
+    }
+
+    function uniqueValues(items) {
+      return [...new Set(items.filter((item) => item != null && item !== ""))];
     }
 
     function getJson(path) {
@@ -1582,7 +1678,11 @@ def dashboard_html() -> str:
       container.innerHTML = items.slice(0, 6).map((entry) => {
         const level = String(entry.level || "INFO").toUpperCase();
         const dot = level === "WARN" ? "warn" : level === "ERROR" ? "warn" : "ok";
-        return `<li class="event-line"><span class="event-dot ${dot}"></span><strong>${escapeHtml(level)}</strong><span>${escapeHtml(entry.message || "event")}</span><span class="helper-text">${escapeHtml(shortTimestamp(entry.created_at))}</span></li>`;
+        const blockers = Array.isArray(entry.payload && entry.payload.blockers)
+          ? uniqueValues(entry.payload.blockers.map(blockerLabel)).join(", ")
+          : "";
+        const label = blockers ? `${eventLabel(entry.message)}: ${blockers}` : eventLabel(entry.message);
+        return `<li class="event-line"><span class="event-dot ${dot}"></span><strong>${escapeHtml(level)}</strong><span>${escapeHtml(label)}</span><span class="helper-text">${escapeHtml(shortTimestamp(entry.created_at))}</span></li>`;
       }).join("");
     }
 
@@ -1614,7 +1714,7 @@ def dashboard_html() -> str:
       container.innerHTML = events.slice(0, 4).map((event) => `
         <div class="log-line">
           <span class="dot"></span>
-          <span class="helper-text">${escapeHtml(event.message || "event")}</span>
+          <span class="helper-text">${escapeHtml(eventLabel(event.message))}</span>
           <span class="helper-text">${escapeHtml(event.level || "")}</span>
         </div>`).join("");
     }
@@ -1635,17 +1735,34 @@ def dashboard_html() -> str:
       });
     }
 
-    function renderOnboarding(blockers, rawLinks) {
+    function renderOnboarding(blockers, rawLinks, events) {
       const list = document.getElementById("settings-onboarding-list");
+      const rawBlockers = Array.isArray(blockers) ? blockers : [];
+      const recentEvents = Array.isArray(events) ? events : [];
       if (list) {
-        list.innerHTML = ONBOARDING_STEPS.map(([title, body], index) => {
-          const status = blockers && blockers.length ? "진행 필요" : "완료";
-          const kind = blockers && blockers.length ? "warn" : "done";
-          return `<li><strong>${index + 1}. ${escapeHtml(title)}</strong><p>${escapeHtml(body)}</p><span class="status-pill ${kind}">${status}</span></li>`;
+        list.innerHTML = ONBOARDING_STEPS.map((step, index) => {
+          const matched = rawBlockers.filter(step.match);
+          const eventSeen = step.eventMessage
+            ? recentEvents.some((event) => event.message === step.eventMessage)
+            : true;
+          const kind = matched.length || !eventSeen ? "warn" : "done";
+          const detail = matched.length
+            ? uniqueValues(matched.map(blockerLabel)).join(" ")
+            : eventSeen
+              ? step.body
+              : "아직 최근 heartbeat가 보이지 않습니다.";
+          return `<li>
+            <strong>${index + 1}. ${escapeHtml(step.title)}</strong>
+            <p><span class="status-pill">${escapeHtml(step.group)}</span></p>
+            <p>${escapeHtml(detail)}</p>
+            <span class="status-pill ${kind}">${statusText(kind)}</span>
+          </li>`;
         }).join("");
       }
       const blockerBox = document.getElementById("settings-blockers-list");
-      if (blockerBox) blockerBox.textContent = blockers && blockers.length ? blockers.join("\\n") : "현재 표시할 차단 항목이 없습니다.";
+      if (blockerBox) blockerBox.textContent = rawBlockers.length
+        ? groupedBlockerDetails(rawBlockers).join("\\n")
+        : "현재 표시할 차단 항목이 없습니다.";
       const rawBox = document.getElementById("settings-raw-links");
       if (rawBox) rawBox.textContent = JSON.stringify(rawLinks || {}, null, 2);
     }
@@ -1681,14 +1798,22 @@ def dashboard_html() -> str:
       renderTable("watchlist-table", watchRows, null, "관심 종목 없음");
       renderTable("positions-table", positionRows, null, "포지션 없음");
       renderTable("orders-table", orderRows, null, "미체결 주문 없음");
-      renderTable("events-table", events.items || [], ["id", "level", "message", "created_at"], "이벤트 없음");
+      const eventTableRows = eventRows.map((event) => ({
+        time: shortTimestamp(event.created_at),
+        level: event.level || "",
+        event: eventLabel(event.message),
+        detail: Array.isArray(event.payload && event.payload.blockers)
+          ? event.payload.blockers.map(blockerLabel).join(", ")
+          : ""
+      }));
+      renderTable("events-table", eventTableRows, ["time", "level", "event", "detail"], "이벤트 없음");
       document.getElementById("watchlist-json").textContent = JSON.stringify(watchlist, null, 2);
       document.getElementById("positions-json").textContent = JSON.stringify(positions, null, 2);
       document.getElementById("orders-json").textContent = JSON.stringify(openOrders, null, 2);
       document.getElementById("events-json").textContent = JSON.stringify({ summary, events }, null, 2);
       document.getElementById("raw-aggregate-json").textContent = JSON.stringify(dashboard, null, 2);
       renderEndpointList(dashboard.raw_links || {});
-      renderOnboarding(status.blockers || [], dashboard.raw_links || {});
+      renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows);
       const clockText = document.querySelector(".clock-line span");
       if (clockText) clockText.textContent = shortTimestamp(dashboard.generated_at || new Date().toISOString());
     }

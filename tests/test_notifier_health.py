@@ -113,3 +113,7 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'getJson("/watchlist")' in html
     assert 'getJson("/events/summary?limit=50")' in html
     assert "never submits" in html
+    assert "EVENT_LABELS" in html
+    assert "페이퍼 서비스 점검 완료" in html
+    assert "Toss API 인증 정보가 아직 없습니다." in html
+    assert "renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows)" in html
