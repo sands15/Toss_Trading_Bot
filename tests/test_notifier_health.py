@@ -133,6 +133,14 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "width: auto;" in html
     assert "repeat(5, minmax(0, 1fr))" in html
     assert "renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows)" in html
+    assert 'id="dashboard-operator-brief"' in html
+    assert "function renderOperatorBrief" in html
+    assert "function primaryAction" in html
+    assert "function eventDetail" in html
+    assert "levelLabel" in html
+    assert "TABLE_COLUMNS" in html
+    assert "감시 종목 후보를 먼저 넣으세요" in html
+    assert "Toss API 인증 정보를 설정하세요" in html
     assert 'id="dashboard-clock" class="clock-text">현재 --:--:--</span>' in html
     assert "function updateDashboardClock()" in html
     assert "setInterval(updateDashboardClock, 1000)" in html

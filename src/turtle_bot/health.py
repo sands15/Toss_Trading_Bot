@@ -649,6 +649,70 @@ def dashboard_html() -> str:
       border-bottom: 1px solid transparent;
     }
 
+    .operator-brief {
+      grid-column: 1 / -1;
+      padding: 18px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) repeat(2, minmax(220px, 0.7fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .brief-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+      padding: 14px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .brief-item.primary {
+      border-color: #bfdbfe;
+      background: #eff6ff;
+    }
+
+    .brief-item.warn {
+      border-color: #fed7aa;
+      background: #fff7ed;
+    }
+
+    .brief-item.done {
+      border-color: #a7f3d0;
+      background: #ecfdf5;
+    }
+
+    .brief-kicker {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .brief-item strong {
+      color: #102033;
+      font-size: 15px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    .brief-item p {
+      margin: 0;
+      color: #516079;
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .brief-item a {
+      width: fit-content;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 900;
+      text-decoration: none;
+    }
+
     .list-skeleton {
       display: grid;
     }
@@ -926,6 +990,15 @@ def dashboard_html() -> str:
     .data-table table {
       width: 100%;
       border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .data-table th {
+      position: sticky;
+      top: 0;
+      background: #f8fafc;
+      color: #475569;
+      z-index: 1;
     }
 
     .data-table th,
@@ -935,6 +1008,7 @@ def dashboard_html() -> str:
       text-align: left;
       font-size: 13px;
       word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .view-json {
@@ -1272,6 +1346,10 @@ def dashboard_html() -> str:
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
+      .operator-brief {
+        grid-template-columns: 1fr;
+      }
+
       .dashboard-grid,
       .empty-view {
         grid-template-columns: 1fr;
@@ -1527,6 +1605,24 @@ def dashboard_html() -> str:
                   <span class="ghost-line" style="width:82px;margin-top:12px;display:block"></span>
                 </div>
               </article>
+            </section>
+
+            <section id="dashboard-operator-brief" class="card operator-brief" aria-label="운영 요약">
+              <div class="brief-item primary">
+                <span class="brief-kicker">우선 확인</span>
+                <strong>상태를 불러오는 중</strong>
+                <p>현재 설정과 최근 이벤트를 확인하고 있습니다.</p>
+              </div>
+              <div class="brief-item">
+                <span class="brief-kicker">최근 기록</span>
+                <strong>-</strong>
+                <p>이벤트가 들어오면 여기에 마지막 기록이 표시됩니다.</p>
+              </div>
+              <div class="brief-item">
+                <span class="brief-kicker">데이터</span>
+                <strong>-</strong>
+                <p>관심 종목, 포지션, 주문 수를 요약합니다.</p>
+              </div>
             </section>
 
             <article class="card section-card">
@@ -1788,6 +1884,12 @@ def dashboard_html() -> str:
       reason: "사유"
     };
 
+    const TABLE_COLUMNS = {
+      watchlist: ["symbol", "name", "nearest_distance", "status", "updated_at"],
+      positions: ["symbol", "status", "quantity", "average_price", "stop_price", "updated_at"],
+      orders: ["symbol", "side", "quantity", "price", "status", "created_at"]
+    };
+
     function escapeHtml(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -1835,6 +1937,20 @@ def dashboard_html() -> str:
 
     function eventLabel(message) {
       return EVENT_LABELS[message] || String(message || "이벤트");
+    }
+
+    function levelLabel(level) {
+      const text = String(level || "INFO").toUpperCase();
+      if (text === "ERROR") return "오류";
+      if (text === "WARN") return "확인";
+      return "정보";
+    }
+
+    function levelClass(level) {
+      const text = String(level || "INFO").toUpperCase();
+      if (text === "ERROR") return "error";
+      if (text === "WARN") return "warn";
+      return "";
     }
 
     function columnLabel(key) {
@@ -1902,6 +2018,75 @@ def dashboard_html() -> str:
 
     function groupedBlockerShortLabels(blockers) {
       return uniqueValues((blockers || []).map(blockerShortLabel));
+    }
+
+    function primaryAction(status) {
+      const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
+      const first = blockers.find((blocker) => String(blocker).includes("runtime.symbols") || String(blocker).includes("universe_candidate_symbols"))
+        || blockers.find((blocker) => String(blocker).includes("TOSS_CLIENT_ID") || String(blocker).includes("TOSS_CLIENT_SECRET"))
+        || blockers.find((blocker) => String(blocker).includes("account_seq"))
+        || blockers[0];
+      if (!first) {
+        return {
+          title: "운영 상태를 확인하세요",
+          body: "막힌 설정은 없습니다. 이벤트 탭에서 최근 heartbeat와 시장 상태를 확인하면 됩니다.",
+          href: "#events",
+          label: "이벤트 보기",
+          kind: "done"
+        };
+      }
+      const text = String(first);
+      if (text.includes("runtime.symbols") || text.includes("universe_candidate_symbols")) {
+        return {
+          title: "감시 종목 후보를 먼저 넣으세요",
+          body: "종목 후보가 없으면 관심 종목과 페이퍼 주문 후보를 만들 수 없습니다.",
+          href: "#settings",
+          label: "설정 확인",
+          kind: "warn"
+        };
+      }
+      if (text.includes("TOSS_CLIENT_ID") || text.includes("TOSS_CLIENT_SECRET")) {
+        return {
+          title: "Toss API 인증 정보를 설정하세요",
+          body: "인증 정보가 없으면 계좌, 장 정보, 종목 데이터를 Toss에서 확인할 수 없습니다.",
+          href: "#settings",
+          label: "설정 확인",
+          kind: "warn"
+        };
+      }
+      if (text.includes("account_seq")) {
+        return {
+          title: "거래 계좌 번호를 연결하세요",
+          body: "계좌가 연결되어야 포지션과 주문 상태를 읽을 수 있습니다.",
+          href: "#settings",
+          label: "설정 확인",
+          kind: "warn"
+        };
+      }
+      return {
+        title: blockerLabel(first),
+        body: "설정 탭에서 세부 항목을 확인하세요.",
+        href: "#settings",
+        label: "설정 확인",
+        kind: "warn"
+      };
+    }
+
+    function eventDetail(entry) {
+      const payload = entry && entry.payload && typeof entry.payload === "object" ? entry.payload : {};
+      if (Array.isArray(payload.blockers) && payload.blockers.length) {
+        return uniqueValues(payload.blockers.map(blockerLabel)).join(" ");
+      }
+      if (payload.market_session && payload.market_session.status) {
+        return `시장 상태: ${payload.market_session.status}`;
+      }
+      if (payload.symbol) {
+        return `종목 ${payload.symbol}${payload.side ? ` / ${payload.side}` : ""}`;
+      }
+      if (payload.count != null) {
+        return `${payload.count}건`;
+      }
+      return "추가 확인 사항은 없습니다.";
     }
 
     function statusText(kind) {
@@ -2030,6 +2215,43 @@ def dashboard_html() -> str:
         </article>`;
     }
 
+    function renderOperatorBrief(status, eventRows, watchRows, positionRows, orderRows) {
+      const container = document.getElementById("dashboard-operator-brief");
+      if (!container) return;
+      const action = primaryAction(status);
+      const lastEvent = eventRows && eventRows.length ? eventRows[0] : null;
+      const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
+      const dataSummary = [
+        `관심 ${watchRows.length}개`,
+        `포지션 ${positionRows.length}개`,
+        `주문 ${orderRows.length}개`
+      ].join(" / ");
+      const lastEventTitle = lastEvent ? eventLabel(lastEvent.message) : "아직 이벤트가 없습니다";
+      const lastEventBody = lastEvent
+        ? `${levelLabel(lastEvent.level)} · ${eventDetail(lastEvent)} · ${shortTimestamp(lastEvent.created_at)}`
+        : "페이퍼 서비스가 실행되면 최근 기록이 표시됩니다.";
+      const blockerBody = blockers.length
+        ? groupedBlockerShortLabels(blockers).slice(0, 3).join(" / ")
+        : "차단 항목 없음";
+      container.innerHTML = `
+        <div class="brief-item primary ${action.kind}">
+          <span class="brief-kicker">우선 확인</span>
+          <strong>${escapeHtml(action.title)}</strong>
+          <p>${escapeHtml(action.body)}</p>
+          <a href="${escapeHtml(action.href)}" data-view="${escapeHtml(action.href.replace("#", ""))}">${escapeHtml(action.label)}</a>
+        </div>
+        <div class="brief-item">
+          <span class="brief-kicker">최근 기록</span>
+          <strong>${escapeHtml(lastEventTitle)}</strong>
+          <p>${escapeHtml(lastEventBody)}</p>
+        </div>
+        <div class="brief-item">
+          <span class="brief-kicker">데이터 상태</span>
+          <strong>${escapeHtml(dataSummary)}</strong>
+          <p>${escapeHtml(blockerBody)}</p>
+        </div>`;
+    }
+
     function renderHealthPanel(status) {
       const container = document.getElementById("dashboard-health-list");
       if (!container) return;
@@ -2095,13 +2317,9 @@ def dashboard_html() -> str:
       }
       container.innerHTML = items.slice(0, 12).map((entry) => {
         const level = String(entry.level || "INFO").toUpperCase();
-        const levelClass = level === "WARN" ? "warn" : level === "ERROR" ? "error" : "";
-        const blockers = Array.isArray(entry.payload && entry.payload.blockers)
-          ? uniqueValues(entry.payload.blockers.map(blockerLabel)).join(" ")
-          : "";
-        const detail = blockers || "추가 확인 사항은 없습니다.";
+        const detail = eventDetail(entry);
         return `<div class="event-card">
-          <span class="level-badge ${levelClass}">${escapeHtml(level)}</span>
+          <span class="level-badge ${levelClass(level)}">${escapeHtml(levelLabel(level))}</span>
           <div><strong>${escapeHtml(eventLabel(entry.message))}</strong><p>${escapeHtml(detail)}</p></div>
           <span class="helper-text">${escapeHtml(shortTimestamp(entry.created_at))}</span>
         </div>`;
@@ -2118,11 +2336,9 @@ def dashboard_html() -> str:
       container.innerHTML = items.slice(0, 6).map((entry) => {
         const level = String(entry.level || "INFO").toUpperCase();
         const dot = level === "WARN" ? "warn" : level === "ERROR" ? "warn" : "ok";
-        const blockers = Array.isArray(entry.payload && entry.payload.blockers)
-          ? uniqueValues(entry.payload.blockers.map(blockerLabel)).join(", ")
-          : "";
-        const label = blockers ? `${eventLabel(entry.message)}: ${blockers}` : eventLabel(entry.message);
-        return `<li class="event-line"><span class="event-dot ${dot}"></span><strong>${escapeHtml(level)}</strong><span>${escapeHtml(label)}</span><span class="helper-text">${escapeHtml(shortTimestamp(entry.created_at))}</span></li>`;
+        const detail = eventDetail(entry);
+        const label = detail === "추가 확인 사항은 없습니다." ? eventLabel(entry.message) : `${eventLabel(entry.message)}: ${detail}`;
+        return `<li class="event-line"><span class="event-dot ${dot}"></span><strong>${escapeHtml(levelLabel(level))}</strong><span>${escapeHtml(label)}</span><span class="helper-text">${escapeHtml(shortTimestamp(entry.created_at))}</span></li>`;
       }).join("");
     }
 
@@ -2233,6 +2449,7 @@ def dashboard_html() -> str:
       const eventRows = payloadItems(events, "items");
 
       renderMetricCards(status, watchRows, positionRows, orderRows, summary);
+      renderOperatorBrief(status, eventRows, watchRows, positionRows, orderRows);
       renderSidebarStatus(status);
       renderHealthPanel(status);
       renderWatchSummary(watchRows);
@@ -2247,9 +2464,9 @@ def dashboard_html() -> str:
       setCountBadge("orders-count-badge", orderRows.length);
       setCountBadge("events-count-badge", eventRows.length);
 
-      renderTable("watchlist-table", watchRows, null, "관심 종목이 없습니다", "감시할 종목 후보를 설정하면 매수 후보와 진입선 거리가 표시됩니다.");
-      renderTable("positions-table", positionRows, null, "보유 포지션이 없습니다", "포지션이 열리면 수량, 평단, 손절가를 여기서 확인할 수 있습니다.", "#dashboard");
-      renderTable("orders-table", orderRows, null, "미체결 주문이 없습니다", "현재 대기 중인 주문이 없습니다. 이 화면은 주문을 실행하지 않고 상태만 보여줍니다.", "#dashboard");
+      renderTable("watchlist-table", watchRows, TABLE_COLUMNS.watchlist, "관심 종목이 없습니다", "감시할 종목 후보를 설정하면 매수 후보와 진입선 거리가 표시됩니다.");
+      renderTable("positions-table", positionRows, TABLE_COLUMNS.positions, "보유 포지션이 없습니다", "포지션이 열리면 수량, 평단, 손절가를 여기서 확인할 수 있습니다.", "#dashboard");
+      renderTable("orders-table", orderRows, TABLE_COLUMNS.orders, "미체결 주문이 없습니다", "현재 대기 중인 주문이 없습니다. 이 화면은 주문을 실행하지 않고 상태만 보여줍니다.", "#dashboard");
       renderEventCards("events-table", eventRows);
       document.getElementById("watchlist-json").textContent = JSON.stringify(watchlist, null, 2);
       document.getElementById("positions-json").textContent = JSON.stringify(positions, null, 2);
