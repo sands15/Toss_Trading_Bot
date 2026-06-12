@@ -1258,6 +1258,11 @@ def dashboard_html() -> str:
       gap: 8px;
     }
 
+    .next-step.blocked {
+      border-color: #fecdd3;
+      background: #fef2f2;
+    }
+
     .next-step.done {
       border-color: #a7f3d0;
       background: #ecfdf5;
@@ -1273,6 +1278,7 @@ def dashboard_html() -> str:
       color: #516079;
       font-size: 13px;
       line-height: 1.45;
+      overflow-wrap: anywhere;
     }
 
     .next-step a {
@@ -2022,10 +2028,21 @@ def dashboard_html() -> str:
 
     function primaryAction(status) {
       const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
+      const ready = Boolean(status && status.ready);
       const first = blockers.find((blocker) => String(blocker).includes("runtime.symbols") || String(blocker).includes("universe_candidate_symbols"))
         || blockers.find((blocker) => String(blocker).includes("TOSS_CLIENT_ID") || String(blocker).includes("TOSS_CLIENT_SECRET"))
         || blockers.find((blocker) => String(blocker).includes("account_seq"))
         || blockers[0];
+      if (!ready) {
+        const reason = (first ? blockerLabel(first) : "운영 준비").replace(/[.!?…]+$/g, "");
+        return {
+          title: "현재 운영이 차단 상태입니다",
+          body: `차단 원인: ${reason}. 설정 탭으로 이동해 차단 항목을 우선 처리해 주세요.`,
+          href: "#settings",
+          label: "차단 설정 확인",
+          kind: "blocked"
+        };
+      }
       if (!first) {
         return {
           title: "운영 상태를 확인하세요",
@@ -2219,6 +2236,7 @@ def dashboard_html() -> str:
       const container = document.getElementById("dashboard-operator-brief");
       if (!container) return;
       const action = primaryAction(status);
+      const ready = Boolean(status && status.ready);
       const lastEvent = eventRows && eventRows.length ? eventRows[0] : null;
       const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
       const dataSummary = [
@@ -2229,10 +2247,12 @@ def dashboard_html() -> str:
       const lastEventTitle = lastEvent ? eventLabel(lastEvent.message) : "아직 이벤트가 없습니다";
       const lastEventBody = lastEvent
         ? `${levelLabel(lastEvent.level)} · ${eventDetail(lastEvent)} · ${shortTimestamp(lastEvent.created_at)}`
-        : "페이퍼 서비스가 실행되면 최근 기록이 표시됩니다.";
+        : ready
+          ? "페이퍼 서비스가 실행되면 최근 기록이 표시됩니다."
+          : "운영이 차단되어 있어 아직 이벤트가 누적되지 않습니다. 설정 탭에서 차단 항목을 우선 확인해 주세요.";
       const blockerBody = blockers.length
         ? groupedBlockerShortLabels(blockers).slice(0, 3).join(" / ")
-        : "차단 항목 없음";
+        : ready ? "차단 항목 없음" : "설정에서 차단 항목을 먼저 확인하세요.";
       container.innerHTML = `
         <div class="brief-item primary ${action.kind}">
           <span class="brief-kicker">우선 확인</span>
@@ -2256,6 +2276,7 @@ def dashboard_html() -> str:
       const container = document.getElementById("dashboard-health-list");
       if (!container) return;
       const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
+      const ready = Boolean(status && status.ready);
       const labels = groupedBlockerLabels(blockers);
       const rows = [
         ["상태", status && status.ready ? "준비됨" : "설정 확인 필요", status && status.ready ? "done" : "blocked"],
@@ -2266,8 +2287,8 @@ def dashboard_html() -> str:
       ];
       container.className = "info-list";
       const nextStep = labels.length
-        ? `<div class="next-step"><strong>다음 할 일</strong><p>${escapeHtml(labels[0])}</p><a href="#settings" data-view="settings">설정에서 확인</a></div>`
-        : `<div class="next-step done"><strong>다음 할 일</strong><p>현재 막힌 설정이 없습니다. 최근 이벤트를 확인하세요.</p><a href="#events" data-view="events">이벤트 보기</a></div>`;
+        ? `<div class="next-step blocked"><strong>다음 할 일</strong><p>${escapeHtml(labels.slice(0, 2).join(" · "))} 항목부터 우선 처리해 주세요.</p><a href="#settings" data-view="settings">설정에서 바로 처리</a></div>`
+        : `<div class="next-step ${ready ? "done" : "blocked"}"><strong>다음 할 일</strong><p>${ready ? "현재 막힌 설정이 없습니다. 최근 이벤트를 확인해 전환 상태를 점검해 보세요." : "설정이 멈춘 상태입니다. 차단 원인을 해제한 뒤 대시보드를 새로고침하세요."}</p><a href="${ready ? "#events" : "#settings"}" data-view="${ready ? "events" : "settings"}">${ready ? "이벤트 확인" : "차단 설정 확인"}</a></div>`;
       container.innerHTML = rows.map(([label, value, kind]) => `
         <div class="info-row">
           <span class="dot"></span>
@@ -2312,7 +2333,7 @@ def dashboard_html() -> str:
       const container = document.getElementById(elementId);
       if (!container) return;
       if (!items || !items.length) {
-        container.innerHTML = emptyState("아직 이벤트가 없습니다", "페이퍼 서비스가 실행되면 시작, 차단, heartbeat 기록이 여기에 쌓입니다.", "#dashboard", "대시보드 보기");
+        container.innerHTML = emptyState("아직 이벤트가 없습니다", "운영이 차단되어 있으면 이벤트가 적을 수 있습니다. 먼저 설정 탭에서 차단 항목을 확인하고 다시 새로고침하면 기록이 표시됩니다.", "#settings", "차단 항목 보기");
         return;
       }
       container.innerHTML = items.slice(0, 12).map((entry) => {
@@ -2330,7 +2351,7 @@ def dashboard_html() -> str:
       const container = document.getElementById(elementId);
       if (!container) return;
       if (!items || !items.length) {
-        container.innerHTML = `<li class="event-line"><span class="event-dot"></span><strong>-</strong><span>아직 이벤트가 없습니다.</span><span></span></li>`;
+        container.innerHTML = `<li class="event-line"><span class="event-dot"></span><strong>-</strong><span>이벤트 기록이 없습니다. 최근 설정과 heartbeat를 확인하세요.</span><span class="helper-text">빈 상태</span></li>`;
         return;
       }
       container.innerHTML = items.slice(0, 6).map((entry) => {

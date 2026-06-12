@@ -141,9 +141,12 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "TABLE_COLUMNS" in html
     assert "감시 종목 후보를 먼저 넣으세요" in html
     assert "Toss API 인증 정보를 설정하세요" in html
+    assert "현재 운영이 차단 상태입니다" in html
+    assert "차단 설정 확인" in html
     assert 'id="dashboard-clock" class="clock-text">현재 --:--:--</span>' in html
     assert "function updateDashboardClock()" in html
     assert "setInterval(updateDashboardClock, 1000)" in html
+    assert "운영이 차단되어 있으면 이벤트가 적을 수 있습니다." in html
     assert "갱신 ${shortTimestamp" not in html
     assert 'class="ghost-line" style="width:100px"' not in html
     assert "grid-template-columns: minmax(68px, 84px) minmax(0, 1fr) minmax(72px, 94px)" in html
