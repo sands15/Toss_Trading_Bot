@@ -133,3 +133,11 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "width: auto;" in html
     assert "repeat(5, minmax(0, 1fr))" in html
     assert "renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows)" in html
+    assert 'id="dashboard-clock" class="clock-text">현재 --:--:--</span>' in html
+    assert "function updateDashboardClock()" in html
+    assert "setInterval(updateDashboardClock, 1000)" in html
+    assert "갱신 ${shortTimestamp" not in html
+    assert 'class="ghost-line" style="width:100px"' not in html
+    assert "grid-template-columns: minmax(68px, 84px) minmax(0, 1fr) minmax(72px, 94px)" in html
+    assert ".event-line > *" in html
+    assert "overflow-wrap: anywhere;" in html

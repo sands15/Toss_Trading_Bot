@@ -349,9 +349,14 @@ def dashboard_html() -> str:
     .clock-line {
       display: flex;
       align-items: center;
-      gap: 12px;
-      color: #99a8bd;
-      min-width: 180px;
+      gap: 8px;
+      min-width: 0;
+      color: #516079;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f8fafc;
+      padding: 9px 12px;
+      box-shadow: 0 8px 18px rgba(31, 46, 76, 0.04);
     }
 
     .clock-line svg {
@@ -362,6 +367,13 @@ def dashboard_html() -> str:
 
     .clock-line span {
       white-space: nowrap;
+    }
+
+    .clock-text {
+      color: #516079;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1;
     }
 
     .ghost-line {
@@ -777,6 +789,8 @@ def dashboard_html() -> str:
       list-style: none;
       display: grid;
       gap: 19px;
+      min-width: 0;
+      max-width: calc(100% - 48px);
     }
 
     .timeline::before {
@@ -796,6 +810,8 @@ def dashboard_html() -> str:
       align-items: center;
       position: relative;
       min-height: 18px;
+      min-width: 0;
+      max-width: 100%;
     }
 
     .event-dot {
@@ -989,15 +1005,22 @@ def dashboard_html() -> str:
       background: #ffffff;
       padding: 14px 16px;
       display: grid;
-      grid-template-columns: 84px minmax(0, 1fr) 94px;
+      grid-template-columns: minmax(68px, 84px) minmax(0, 1fr) minmax(72px, 94px);
       gap: 16px;
       align-items: start;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .event-card > * {
+      min-width: 0;
     }
 
     .event-card strong {
       display: block;
       margin-bottom: 4px;
       font-size: 13px;
+      overflow-wrap: anywhere;
     }
 
     .event-card p {
@@ -1005,6 +1028,16 @@ def dashboard_html() -> str:
       color: var(--muted);
       font-size: 12px;
       line-height: 1.45;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .event-card .helper-text {
+      justify-self: end;
+      max-width: 100%;
+      text-align: right;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
 
     .level-badge {
@@ -1202,6 +1235,12 @@ def dashboard_html() -> str:
       gap: 14px;
       align-items: center;
       min-height: 32px;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .event-line > * {
+      min-width: 0;
     }
 
     .event-line .event-dot {
@@ -1210,7 +1249,10 @@ def dashboard_html() -> str:
 
     .event-line .helper-text {
       font-size: 11px;
-      white-space: nowrap;
+      justify-self: end;
+      text-align: right;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
 
     .sr-data {
@@ -1315,6 +1357,31 @@ def dashboard_html() -> str:
         gap: 10px;
       }
 
+      .timeline {
+        margin: 8px 16px 18px;
+        max-width: calc(100% - 32px);
+      }
+
+      .event-line {
+        grid-template-columns: 12px 44px minmax(0, 1fr);
+      }
+
+      .event-line .helper-text {
+        grid-column: 3;
+        justify-self: start;
+        text-align: left;
+      }
+
+      .event-card {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+
+      .event-card .helper-text {
+        justify-self: start;
+        text-align: left;
+      }
+
       .chart-area {
         margin: 0 18px 18px;
       }
@@ -1384,7 +1451,7 @@ def dashboard_html() -> str:
       <div class="top-actions">
         <div class="clock-line" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
-          <span class="ghost-line" style="width:100px"></span>
+          <span id="dashboard-clock" class="clock-text">현재 --:--:--</span>
         </div>
         <button class="btn" type="button" id="refresh-button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a9 9 0 0 1-9 9 8.7 8.7 0 0 1-6-2.3"></path><path d="M3 12a9 9 0 0 1 15-6.7"></path><path d="M3 19v-5h5"></path><path d="M21 5v5h-5"></path></svg>
@@ -1748,6 +1815,22 @@ def dashboard_html() -> str:
         hour: "2-digit",
         minute: "2-digit"
       });
+    }
+
+    function currentClockText() {
+      const time = new Intl.DateTimeFormat("ko-KR", {
+        timeZone: "Asia/Seoul",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      }).format(new Date());
+      return `현재 ${time}`;
+    }
+
+    function updateDashboardClock() {
+      const clockText = document.getElementById("dashboard-clock");
+      if (clockText) clockText.textContent = currentClockText();
     }
 
     function eventLabel(message) {
@@ -2175,8 +2258,6 @@ def dashboard_html() -> str:
       document.getElementById("raw-aggregate-json").textContent = JSON.stringify(dashboard, null, 2);
       renderEndpointList(dashboard.raw_links || {});
       renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows);
-      const clockText = document.querySelector(".clock-line span");
-      if (clockText) clockText.textContent = shortTimestamp(dashboard.generated_at || new Date().toISOString());
     }
 
     function bindNavigation() {
@@ -2201,8 +2282,10 @@ def dashboard_html() -> str:
 
     bindNavigation();
     setActiveView(initialView());
+    updateDashboardClock();
     window.addEventListener("hashchange", () => setActiveView(initialView()));
     refresh().catch(console.error);
+    setInterval(updateDashboardClock, 1000);
     setInterval(() => refresh().catch(console.error), 6000);
   </script>
 </body>
