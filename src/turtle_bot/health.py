@@ -480,6 +480,24 @@ def dashboard_html() -> str:
       font-size: 12px;
       line-height: 1.45;
       overflow-wrap: anywhere;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .sidebar-action {
+      min-height: 34px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 12px;
+      background: var(--blue);
+      color: #ffffff;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 900;
     }
 
     .main {
@@ -832,8 +850,44 @@ def dashboard_html() -> str:
       gap: 20px;
     }
 
+    .user-view {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 20px;
+    }
+
     .data-panel {
       padding: 24px;
+    }
+
+    .primary-panel {
+      min-height: 260px;
+    }
+
+    .panel-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .panel-heading h2 {
+      margin-bottom: 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .panel-copy {
+      margin: -6px 0 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
     }
 
     .data-panel h2 {
@@ -847,6 +901,10 @@ def dashboard_html() -> str:
       overflow: auto;
       background: #fff;
       max-height: 420px;
+    }
+
+    .data-table:empty {
+      display: none;
     }
 
     .data-table table {
@@ -874,6 +932,95 @@ def dashboard_html() -> str:
       font-size: 12px;
       white-space: pre;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .hidden-json {
+      display: none;
+    }
+
+    .empty-state {
+      min-height: 154px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(180deg, #fbfcff, #ffffff);
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 22px;
+    }
+
+    .empty-state .icon-tile {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+    }
+
+    .empty-state strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 15px;
+    }
+
+    .empty-state p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .empty-state a {
+      color: var(--blue);
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .event-cards {
+      border: 0;
+      display: grid;
+      gap: 10px;
+      max-height: none;
+      background: transparent;
+      overflow: visible;
+    }
+
+    .event-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 14px 16px;
+      display: grid;
+      grid-template-columns: 84px minmax(0, 1fr) 94px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .event-card strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+
+    .event-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .level-badge {
+      width: fit-content;
+      border-radius: 999px;
+      padding: 4px 9px;
+      background: #ecfdf5;
+      color: #047857;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .level-badge.warn,
+    .level-badge.error {
+      background: #fff7ed;
+      color: #b45309;
     }
 
     .endpoint-list {
@@ -992,6 +1139,41 @@ def dashboard_html() -> str:
       font-size: 12px;
       line-height: 1.35;
       overflow-wrap: anywhere;
+    }
+
+    .next-step {
+      margin: 14px 20px 20px;
+      border: 1px solid #fed7aa;
+      border-radius: 8px;
+      background: #fff7ed;
+      padding: 14px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .next-step.done {
+      border-color: #a7f3d0;
+      background: #ecfdf5;
+    }
+
+    .next-step strong {
+      color: #1f2a44;
+      font-size: 13px;
+    }
+
+    .next-step p {
+      margin: 0;
+      color: #516079;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .next-step a {
+      width: fit-content;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 900;
+      text-decoration: none;
     }
 
     .summary-stack {
@@ -1210,7 +1392,7 @@ def dashboard_html() -> str:
         </button>
         <a class="btn primary" href="#raw" data-view="raw">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h4"></path></svg>
-          JSON 열기
+          원본 데이터
         </a>
       </div>
     </header>
@@ -1223,13 +1405,14 @@ def dashboard_html() -> str:
           <a href="#positions" data-view="positions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12"></path><path d="M8 5V3h8v2"></path><path d="M4 11h16"></path></svg>포지션</a>
           <a href="#orders" data-view="orders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>주문</a>
           <a href="#events" data-view="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>이벤트</a>
-          <a href="#raw" data-view="raw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 16v-2H3v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM3 8h18v4H3z"></path><path d="M3 8l6 5 5-3 7 3"></path></svg>Raw/API</a>
+          <a href="#raw" data-view="raw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 16v-2H3v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM3 8h18v4H3z"></path><path d="M3 8l6 5 5-3 7 3"></path></svg>개발자</a>
           <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>설정</a>
         </nav>
         <section class="sidebar-status" aria-label="현재 운영 상태">
           <strong id="sidebar-ready">상태 확인 중</strong>
           <p id="sidebar-mode">모드: -</p>
           <p id="sidebar-blockers">차단 항목: -</p>
+          <a class="sidebar-action" href="#settings" data-view="settings">설정 확인</a>
         </section>
       </aside>
 
@@ -1368,52 +1551,89 @@ def dashboard_html() -> str:
         </section>
 
         <section id="view-watchlist" class="view" data-view="watchlist">
-          <div class="empty-view">
-            <article class="card data-panel"><h2>관심 종목</h2><div id="watchlist-table" class="data-table"></div></article>
-            <article class="card data-panel"><h2>Watchlist JSON</h2><pre id="watchlist-json" class="view-json"></pre></article>
+          <div class="user-view">
+            <article class="card data-panel primary-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">감시 대상</p>
+                  <h2>관심 종목</h2>
+                </div>
+                <span id="watchlist-count-badge" class="status-pill">0개</span>
+              </div>
+              <div id="watchlist-table" class="data-table"></div>
+              <pre id="watchlist-json" class="view-json hidden-json"></pre>
+            </article>
           </div>
         </section>
 
         <section id="view-positions" class="view" data-view="positions">
-          <div class="empty-view">
-            <article class="card data-panel"><h2>포지션</h2><div id="positions-table" class="data-table"></div></article>
-            <article class="card data-panel"><h2>Positions JSON</h2><pre id="positions-json" class="view-json"></pre></article>
+          <div class="user-view">
+            <article class="card data-panel primary-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">현재 보유</p>
+                  <h2>포지션</h2>
+                </div>
+                <span id="positions-count-badge" class="status-pill">0개</span>
+              </div>
+              <div id="positions-table" class="data-table"></div>
+              <pre id="positions-json" class="view-json hidden-json"></pre>
+            </article>
           </div>
         </section>
 
         <section id="view-orders" class="view" data-view="orders">
-          <div class="empty-view">
-            <article class="card data-panel"><h2>주문</h2><div id="orders-table" class="data-table"></div></article>
-            <article class="card data-panel"><h2>Orders JSON</h2><pre id="orders-json" class="view-json"></pre></article>
+          <div class="user-view">
+            <article class="card data-panel primary-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">읽기 전용</p>
+                  <h2>주문</h2>
+                </div>
+                <span id="orders-count-badge" class="status-pill">0개</span>
+              </div>
+              <div id="orders-table" class="data-table"></div>
+              <pre id="orders-json" class="view-json hidden-json"></pre>
+            </article>
           </div>
         </section>
 
         <section id="view-events" class="view" data-view="events">
-          <div class="empty-view">
-            <article class="card data-panel"><h2>이벤트</h2><div id="events-table" class="data-table"></div></article>
-            <article class="card data-panel"><h2>Events JSON</h2><pre id="events-json" class="view-json"></pre></article>
+          <div class="user-view">
+            <article class="card data-panel primary-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">최근 기록</p>
+                  <h2>이벤트</h2>
+                </div>
+                <span id="events-count-badge" class="status-pill">0개</span>
+              </div>
+              <div id="events-table" class="data-table event-cards"></div>
+              <pre id="events-json" class="view-json hidden-json"></pre>
+            </article>
           </div>
         </section>
 
         <section id="view-raw" class="view" data-view="raw">
           <div class="empty-view">
-            <article class="card data-panel"><h2>Raw Endpoint List</h2><div id="endpoint-list" class="endpoint-list"></div></article>
-            <article class="card data-panel"><h2>Endpoint JSON</h2><pre id="raw-endpoint-json" class="view-json"></pre></article>
+            <article class="card data-panel"><h2>개발자 엔드포인트</h2><p class="panel-copy">문제 확인이 필요할 때만 원본 응답을 확인하세요.</p><div id="endpoint-list" class="endpoint-list"></div></article>
+            <article class="card data-panel"><h2>선택한 원본 데이터</h2><pre id="raw-endpoint-json" class="view-json"></pre></article>
           </div>
-          <article class="card data-panel" style="margin-top:20px"><h2>Aggregate Payload</h2><pre id="raw-aggregate-json" class="view-json"></pre></article>
+          <article class="card data-panel" style="margin-top:20px"><h2>전체 대시보드 원본</h2><pre id="raw-aggregate-json" class="view-json"></pre></article>
         </section>
 
         <section id="view-settings" class="view" data-view="settings">
           <div class="empty-view">
             <article class="card data-panel">
-              <h2>Settings and Toss Onboarding</h2>
+              <h2>먼저 확인할 설정</h2>
               <p id="settings-headline" class="status-copy">신규 사용자는 필요한 항목부터 순서대로 설정하세요.</p>
               <ul id="settings-onboarding-list" class="action-list"></ul>
             </article>
             <article class="card data-panel">
-              <h2>Checklist Signals</h2>
+              <h2>현재 막힌 이유</h2>
               <div id="settings-blockers-list" class="blocker-list"></div>
-              <pre id="settings-raw-links" class="view-json" style="margin-top:12px"></pre>
+              <p class="panel-copy">영문 환경변수 이름은 개발자 탭의 원본 데이터에서만 확인합니다.</p>
+              <pre id="settings-raw-links" class="view-json hidden-json"></pre>
             </article>
           </div>
         </section>
@@ -1582,6 +1802,25 @@ def dashboard_html() -> str:
       });
     }
 
+    function groupedBlockerLabels(blockers) {
+      return uniqueValues((blockers || []).map(blockerLabel));
+    }
+
+    function blockerShortLabel(blocker) {
+      const text = String(blocker || "");
+      if (text.includes("TOSS_CLIENT_ID") || text.includes("TOSS_CLIENT_SECRET")) return "Toss 인증 필요";
+      if (text.includes("account_seq")) return "계좌 연결 필요";
+      if (text.includes("runtime.symbols") || text.includes("universe_candidate_symbols")) return "종목 후보 없음";
+      if (text.includes("market_session_not_open")) return "시장 시간 아님";
+      if (text.includes("market_calendar_unknown")) return "개장 정보 확인 필요";
+      if (text.includes("universe_empty")) return "후보 종목 없음";
+      return blockerLabel(blocker);
+    }
+
+    function groupedBlockerShortLabels(blockers) {
+      return uniqueValues((blockers || []).map(blockerShortLabel));
+    }
+
     function statusText(kind) {
       if (kind === "done") return "완료";
       if (kind === "warn") return "진행 필요";
@@ -1612,17 +1851,32 @@ def dashboard_html() -> str:
       });
     }
 
-    function renderTable(elementId, rows, columns, fallback) {
+    function emptyState(title, body, href = "#settings", label = "설정 확인") {
+      return `<div class="empty-state">
+        <div class="icon-tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path><path d="M12 8v8"></path></svg></div>
+        <div>
+          <strong>${escapeHtml(title)}</strong>
+          <p>${escapeHtml(body)} <a href="${escapeHtml(href)}" data-view="${href.replace("#", "")}">${escapeHtml(label)}</a></p>
+        </div>
+      </div>`;
+    }
+
+    function renderTable(elementId, rows, columns, fallbackTitle, fallbackBody, fallbackHref = "#settings") {
       const container = document.getElementById(elementId);
       if (!container) return;
       if (!rows || !rows.length) {
-        container.innerHTML = `<div style="padding:16px;color:#7b8aa3">${escapeHtml(fallback)}</div>`;
+        container.innerHTML = emptyState(fallbackTitle, fallbackBody, fallbackHref);
         return;
       }
       const keys = columns || Object.keys(rows[0] || {});
       const head = keys.map((key) => `<th>${escapeHtml(columnLabel(key))}</th>`).join("");
       const body = rows.map((row) => `<tr>${keys.map((key) => `<td>${escapeHtml(displayValue(row[key]))}</td>`).join("")}</tr>`).join("");
       container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function setCountBadge(id, count, suffix = "개") {
+      const badge = document.getElementById(id);
+      if (badge) badge.textContent = `${count}${suffix}`;
     }
 
     function payloadItems(payload, key) {
@@ -1654,9 +1908,10 @@ def dashboard_html() -> str:
       readyText.textContent = ready ? "운영 가능" : "확인 필요";
       readyText.className = `status-pill ${statusKind(ready)}`;
       modeText.textContent = `모드: ${modeLabel(status && status.mode)}`;
-      blockerText.textContent = blockers.length
-        ? `차단 항목: ${groupedBlockerDetails(blockers).join(" / ")}`
-        : "차단 항목: 없음";
+      const labels = groupedBlockerShortLabels(blockers);
+      blockerText.textContent = labels.length
+        ? `확인할 항목 ${labels.length}개: ${labels.slice(0, 2).join(" / ")}${labels.length > 2 ? " ..." : ""}`
+        : "현재 막힌 항목이 없습니다.";
     }
 
     function renderMetricCards(status, watchRows, positionRows, orderRows, summary) {
@@ -1696,20 +1951,24 @@ def dashboard_html() -> str:
       const container = document.getElementById("dashboard-health-list");
       if (!container) return;
       const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
+      const labels = groupedBlockerLabels(blockers);
       const rows = [
-        ["상태", status && status.ready ? "준비됨" : "차단됨", status && status.ready ? "done" : "blocked"],
+        ["상태", status && status.ready ? "준비됨" : "설정 확인 필요", status && status.ready ? "done" : "blocked"],
         ["모드", status && status.mode ? status.mode : "idle", ""],
         ["마지막 heartbeat", shortTimestamp(status && status.last_heartbeat_at), ""],
         ["마지막 이벤트", shortTimestamp(status && status.last_event_at), ""],
         ["차단 항목", blockers.length ? `${blockers.length}개` : "없음", blockers.length ? "warn" : "done"]
       ];
       container.className = "info-list";
+      const nextStep = labels.length
+        ? `<div class="next-step"><strong>다음 할 일</strong><p>${escapeHtml(labels[0])}</p><a href="#settings" data-view="settings">설정에서 확인</a></div>`
+        : `<div class="next-step done"><strong>다음 할 일</strong><p>현재 막힌 설정이 없습니다. 최근 이벤트를 확인하세요.</p><a href="#events" data-view="events">이벤트 보기</a></div>`;
       container.innerHTML = rows.map(([label, value, kind]) => `
         <div class="info-row">
           <span class="dot"></span>
           <span><strong>${escapeHtml(label)}</strong><br>${escapeHtml(value)}</span>
           ${kind ? `<span class="status-pill ${kind}">${escapeHtml(value)}</span>` : `<span class="helper-text">read</span>`}
-        </div>`).join("");
+        </div>`).join("") + nextStep;
     }
 
     function renderWatchSummary(watchRows) {
@@ -1717,7 +1976,7 @@ def dashboard_html() -> str:
       if (!chart) return;
       const top = watchRows.slice(0, 5);
       if (!top.length) {
-        chart.innerHTML = `<div class="summary-stack"><div class="summary-chip"><strong>관심 종목 없음</strong><span class="helper-text">runtime.symbols 또는 universe 후보를 설정하면 여기에 표시됩니다.</span></div></div>`;
+        chart.innerHTML = `<div class="summary-stack">${emptyState("관심 종목이 없습니다", "감시할 종목 후보를 설정하면 이곳에 표시됩니다.")}</div>`;
         return;
       }
       chart.innerHTML = `<div class="summary-stack">${top.map((row) => `
@@ -1740,8 +1999,30 @@ def dashboard_html() -> str:
           </div>`;
       }
       if (strip) {
-        strip.innerHTML = positionRows.slice(0, 4).map((row) => `<span class="ghost-line" title="${escapeHtml(row.symbol || "-")}"></span>`).join("") || `<span class="helper-text">표시할 포지션이 없습니다.</span>`;
+        strip.innerHTML = positionRows.slice(0, 4).map((row) => `<span class="ghost-line" title="${escapeHtml(row.symbol || "-")}"></span>`).join("") || `<span class="helper-text">보유 포지션 없음</span>`;
       }
+    }
+
+    function renderEventCards(elementId, items) {
+      const container = document.getElementById(elementId);
+      if (!container) return;
+      if (!items || !items.length) {
+        container.innerHTML = emptyState("아직 이벤트가 없습니다", "페이퍼 서비스가 실행되면 시작, 차단, heartbeat 기록이 여기에 쌓입니다.", "#dashboard", "대시보드 보기");
+        return;
+      }
+      container.innerHTML = items.slice(0, 12).map((entry) => {
+        const level = String(entry.level || "INFO").toUpperCase();
+        const levelClass = level === "WARN" ? "warn" : level === "ERROR" ? "error" : "";
+        const blockers = Array.isArray(entry.payload && entry.payload.blockers)
+          ? uniqueValues(entry.payload.blockers.map(blockerLabel)).join(" ")
+          : "";
+        const detail = blockers || "추가 확인 사항은 없습니다.";
+        return `<div class="event-card">
+          <span class="level-badge ${levelClass}">${escapeHtml(level)}</span>
+          <div><strong>${escapeHtml(eventLabel(entry.message))}</strong><p>${escapeHtml(detail)}</p></div>
+          <span class="helper-text">${escapeHtml(shortTimestamp(entry.created_at))}</span>
+        </div>`;
+      }).join("");
     }
 
     function renderTimeline(elementId, items) {
@@ -1873,23 +2154,20 @@ def dashboard_html() -> str:
       renderHealthPanel(status);
       renderWatchSummary(watchRows);
       renderPositionSummary(positionRows);
-      renderTable("dashboard-open-orders-table", orderRows, null, "미체결 주문 없음");
+      renderTable("dashboard-open-orders-table", orderRows, null, "미체결 주문이 없습니다", "페이퍼 모드에서 주문 후보가 생기면 여기에 표시됩니다.", "#events");
       renderTimeline("dashboard-events-timeline", eventRows);
       renderBotSummary(status, summary, watchRows, orderRows);
       renderLogLines(eventRows);
 
-      renderTable("watchlist-table", watchRows, null, "관심 종목 없음");
-      renderTable("positions-table", positionRows, null, "포지션 없음");
-      renderTable("orders-table", orderRows, null, "미체결 주문 없음");
-      const eventTableRows = eventRows.map((event) => ({
-        time: shortTimestamp(event.created_at),
-        level: event.level || "",
-        event: eventLabel(event.message),
-        detail: Array.isArray(event.payload && event.payload.blockers)
-          ? event.payload.blockers.map(blockerLabel).join(", ")
-          : ""
-      }));
-      renderTable("events-table", eventTableRows, ["time", "level", "event", "detail"], "이벤트 없음");
+      setCountBadge("watchlist-count-badge", watchRows.length);
+      setCountBadge("positions-count-badge", positionRows.length);
+      setCountBadge("orders-count-badge", orderRows.length);
+      setCountBadge("events-count-badge", eventRows.length);
+
+      renderTable("watchlist-table", watchRows, null, "관심 종목이 없습니다", "감시할 종목 후보를 설정하면 매수 후보와 진입선 거리가 표시됩니다.");
+      renderTable("positions-table", positionRows, null, "보유 포지션이 없습니다", "포지션이 열리면 수량, 평단, 손절가를 여기서 확인할 수 있습니다.", "#dashboard");
+      renderTable("orders-table", orderRows, null, "미체결 주문이 없습니다", "현재 대기 중인 주문이 없습니다. 이 화면은 주문을 실행하지 않고 상태만 보여줍니다.", "#dashboard");
+      renderEventCards("events-table", eventRows);
       document.getElementById("watchlist-json").textContent = JSON.stringify(watchlist, null, 2);
       document.getElementById("positions-json").textContent = JSON.stringify(positions, null, 2);
       document.getElementById("orders-json").textContent = JSON.stringify(openOrders, null, 2);
@@ -1902,14 +2180,14 @@ def dashboard_html() -> str:
     }
 
     function bindNavigation() {
-      document.querySelectorAll("a[data-view]").forEach((anchor) => {
-        anchor.addEventListener("click", (event) => {
-          const view = anchor.dataset.view;
-          if (!view) return;
-          event.preventDefault();
-          setActiveView(view);
-          history.replaceState(null, "", `#${view}`);
-        });
+      document.body.addEventListener("click", (event) => {
+        const anchor = event.target.closest("a[data-view]");
+        if (!anchor) return;
+        const view = anchor.dataset.view;
+        if (!view) return;
+        event.preventDefault();
+        setActiveView(view);
+        history.replaceState(null, "", `#${view}`);
       });
       const button = document.getElementById("refresh-button");
       if (button) button.addEventListener("click", () => refresh().catch(console.error));

@@ -119,6 +119,12 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert TOSS_LOGO_ASSET.exists()
     assert "페이퍼 서비스 점검 완료" in html
     assert "Toss API 인증 정보가 아직 없습니다." in html
+    assert "원본 데이터" in html
+    assert "개발자" in html
+    assert "empty-state" in html
+    assert "hidden-json" in html
+    assert "renderEventCards" in html
+    assert "blockerShortLabel" in html
     assert 'id="sidebar-ready"' in html
     assert "left: max(8px, env(safe-area-inset-left))" in html
     assert 'id="refresh-button"' in html
