@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from turtle_bot.health import HealthServer, HealthSnapshot, dashboard_html
+from turtle_bot.health import HealthServer, HealthSnapshot, TOSS_LOGO_ASSET, dashboard_html
 from turtle_bot.notifier import MemoryNotifier
 
 
@@ -115,7 +115,8 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "never submits" in html
     assert "EVENT_LABELS" in html
     assert "COLUMN_LABELS" in html
-    assert 'aria-label="Toss logo">Toss</div>' in html
+    assert '<img class="logo" src="/assets/toss-symbol.png" alt="Toss logo"' in html
+    assert TOSS_LOGO_ASSET.exists()
     assert "페이퍼 서비스 점검 완료" in html
     assert "Toss API 인증 정보가 아직 없습니다." in html
     assert 'id="sidebar-ready"' in html

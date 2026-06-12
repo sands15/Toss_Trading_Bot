@@ -5,6 +5,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date as date_cls, datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from threading import Thread
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import parse_qs, urlparse
@@ -12,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 PayloadProvider = Callable[[], Mapping[str, Any]]
 EventsProvider = Callable[[int | None], list[Mapping[str, Any]]]
+TOSS_LOGO_ASSET = Path(__file__).with_name("assets") / "toss-symbol.png"
 
 
 def _now_utc() -> datetime:
@@ -299,19 +301,12 @@ def dashboard_html() -> str:
 
     .logo {
       width: 58px;
-      height: 40px;
+      height: 46px;
       border-radius: 8px;
-      display: grid;
-      place-items: center;
       background: #ffffff;
-      color: #0064ff;
-      border: 1px solid #e6eefb;
-      box-shadow: 0 12px 24px rgba(0, 100, 255, 0.12);
       flex: 0 0 auto;
-      font-size: 18px;
-      font-weight: 900;
-      letter-spacing: 0;
-      line-height: 1;
+      display: block;
+      object-fit: contain;
     }
 
     .brand-title {
@@ -1198,7 +1193,7 @@ def dashboard_html() -> str:
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <div class="logo" aria-label="Toss logo">Toss</div>
+        <img class="logo" src="/assets/toss-symbol.png" alt="Toss logo" loading="eager" decoding="async">
         <div class="brand-title">
           <strong>Toss Turtle Bot</strong>
           <span class="read-only">읽기 전용</span>
@@ -3339,6 +3334,23 @@ class HealthServer:
                     body = dashboard_html().encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                if path == "/assets/toss-symbol.png":
+                    try:
+                        body = TOSS_LOGO_ASSET.read_bytes()
+                    except OSError:
+                        self.send_response(404)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"error": "not found"}).encode("utf-8"))
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Cache-Control", "public, max-age=3600")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
