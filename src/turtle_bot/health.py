@@ -422,11 +422,15 @@ def dashboard_html() -> str:
       display: flex;
       flex-direction: column;
       gap: 22px;
+      position: sticky;
+      top: 86px;
+      height: calc(100vh - 86px);
+      overflow: auto;
     }
 
     .nav {
       display: grid;
-      gap: 20px;
+      gap: 10px;
     }
 
     .nav a,
@@ -463,6 +467,28 @@ def dashboard_html() -> str:
       margin-top: auto;
       padding-left: 14px;
       min-height: 42px;
+    }
+
+    .sidebar-status {
+      margin-top: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .sidebar-status strong {
+      font-size: 13px;
+    }
+
+    .sidebar-status p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
     }
 
     .main {
@@ -1133,12 +1159,14 @@ def dashboard_html() -> str:
 
       .bottom-nav {
         position: fixed;
-        left: 8px;
-        right: 8px;
+        left: max(8px, env(safe-area-inset-left));
+        right: max(8px, env(safe-area-inset-right));
+        width: auto;
+        max-width: none;
         bottom: calc(12px + env(safe-area-inset-bottom));
         z-index: 20;
         display: grid;
-        grid-template-columns: repeat(5, 1fr);
+        grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: 4px;
         padding: 8px 6px;
         background: rgba(255, 255, 255, 0.96);
@@ -1147,6 +1175,7 @@ def dashboard_html() -> str:
         box-shadow: 0 18px 45px rgba(15, 23, 42, 0.16);
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
+        justify-self: stretch;
       }
 
       .bottom-nav a {
@@ -1206,7 +1235,11 @@ def dashboard_html() -> str:
           <a href="#raw" data-view="raw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 16v-2H3v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM3 8h18v4H3z"></path><path d="M3 8l6 5 5-3 7 3"></path></svg>Raw/API</a>
           <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>설정</a>
         </nav>
-        <a class="theme-button" href="#dashboard" data-view="dashboard" title="Dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3a8.8 8.8 0 0 0 9 11.7A9 9 0 1 1 12 3Z"></path></svg></a>
+        <section class="sidebar-status" aria-label="현재 운영 상태">
+          <strong id="sidebar-ready">상태 확인 중</strong>
+          <p id="sidebar-mode">모드: -</p>
+          <p id="sidebar-blockers">차단 항목: -</p>
+        </section>
       </aside>
 
       <main class="main">
@@ -1452,6 +1485,31 @@ def dashboard_html() -> str:
       paper_runtime_blocked: "페이퍼 런타임 차단"
     };
 
+    const COLUMN_LABELS = {
+      time: "시간",
+      level: "레벨",
+      event: "이벤트",
+      detail: "상세",
+      symbol: "종목",
+      name: "이름",
+      status: "상태",
+      side: "방향",
+      quantity: "수량",
+      filled_quantity: "체결 수량",
+      remaining_quantity: "잔여 수량",
+      price: "가격",
+      observed_price: "관측가",
+      fill_price: "체결가",
+      avg_price: "평단",
+      average_price: "평단",
+      stop_price: "손절가",
+      entry_price: "진입가",
+      nearest_distance: "진입선 거리",
+      created_at: "생성 시각",
+      updated_at: "갱신 시각",
+      reason: "사유"
+    };
+
     function escapeHtml(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -1483,6 +1541,10 @@ def dashboard_html() -> str:
 
     function eventLabel(message) {
       return EVENT_LABELS[message] || String(message || "이벤트");
+    }
+
+    function columnLabel(key) {
+      return COLUMN_LABELS[key] || String(key || "").replaceAll("_", " ");
     }
 
     function blockerLabel(blocker) {
@@ -1567,7 +1629,7 @@ def dashboard_html() -> str:
         return;
       }
       const keys = columns || Object.keys(rows[0] || {});
-      const head = keys.map((key) => `<th>${escapeHtml(key)}</th>`).join("");
+      const head = keys.map((key) => `<th>${escapeHtml(columnLabel(key))}</th>`).join("");
       const body = rows.map((row) => `<tr>${keys.map((key) => `<td>${escapeHtml(displayValue(row[key]))}</td>`).join("")}</tr>`).join("");
       container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
     }
@@ -1583,6 +1645,29 @@ def dashboard_html() -> str:
       return ready ? "done" : "blocked";
     }
 
+    function modeLabel(mode) {
+      const text = String(mode || "idle");
+      if (text === "paper") return "페이퍼";
+      if (text === "live") return "실거래";
+      if (text === "idle") return "대기";
+      return text;
+    }
+
+    function renderSidebarStatus(status) {
+      const readyText = document.getElementById("sidebar-ready");
+      const modeText = document.getElementById("sidebar-mode");
+      const blockerText = document.getElementById("sidebar-blockers");
+      if (!readyText || !modeText || !blockerText) return;
+      const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
+      const ready = Boolean(status && status.ready);
+      readyText.textContent = ready ? "운영 가능" : "확인 필요";
+      readyText.className = `status-pill ${statusKind(ready)}`;
+      modeText.textContent = `모드: ${modeLabel(status && status.mode)}`;
+      blockerText.textContent = blockers.length
+        ? `차단 항목: ${groupedBlockerDetails(blockers).join(" / ")}`
+        : "차단 항목: 없음";
+    }
+
     function renderMetricCards(status, watchRows, positionRows, orderRows, summary) {
       const row = document.querySelector(".stat-row");
       if (!row) return;
@@ -1594,7 +1679,7 @@ def dashboard_html() -> str:
           <div class="icon-tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 7 4v10l-7 4-7-4V7l7-4Z"></path><path d="M12 8v8"></path><path d="m9 10 3-2 3 2"></path></svg></div>
           <div class="stat-lines">
             <p class="stat-label">운영 모드</p>
-            <span class="metric-value">${escapeHtml(mode)}</span>
+            <span class="metric-value">${escapeHtml(modeLabel(mode))}</span>
             <span class="status-pill ${statusKind(ready)}">${ready ? "준비됨" : "확인 필요"}</span>
           </div>
         </article>
@@ -1739,6 +1824,12 @@ def dashboard_html() -> str:
       const list = document.getElementById("settings-onboarding-list");
       const rawBlockers = Array.isArray(blockers) ? blockers : [];
       const recentEvents = Array.isArray(events) ? events : [];
+      const headline = document.getElementById("settings-headline");
+      if (headline) {
+        headline.textContent = rawBlockers.length
+          ? `먼저 ${groupedBlockerDetails(rawBlockers)[0]} 항목부터 확인하세요.`
+          : "필수 설정은 통과했습니다. 이벤트 탭에서 최근 heartbeat와 주문 가드를 확인하세요.";
+      }
       if (list) {
         list.innerHTML = ONBOARDING_STEPS.map((step, index) => {
           const matched = rawBlockers.filter(step.match);
@@ -1787,6 +1878,7 @@ def dashboard_html() -> str:
       const eventRows = payloadItems(events, "items");
 
       renderMetricCards(status, watchRows, positionRows, orderRows, summary);
+      renderSidebarStatus(status);
       renderHealthPanel(status);
       renderWatchSummary(watchRows);
       renderPositionSummary(positionRows);
