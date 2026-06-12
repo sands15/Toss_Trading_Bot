@@ -2505,8 +2505,11 @@ def dashboard_html() -> str:
         const view = anchor.dataset.view;
         if (!view) return;
         event.preventDefault();
-        setActiveView(view);
-        history.replaceState(null, "", `#${view}`);
+        if (initialView() === view) {
+          setActiveView(view);
+          return;
+        }
+        window.location.hash = view;
       });
       const button = document.getElementById("refresh-button");
       if (button) button.addEventListener("click", () => refresh().catch(console.error));

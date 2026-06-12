@@ -130,6 +130,8 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'id="refresh-button"' in html
     assert "addEventListener(\"click\", () => refresh().catch(console.error))" in html
     assert 'onclick="refresh()"' not in html
+    assert "window.location.hash = view" in html
+    assert "history.replaceState" not in html
     assert "width: auto;" in html
     assert "repeat(5, minmax(0, 1fr))" in html
     assert "renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows)" in html
