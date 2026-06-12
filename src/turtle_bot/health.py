@@ -360,13 +360,17 @@ def dashboard_html() -> str:
       align-items: center;
       gap: 12px;
       color: #99a8bd;
-      min-width: 150px;
+      min-width: 180px;
     }
 
     .clock-line svg {
       width: 18px;
       height: 18px;
       stroke-width: 2;
+    }
+
+    .clock-line span {
+      white-space: nowrap;
     }
 
     .ghost-line {
@@ -921,6 +925,95 @@ def dashboard_html() -> str:
       color: #047857;
     }
 
+    .status-pill.blocked {
+      background: #fff1f2;
+      border-color: #fecdd3;
+      color: #be123c;
+    }
+
+    .metric-value {
+      display: block;
+      margin: 4px 0 8px;
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 900;
+      color: #0f172a;
+    }
+
+    .metric-note,
+    .helper-text {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .info-list {
+      display: grid;
+      gap: 0;
+    }
+
+    .info-row {
+      min-height: 52px;
+      display: grid;
+      grid-template-columns: 12px minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 0 24px;
+      border-top: 1px solid var(--line-soft);
+    }
+
+    .info-row strong,
+    .event-line strong {
+      color: #1f2a44;
+      font-size: 13px;
+    }
+
+    .info-row span,
+    .event-line span {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .summary-stack {
+      padding: 0 24px 22px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .summary-chip {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+      padding: 12px 14px;
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .summary-chip strong {
+      font-size: 13px;
+    }
+
+    .event-line {
+      display: grid;
+      grid-template-columns: 12px 52px minmax(0, 1fr) 92px;
+      gap: 14px;
+      align-items: center;
+      min-height: 32px;
+    }
+
+    .event-line .event-dot {
+      align-self: center;
+    }
+
+    .event-line .helper-text {
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
     .sr-data {
       position: absolute;
       left: -10000px;
@@ -1040,16 +1133,20 @@ def dashboard_html() -> str:
 
       .bottom-nav {
         position: fixed;
-        left: 0;
-        right: 0;
-        bottom: 0;
+        left: 8px;
+        right: 8px;
+        bottom: calc(12px + env(safe-area-inset-bottom));
         z-index: 20;
         display: grid;
         grid-template-columns: repeat(5, 1fr);
         gap: 4px;
-        padding: 8px 6px calc(8px + env(safe-area-inset-bottom));
+        padding: 8px 6px;
         background: rgba(255, 255, 255, 0.96);
-        border-top: 1px solid var(--line);
+        border: 1px solid rgba(226, 232, 240, 0.92);
+        border-radius: 999px;
+        box-shadow: 0 18px 45px rgba(15, 23, 42, 0.16);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
       }
 
       .bottom-nav a {
@@ -1104,6 +1201,7 @@ def dashboard_html() -> str:
           <a class="active" href="#dashboard" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect></svg>대시보드</a>
           <a href="#watchlist" data-view="watchlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 17 5-5 4 4 7-8"></path><path d="M16 8h4v4"></path></svg>관심</a>
           <a href="#positions" data-view="positions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12"></path><path d="M8 5V3h8v2"></path><path d="M4 11h16"></path></svg>포지션</a>
+          <a href="#orders" data-view="orders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>주문</a>
           <a href="#events" data-view="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>이벤트</a>
           <a href="#raw" data-view="raw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 16v-2H3v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM3 8h18v4H3z"></path><path d="M3 8l6 5 5-3 7 3"></path></svg>Raw/API</a>
           <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>설정</a>
@@ -1259,6 +1357,13 @@ def dashboard_html() -> str:
           </div>
         </section>
 
+        <section id="view-orders" class="view" data-view="orders">
+          <div class="empty-view">
+            <article class="card data-panel"><h2>주문</h2><div id="orders-table" class="data-table"></div></article>
+            <article class="card data-panel"><h2>Orders JSON</h2><pre id="orders-json" class="view-json"></pre></article>
+          </div>
+        </section>
+
         <section id="view-events" class="view" data-view="events">
           <div class="empty-view">
             <article class="card data-panel"><h2>이벤트</h2><div id="events-table" class="data-table"></div></article>
@@ -1295,11 +1400,11 @@ def dashboard_html() -> str:
   </div>
 
   <nav class="bottom-nav" aria-label="Mobile dashboard sections">
-    <a class="active" href="#dashboard" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect></svg>Home</a>
-    <a href="#watchlist" data-view="watchlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 17 5-5 4 4 7-8"></path><path d="M16 8h4v4"></path></svg>List</a>
-    <a href="#positions" data-view="positions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M13 2.1a10 10 0 1 0 8.9 8.9H13V2.1Z"></path><path d="M15 2.1V9h6.9"></path></svg>Pos</a>
-    <a href="#events" data-view="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>Evt</a>
-    <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>Setup</a>
+    <a class="active" href="#dashboard" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect></svg>대시보드</a>
+    <a href="#watchlist" data-view="watchlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 17 5-5 4 4 7-8"></path><path d="M16 8h4v4"></path></svg>관심 종목</a>
+    <a href="#positions" data-view="positions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M13 2.1a10 10 0 1 0 8.9 8.9H13V2.1Z"></path><path d="M15 2.1V9h6.9"></path></svg>포지션</a>
+    <a href="#orders" data-view="orders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>주문</a>
+    <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>설정</a>
   </nav>
 
   <script>
@@ -1325,6 +1430,18 @@ def dashboard_html() -> str:
       if (value === true) return "예";
       if (value === false) return "아니요";
       return value == null || value === "" ? "-" : value;
+    }
+
+    function shortTimestamp(value) {
+      if (!value) return "-";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      return parsed.toLocaleString("ko-KR", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
     }
 
     function getJson(path) {
@@ -1357,6 +1474,149 @@ def dashboard_html() -> str:
       const head = keys.map((key) => `<th>${escapeHtml(key)}</th>`).join("");
       const body = rows.map((row) => `<tr>${keys.map((key) => `<td>${escapeHtml(displayValue(row[key]))}</td>`).join("")}</tr>`).join("");
       container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function payloadItems(payload, key) {
+      if (!payload) return [];
+      if (Array.isArray(payload.items)) return payload.items;
+      if (Array.isArray(payload[key])) return payload[key];
+      return [];
+    }
+
+    function statusKind(ready) {
+      return ready ? "done" : "blocked";
+    }
+
+    function renderMetricCards(status, watchRows, positionRows, orderRows, summary) {
+      const row = document.querySelector(".stat-row");
+      if (!row) return;
+      const ready = Boolean(status && status.ready);
+      const mode = status && status.mode ? status.mode : "idle";
+      const eventTotal = summary && summary.total != null ? summary.total : 0;
+      row.innerHTML = `
+        <article class="card stat-card">
+          <div class="icon-tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 7 4v10l-7 4-7-4V7l7-4Z"></path><path d="M12 8v8"></path><path d="m9 10 3-2 3 2"></path></svg></div>
+          <div class="stat-lines">
+            <p class="stat-label">운영 모드</p>
+            <span class="metric-value">${escapeHtml(mode)}</span>
+            <span class="status-pill ${statusKind(ready)}">${ready ? "준비됨" : "확인 필요"}</span>
+          </div>
+        </article>
+        <article class="card stat-card compact">
+          <div class="icon-tile small"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"></path></svg></div>
+          <div><p class="stat-label">관심 종목</p><span class="metric-value">${watchRows.length}</span><span class="metric-note">감시 중</span></div>
+        </article>
+        <article class="card stat-card compact">
+          <div class="icon-tile small"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 2a10 10 0 1 0 9 11h-9V2Z"></path><path d="M15 2.2V9h6.8A10 10 0 0 0 15 2.2Z"></path></svg></div>
+          <div><p class="stat-label">보유 포지션</p><span class="metric-value">${positionRows.length}</span><span class="metric-note">open</span></div>
+        </article>
+        <article class="card stat-card compact">
+          <div class="icon-tile small"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 4h8v16H8z"></path><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg></div>
+          <div><p class="stat-label">미체결 주문</p><span class="metric-value">${orderRows.length}</span><span class="metric-note">read-only</span></div>
+        </article>
+        <article class="card stat-card compact">
+          <div class="icon-tile small"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 22a2.5 2.5 0 0 0 2.4-1.8H9.6A2.5 2.5 0 0 0 12 22ZM18 16v-5a6 6 0 1 0-12 0v5l-2 2v1h16v-1l-2-2Z"></path></svg></div>
+          <div><p class="stat-label">총 이벤트</p><span class="metric-value">${eventTotal}</span><span class="metric-note">latest</span></div>
+        </article>`;
+    }
+
+    function renderHealthPanel(status) {
+      const container = document.getElementById("dashboard-health-list");
+      if (!container) return;
+      const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
+      const rows = [
+        ["상태", status && status.ready ? "준비됨" : "차단됨", status && status.ready ? "done" : "blocked"],
+        ["모드", status && status.mode ? status.mode : "idle", ""],
+        ["마지막 heartbeat", shortTimestamp(status && status.last_heartbeat_at), ""],
+        ["마지막 이벤트", shortTimestamp(status && status.last_event_at), ""],
+        ["차단 항목", blockers.length ? `${blockers.length}개` : "없음", blockers.length ? "warn" : "done"]
+      ];
+      container.className = "info-list";
+      container.innerHTML = rows.map(([label, value, kind]) => `
+        <div class="info-row">
+          <span class="dot"></span>
+          <span><strong>${escapeHtml(label)}</strong><br>${escapeHtml(value)}</span>
+          ${kind ? `<span class="status-pill ${kind}">${escapeHtml(value)}</span>` : `<span class="helper-text">read</span>`}
+        </div>`).join("");
+    }
+
+    function renderWatchSummary(watchRows) {
+      const chart = document.querySelector(".chart-area");
+      if (!chart) return;
+      const top = watchRows.slice(0, 5);
+      if (!top.length) {
+        chart.innerHTML = `<div class="summary-stack"><div class="summary-chip"><strong>관심 종목 없음</strong><span class="helper-text">runtime.symbols 또는 universe 후보를 설정하면 여기에 표시됩니다.</span></div></div>`;
+        return;
+      }
+      chart.innerHTML = `<div class="summary-stack">${top.map((row) => `
+        <div class="summary-chip">
+          <strong>${escapeHtml(row.symbol || "-")}</strong>
+          <span class="helper-text">nearest ${escapeHtml(displayValue(row.nearest_distance))}</span>
+        </div>`).join("")}</div>`;
+    }
+
+    function renderPositionSummary(positionRows) {
+      const donut = document.querySelector(".donut-wrap");
+      const strip = document.querySelector(".mini-strip");
+      if (donut) {
+        const open = positionRows.filter((row) => String(row.status || "").toUpperCase() === "OPEN").length;
+        donut.innerHTML = `
+          <div class="donut"></div>
+          <div class="summary-lines">
+            <div class="summary-chip"><strong>${positionRows.length} positions</strong><span class="helper-text">${open} open positions</span></div>
+            <div class="summary-chip"><strong>paper mode</strong><span class="helper-text">실거래 주문은 제출하지 않습니다.</span></div>
+          </div>`;
+      }
+      if (strip) {
+        strip.innerHTML = positionRows.slice(0, 4).map((row) => `<span class="ghost-line" title="${escapeHtml(row.symbol || "-")}"></span>`).join("") || `<span class="helper-text">표시할 포지션이 없습니다.</span>`;
+      }
+    }
+
+    function renderTimeline(elementId, items) {
+      const container = document.getElementById(elementId);
+      if (!container) return;
+      if (!items || !items.length) {
+        container.innerHTML = `<li class="event-line"><span class="event-dot"></span><strong>-</strong><span>아직 이벤트가 없습니다.</span><span></span></li>`;
+        return;
+      }
+      container.innerHTML = items.slice(0, 6).map((entry) => {
+        const level = String(entry.level || "INFO").toUpperCase();
+        const dot = level === "WARN" ? "warn" : level === "ERROR" ? "warn" : "ok";
+        return `<li class="event-line"><span class="event-dot ${dot}"></span><strong>${escapeHtml(level)}</strong><span>${escapeHtml(entry.message || "event")}</span><span class="helper-text">${escapeHtml(shortTimestamp(entry.created_at))}</span></li>`;
+      }).join("");
+    }
+
+    function renderBotSummary(status, summary, watchRows, orderRows) {
+      const container = document.querySelector(".bot-summary");
+      if (!container) return;
+      const blockers = Array.isArray(status && status.blockers) ? status.blockers.length : 0;
+      const eventTotal = summary && summary.total != null ? summary.total : 0;
+      const tiles = [
+        ["준비 상태", status && status.ready ? "운영 가능" : `${blockers}개 확인 필요`],
+        ["관심 종목", `${watchRows.length}개`],
+        ["주문 상태", `${orderRows.length}개 read-only`],
+        ["이벤트", `${eventTotal}개 기록`]
+      ];
+      container.innerHTML = tiles.map(([label, value]) => `
+        <div class="summary-tile">
+          <div class="icon-tile small"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12h16"></path><path d="M4 7h16"></path><path d="M4 17h16"></path></svg></div>
+          <div><strong>${escapeHtml(label)}</strong><br><span class="helper-text">${escapeHtml(value)}</span></div>
+        </div>`).join("");
+    }
+
+    function renderLogLines(events) {
+      const container = document.querySelector(".log-lines");
+      if (!container) return;
+      if (!events || !events.length) {
+        container.innerHTML = `<div class="log-line"><span class="dot"></span><span class="helper-text">표시할 로그가 없습니다.</span><span></span></div>`;
+        return;
+      }
+      container.innerHTML = events.slice(0, 4).map((event) => `
+        <div class="log-line">
+          <span class="dot"></span>
+          <span class="helper-text">${escapeHtml(event.message || "event")}</span>
+          <span class="helper-text">${escapeHtml(event.level || "")}</span>
+        </div>`).join("");
     }
 
     function renderEndpointList(rawLinks) {
@@ -1401,16 +1661,36 @@ def dashboard_html() -> str:
         getJson("/events/summary?limit=50")
       ]);
 
-      renderTable("watchlist-table", watchlist.items || [], null, "관심 종목 없음");
-      renderTable("positions-table", positions.items || [], null, "포지션 없음");
+      const status = dashboard.status || health || {};
+      const watchRows = payloadItems(watchlist, "watchlist");
+      const positionRows = payloadItems(positions, "positions");
+      const orderRows = payloadItems(openOrders, "open_orders").length
+        ? payloadItems(openOrders, "open_orders")
+        : payloadItems(dashboard.paper_intents, "open_orders");
+      const eventRows = payloadItems(events, "items");
+
+      renderMetricCards(status, watchRows, positionRows, orderRows, summary);
+      renderHealthPanel(status);
+      renderWatchSummary(watchRows);
+      renderPositionSummary(positionRows);
+      renderTable("dashboard-open-orders-table", orderRows, null, "미체결 주문 없음");
+      renderTimeline("dashboard-events-timeline", eventRows);
+      renderBotSummary(status, summary, watchRows, orderRows);
+      renderLogLines(eventRows);
+
+      renderTable("watchlist-table", watchRows, null, "관심 종목 없음");
+      renderTable("positions-table", positionRows, null, "포지션 없음");
+      renderTable("orders-table", orderRows, null, "미체결 주문 없음");
       renderTable("events-table", events.items || [], ["id", "level", "message", "created_at"], "이벤트 없음");
       document.getElementById("watchlist-json").textContent = JSON.stringify(watchlist, null, 2);
       document.getElementById("positions-json").textContent = JSON.stringify(positions, null, 2);
+      document.getElementById("orders-json").textContent = JSON.stringify(openOrders, null, 2);
       document.getElementById("events-json").textContent = JSON.stringify({ summary, events }, null, 2);
       document.getElementById("raw-aggregate-json").textContent = JSON.stringify(dashboard, null, 2);
       renderEndpointList(dashboard.raw_links || {});
-      renderOnboarding((dashboard.status || health || {}).blockers || [], dashboard.raw_links || {});
-      void openOrders;
+      renderOnboarding(status.blockers || [], dashboard.raw_links || {});
+      const clockText = document.querySelector(".clock-line span");
+      if (clockText) clockText.textContent = shortTimestamp(dashboard.generated_at || new Date().toISOString());
     }
 
     function bindNavigation() {
@@ -1428,7 +1708,7 @@ def dashboard_html() -> str:
     }
 
     function initialView() {
-      const allowed = new Set(["dashboard", "watchlist", "positions", "events", "raw", "settings"]);
+      const allowed = new Set(["dashboard", "watchlist", "positions", "orders", "events", "raw", "settings"]);
       const hash = window.location.hash ? window.location.hash.slice(1) : "dashboard";
       return allowed.has(hash) ? hash : "dashboard";
     }
@@ -1441,7 +1721,7 @@ def dashboard_html() -> str:
   </script>
 </body>
 </html>"""
-    return _legacy_dashboard_html()
+    return _skeleton_reference
 
 
 def _legacy_dashboard_html() -> str:
