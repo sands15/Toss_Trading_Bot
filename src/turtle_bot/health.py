@@ -298,24 +298,20 @@ def dashboard_html() -> str:
     }
 
     .logo {
-      width: 40px;
+      width: 58px;
       height: 40px;
       border-radius: 8px;
       display: grid;
       place-items: center;
-      background: linear-gradient(145deg, #3b82f6, #1d4ed8);
-      box-shadow: 0 12px 24px rgba(37, 99, 235, 0.26);
-      color: white;
-      flex: 0 0 auto;
-    }
-
-    .logo::after {
-      content: "";
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
       background: #ffffff;
-      opacity: 0.96;
+      color: #0064ff;
+      border: 1px solid #e6eefb;
+      box-shadow: 0 12px 24px rgba(0, 100, 255, 0.12);
+      flex: 0 0 auto;
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0;
+      line-height: 1;
     }
 
     .brand-title {
@@ -1202,7 +1198,7 @@ def dashboard_html() -> str:
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <div class="logo" aria-hidden="true"></div>
+        <div class="logo" aria-label="Toss logo">Toss</div>
         <div class="brand-title">
           <strong>Toss Turtle Bot</strong>
           <span class="read-only">읽기 전용</span>
