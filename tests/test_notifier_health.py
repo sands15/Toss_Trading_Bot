@@ -159,6 +159,12 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'id="toss-client-secret"' in html
     assert 'id="toss-account-seq"' in html
     assert 'id="toss-client-id-status"' in html
+    assert 'id="toss-identity-confirmation"' in html
+    assert 'id="toss-client-id-env"' not in html
+    assert 'id="toss-client-secret-env"' not in html
+    assert "환경변수 이름" not in html
+    assert 'class="settings-detail"' in html
+    assert "<summary>자세히 보기</summary>" in html
     assert "function setTossSettings" in html
     assert ".bottom-nav a.active svg" in html
     assert "현금 보유 비중" in html

@@ -471,6 +471,14 @@ def update_dashboard_settings(
         toss_payload = {}
     if not isinstance(toss_payload, Mapping):
         raise ValueError("toss settings must be an object")
+    toss_changes_requested = any(
+        key in toss_payload
+        for key in ("account_seq", "client_id", "client_secret", "client_id_env", "client_secret_env")
+    )
+    if toss_changes_requested:
+        confirmation = str(toss_payload.get("identity_confirmation") or "").strip()
+        if confirmation != "토스 연결 승인":
+            raise ValueError("identity confirmation required for Toss connection changes")
 
     toss = raw.get("toss", {})
     if not isinstance(toss, Mapping):

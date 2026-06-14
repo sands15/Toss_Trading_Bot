@@ -262,7 +262,6 @@ def _build_live_readiness_payload(
     strategy_kind = str(_settings_value(settings, "strategy_kind") or "unknown")
     live_enabled = bool(_settings_value(settings, "toss", "live_enabled"))
     account_configured = bool(_settings_value(settings, "toss", "account_seq_configured"))
-    api_envs = tuple(_settings_value(settings, "toss", "required_env") or ())
 
     api_blocked = _has_blocker(blockers, "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET")
     account_blocked = _has_blocker(blockers, "account_seq")
@@ -277,10 +276,10 @@ def _build_live_readiness_payload(
             "toss_credentials",
             "토스 API 인증",
             "blocked" if api_blocked else "done",
-            "환경변수 인증 정보 확인 필요"
+            "토스 앱 인증 정보 확인 필요"
             if api_blocked
-            else "필수 API 환경변수가 설정되어 있습니다.",
-            f"{', '.join(str(item) for item in api_envs) or 'TOSS_CLIENT_ID, TOSS_CLIENT_SECRET'} 값을 설정하세요."
+            else "필수 API 인증 정보가 설정되어 있습니다.",
+            "토스 개발자센터에서 발급받은 앱 ID와 비밀키를 설정하세요."
             if api_blocked
             else "인증 정보는 화면에 노출하지 않습니다.",
         ),
@@ -1370,6 +1369,44 @@ def dashboard_html() -> str:
       line-height: 1.4;
     }
 
+    .settings-detail {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+      overflow: hidden;
+    }
+
+    .settings-detail summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 12px;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 800;
+      user-select: none;
+    }
+
+    .settings-detail summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .settings-detail summary::after {
+      content: "+";
+      float: right;
+      color: var(--muted);
+      font-weight: 900;
+    }
+
+    .settings-detail[open] summary::after {
+      content: "-";
+    }
+
+    .settings-detail-body {
+      display: grid;
+      gap: 10px;
+      padding: 0 12px 12px;
+    }
+
     .settings-row {
       display: grid;
       gap: 7px;
@@ -2282,50 +2319,49 @@ def dashboard_html() -> str:
             </article>
             <article class="card data-panel">
               <h2>토스 API / 계좌 연결</h2>
-              <p class="panel-copy">토스 API 키와 거래 계좌 시퀀스를 입력합니다. 키 값은 저장 후 화면에 남기지 않습니다.</p>
+              <p class="panel-copy">토스 개발자센터에서 발급받은 앱 ID와 비밀키, 그리고 연결할 계좌 번호를 입력합니다. 비밀값은 저장 후 화면에 남기지 않습니다.</p>
               <section class="settings-form">
                 <div class="settings-grid">
                   <div class="settings-field">
-                    <label for="toss-client-id" class="settings-label">Toss Client ID</label>
-                    <input id="toss-client-id" type="password" autocomplete="off" placeholder="새 값 입력 시 현재 프로세스에 반영" />
-                    <p class="settings-helper">환경변수 <span id="toss-client-id-env-label">TOSS_CLIENT_ID</span> 값으로 사용합니다.</p>
+                    <label for="toss-client-id" class="settings-label">토스 앱 ID</label>
+                    <input id="toss-client-id" type="password" autocomplete="off" placeholder="토스 개발자센터에서 복사한 앱 ID" />
+                    <p class="settings-helper">토스 Open API 앱을 만들면 발급되는 공개 식별자입니다.</p>
                     <div class="credential-status">
                       <span id="toss-client-id-status" class="status-pill todo">미설정</span>
                     </div>
                   </div>
                   <div class="settings-field">
-                    <label for="toss-client-secret" class="settings-label">Toss Client Secret</label>
-                    <input id="toss-client-secret" type="password" autocomplete="off" placeholder="새 값 입력 시 현재 프로세스에 반영" />
-                    <p class="settings-helper">환경변수 <span id="toss-client-secret-env-label">TOSS_CLIENT_SECRET</span> 값으로 사용합니다.</p>
+                    <label for="toss-client-secret" class="settings-label">토스 앱 비밀키</label>
+                    <input id="toss-client-secret" type="password" autocomplete="off" placeholder="토스 개발자센터에서 복사한 비밀키" />
+                    <p class="settings-helper">계좌 조회와 시세 요청에 쓰는 비밀값입니다. 저장 후 다시 보여주지 않습니다.</p>
                     <div class="credential-status">
                       <span id="toss-client-secret-status" class="status-pill todo">미설정</span>
                     </div>
                   </div>
                   <div class="settings-field">
-                    <label for="toss-account-seq" class="settings-label">계좌 연결 <span class="settings-helper">toss.account_seq</span></label>
+                    <label for="toss-account-seq" class="settings-label">연결할 토스 계좌 번호</label>
                     <input id="toss-account-seq" type="text" inputmode="numeric" autocomplete="off" placeholder="예: 7" />
-                    <p class="settings-helper">토스 Open API의 X-Tossinvest-Account 헤더에 들어갈 계좌 시퀀스입니다.</p>
+                    <p class="settings-helper">토스 API가 계좌를 구분할 때 쓰는 짧은 번호입니다. 계좌 목록 조회에서 보이는 accountSeq 값을 넣습니다.</p>
                     <div class="credential-status">
                       <span id="toss-account-status" class="status-pill todo">미연결</span>
                     </div>
                   </div>
                   <div class="settings-field">
-                    <label for="toss-client-id-env" class="settings-label">환경변수 이름</label>
-                    <input id="toss-client-id-env" type="text" autocomplete="off" value="TOSS_CLIENT_ID" />
-                    <input id="toss-client-secret-env" type="text" autocomplete="off" value="TOSS_CLIENT_SECRET" />
-                    <p class="settings-helper">대부분 기본값 그대로 쓰면 됩니다.</p>
+                    <label for="toss-identity-confirmation" class="settings-label">로컬 본인 확인</label>
+                    <input id="toss-identity-confirmation" type="text" autocomplete="off" placeholder="토스 연결 승인" />
+                    <p class="settings-helper">토스 API 키나 계좌 연결값을 저장하려면 본인이 직접 입력했다는 확인으로 <strong>토스 연결 승인</strong>을 그대로 입력하세요.</p>
                   </div>
                 </div>
               </section>
             </article>
             <article class="card data-panel">
               <h2>모멘텀 전략 설정</h2>
-              <p class="panel-copy">옵션을 직접 입력하면 즉시 미리보기에 반영됩니다.</p>
+              <p class="panel-copy">자주 바꾸는 값만 먼저 보여줍니다. 전략 계산식에 가까운 값은 자세히 보기 안에 넣었습니다.</p>
               <section class="settings-form">
                 <div class="settings-grid">
                   <div class="settings-field">
                     <label for="momentum-cash-reserve-percent-slider" class="settings-label">
-                      현금 보유 비중 <span class="settings-helper">cash_reserve_pct</span>
+                      현금 보유 비중
                     </label>
                     <div class="settings-slider-box">
                       <input
@@ -2350,36 +2386,47 @@ def dashboard_html() -> str:
                   </div>
                   <div class="settings-field">
                     <label for="momentum-target-position-pct" class="settings-label">
-                      종목당 매수 비중 <span class="settings-helper">target_position_pct</span>
+                      종목당 매수 비중
                     </label>
                     <input id="momentum-target-position-pct" type="number" step="0.01" min="0" max="1" />
-                    <p class="settings-helper">예: 0.10(10%)</p>
+                    <p class="settings-helper">예: 0.10은 계좌의 10%씩 매수한다는 뜻입니다.</p>
                   </div>
                   <div class="settings-field">
-                    <label for="momentum-max-positions" class="settings-label">최대 보유 종목 수 <span class="settings-helper">max_positions</span></label>
+                    <label for="momentum-max-positions" class="settings-label">최대 보유 종목 수</label>
                     <input id="momentum-max-positions" type="number" min="1" max="200" step="1" />
+                    <p class="settings-helper">동시에 들고 있을 수 있는 종목 수입니다.</p>
                   </div>
                   <div class="settings-field">
-                    <label for="momentum-accept-top-n" class="settings-label">하루 신규 진입 수 <span class="settings-helper">accept_top_n</span></label>
+                    <label for="momentum-accept-top-n" class="settings-label">하루 신규 진입 수</label>
                     <input id="momentum-accept-top-n" type="number" min="1" max="200" step="1" />
-                  </div>
-                  <div class="settings-field">
-                    <label for="momentum-exit-ma-days" class="settings-label">청산 이동평균 <span class="settings-helper">exit_ma_days</span></label>
-                    <input id="momentum-exit-ma-days" type="number" min="1" max="10000" step="1" />
-                  </div>
-                  <div class="settings-field">
-                    <label for="momentum-lookback-days" class="settings-label">모멘텀 기간 <span class="settings-helper">lookback_days</span></label>
-                    <input id="momentum-lookback-days" type="number" min="1" max="10000" step="1" />
-                  </div>
-                  <div class="settings-field">
-                    <label for="momentum-skip-days" class="settings-label">최근 제외 기간 <span class="settings-helper">skip_days</span></label>
-                    <input id="momentum-skip-days" type="number" min="0" max="10000" step="1" />
-                  </div>
-                  <div class="settings-field">
-                    <label for="momentum-trend-ma-days" class="settings-label">시장 추세선 <span class="settings-helper">trend_ma_days</span></label>
-                    <input id="momentum-trend-ma-days" type="number" min="1" max="10000" step="1" />
+                    <p class="settings-helper">하루에 새로 살 수 있는 종목 수입니다.</p>
                   </div>
                 </div>
+                <details class="settings-detail">
+                  <summary>자세히 보기</summary>
+                  <div class="settings-detail-body settings-grid">
+                  <div class="settings-field">
+                    <label for="momentum-exit-ma-days" class="settings-label">청산 이동평균</label>
+                    <input id="momentum-exit-ma-days" type="number" min="1" max="10000" step="1" />
+                    <p class="settings-helper">가격이 이 기간의 평균선 아래로 내려가면 매도 후보로 봅니다.</p>
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-lookback-days" class="settings-label">모멘텀 기간</label>
+                    <input id="momentum-lookback-days" type="number" min="1" max="10000" step="1" />
+                    <p class="settings-helper">얼마나 긴 과거 수익률로 강한 종목을 고를지 정합니다.</p>
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-skip-days" class="settings-label">최근 제외 기간</label>
+                    <input id="momentum-skip-days" type="number" min="0" max="10000" step="1" />
+                    <p class="settings-helper">너무 최근의 급등락을 점수 계산에서 빼는 기간입니다.</p>
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-trend-ma-days" class="settings-label">시장 추세선</label>
+                    <input id="momentum-trend-ma-days" type="number" min="1" max="10000" step="1" />
+                    <p class="settings-helper">SPY가 이 평균선 아래에 있으면 시장이 약하다고 보고 진입을 막습니다.</p>
+                  </div>
+                  </div>
+                </details>
                 <div class="settings-actions">
                   <button id="settings-save-button" type="button" class="btn primary" disabled>설정 저장</button>
                   <p id="settings-save-status" class="settings-status" role="status" aria-live="polite"></p>
@@ -2412,13 +2459,13 @@ def dashboard_html() -> str:
     const ONBOARDING_STEPS = [
       {
         title: "Toss API 인증 정보",
-        body: "TOSS_CLIENT_ID와 TOSS_CLIENT_SECRET을 로컬 환경변수에 저장하세요.",
+        body: "토스 개발자센터에서 앱 ID와 비밀키를 발급받아 입력하세요.",
         group: "필수",
         match: (blocker) => blocker.includes("TOSS_CLIENT_ID") || blocker.includes("TOSS_CLIENT_SECRET")
       },
       {
         title: "거래 계좌 연결",
-        body: "config/local.yaml의 toss.account_seq 값을 설정하세요.",
+        body: "연결할 계좌의 accountSeq 값을 계좌 연결번호로 입력하세요.",
         group: "필수",
         match: (blocker) => blocker.includes("account_seq")
       },
@@ -3079,6 +3126,7 @@ def dashboard_html() -> str:
     let settingsFormInitialized = false;
     let settingsInputsBound = false;
     let settingsWritable = false;
+    let currentTossAccountSeq = "";
 
     function toFiniteNumber(value, fallback) {
       const parsed = Number(value);
@@ -3175,20 +3223,15 @@ def dashboard_html() -> str:
     function setTossSettings(settings) {
       const toss = (settings && settings.toss) || {};
       const accountSeq = document.getElementById("toss-account-seq");
-      const clientIdEnv = document.getElementById("toss-client-id-env");
-      const clientSecretEnv = document.getElementById("toss-client-secret-env");
-      const clientIdEnvLabel = document.getElementById("toss-client-id-env-label");
-      const clientSecretEnvLabel = document.getElementById("toss-client-secret-env-label");
       const clientId = document.getElementById("toss-client-id");
       const clientSecret = document.getElementById("toss-client-secret");
+      const identityConfirmation = document.getElementById("toss-identity-confirmation");
 
-      if (accountSeq) accountSeq.value = toss.account_seq || "";
-      if (clientIdEnv) clientIdEnv.value = toss.client_id_env || "TOSS_CLIENT_ID";
-      if (clientSecretEnv) clientSecretEnv.value = toss.client_secret_env || "TOSS_CLIENT_SECRET";
-      if (clientIdEnvLabel) clientIdEnvLabel.textContent = toss.client_id_env || "TOSS_CLIENT_ID";
-      if (clientSecretEnvLabel) clientSecretEnvLabel.textContent = toss.client_secret_env || "TOSS_CLIENT_SECRET";
+      currentTossAccountSeq = String(toss.account_seq || "");
+      if (accountSeq) accountSeq.value = currentTossAccountSeq;
       if (clientId) clientId.value = "";
       if (clientSecret) clientSecret.value = "";
+      if (identityConfirmation) identityConfirmation.value = "";
 
       setPillState("toss-client-id-status", "설정됨", "미설정", Boolean(toss.client_id_configured));
       setPillState("toss-client-secret-status", "설정됨", "미설정", Boolean(toss.client_secret_configured));
@@ -3225,8 +3268,7 @@ def dashboard_html() -> str:
       const tossClientId = document.getElementById("toss-client-id");
       const tossClientSecret = document.getElementById("toss-client-secret");
       const tossAccountSeq = document.getElementById("toss-account-seq");
-      const tossClientIdEnv = document.getElementById("toss-client-id-env");
-      const tossClientSecretEnv = document.getElementById("toss-client-secret-env");
+      const tossIdentityConfirmation = document.getElementById("toss-identity-confirmation");
       const saveButton = document.getElementById("settings-save-button");
       const status = document.getElementById("settings-save-status");
 
@@ -3252,18 +3294,24 @@ def dashboard_html() -> str:
           skip_days: safeInteger(skipDays?.value, SETTINGS_DEFAULT.skip_days, 0, 10000),
           trend_ma_days: safeInteger(trendMaDays?.value, SETTINGS_DEFAULT.trend_ma_days, 1, 10000),
         },
-        toss: {},
       };
       const accountSeq = String(tossAccountSeq?.value || "").trim();
       const clientId = String(tossClientId?.value || "").trim();
       const clientSecret = String(tossClientSecret?.value || "").trim();
-      const clientIdEnv = String(tossClientIdEnv?.value || "").trim();
-      const clientSecretEnv = String(tossClientSecretEnv?.value || "").trim();
-      if (accountSeq) payload.toss.account_seq = accountSeq;
-      if (clientId) payload.toss.client_id = clientId;
-      if (clientSecret) payload.toss.client_secret = clientSecret;
-      if (clientIdEnv) payload.toss.client_id_env = clientIdEnv;
-      if (clientSecretEnv) payload.toss.client_secret_env = clientSecretEnv;
+      const identityConfirmation = String(tossIdentityConfirmation?.value || "").trim();
+      const tossPayload = {};
+      if (accountSeq && accountSeq !== currentTossAccountSeq) tossPayload.account_seq = accountSeq;
+      if (clientId) tossPayload.client_id = clientId;
+      if (clientSecret) tossPayload.client_secret = clientSecret;
+      if (Object.keys(tossPayload).length) {
+        if (identityConfirmation !== "토스 연결 승인") {
+          status.textContent = "토스 API나 계좌 연결값을 저장하려면 본인 확인 문구를 먼저 입력하세요.";
+          status.className = "settings-status error";
+          return;
+        }
+        tossPayload.identity_confirmation = identityConfirmation;
+        payload.toss = tossPayload;
+      }
 
       saveButton.disabled = true;
       status.textContent = "저장 중입니다...";

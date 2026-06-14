@@ -438,6 +438,7 @@ def test_update_dashboard_settings_saves_toss_connection_without_secret_echo(
                 "client_secret_env": "MY_TOSS_CLIENT_SECRET",
                 "client_id": "client-id-value",
                 "client_secret": "client-secret-value",
+                "identity_confirmation": "토스 연결 승인",
             }
         },
         env=env,
@@ -453,6 +454,23 @@ def test_update_dashboard_settings_saves_toss_connection_without_secret_echo(
     loaded = config_path.read_text(encoding="utf-8")
     assert "client-id-value" not in loaded
     assert "client-secret-value" not in loaded
+
+
+def test_update_dashboard_settings_requires_identity_confirmation_for_toss_changes(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    _write_config(config_path, strategy_kind="momentum")
+
+    try:
+        update_dashboard_settings(
+            config_path,
+            {"toss": {"account_seq": "7"}},
+        )
+    except ValueError as exc:
+        assert "identity confirmation required" in str(exc)
+    else:
+        raise AssertionError("Toss connection settings saved without identity confirmation")
 
 
 def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
