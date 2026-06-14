@@ -275,6 +275,14 @@ def _dashboard_settings_payload(config) -> dict[str, Any]:
             "market": config.runtime.market,
             "timezone": config.runtime.timezone_name,
         },
+        "toss": {
+            "live_enabled": config.live_enabled,
+            "account_seq_configured": bool(config.toss.account_seq),
+            "required_env": [
+                config.toss.client_id_env,
+                config.toss.client_secret_env,
+            ],
+        },
         "momentum": {
             "cash_reserve_pct": str(config.momentum_cash_reserve_pct),
             "max_exposure_pct": str(config.momentum_max_exposure_pct),

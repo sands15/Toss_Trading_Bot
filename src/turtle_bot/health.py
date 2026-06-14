@@ -221,6 +221,169 @@ def _summarize_events(items: list[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _settings_value(settings: Mapping[str, Any], *path: str) -> Any:
+    value: Any = settings
+    for key in path:
+        if not isinstance(value, Mapping):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _has_blocker(blockers: Iterable[str], *needles: str) -> bool:
+    return any(any(needle in blocker for needle in needles) for blocker in blockers)
+
+
+def _readiness_check(
+    check_id: str,
+    label: str,
+    status: str,
+    summary: str,
+    action: str,
+) -> dict[str, str]:
+    return {
+        "id": check_id,
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "action": action,
+    }
+
+
+def _build_live_readiness_payload(
+    *,
+    status: Mapping[str, Any],
+    settings: Mapping[str, Any],
+    snapshot: HealthSnapshot,
+    events_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    blockers = tuple(str(item) for item in status.get("blockers", ()))
+    runtime_mode = str(_settings_value(settings, "runtime", "mode") or status.get("mode") or "idle")
+    strategy_kind = str(_settings_value(settings, "strategy_kind") or "unknown")
+    live_enabled = bool(_settings_value(settings, "toss", "live_enabled"))
+    account_configured = bool(_settings_value(settings, "toss", "account_seq_configured"))
+    api_envs = tuple(_settings_value(settings, "toss", "required_env") or ())
+
+    api_blocked = _has_blocker(blockers, "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET")
+    account_blocked = _has_blocker(blockers, "account_seq")
+    universe_blocked = _has_blocker(blockers, "runtime.symbols", "universe_candidate_symbols", "universe_empty")
+    market_blocked = _has_blocker(blockers, "market_session_not_open", "market_calendar_unknown")
+    reconcile_blocked = _has_blocker(blockers, "reconcile", "price_stale", "stale")
+    open_order_count = len(snapshot.open_orders)
+    event_total = int(events_summary.get("total") or 0)
+
+    checks = [
+        _readiness_check(
+            "toss_credentials",
+            "토스 API 인증",
+            "blocked" if api_blocked else "done",
+            "환경변수 인증 정보 확인 필요"
+            if api_blocked
+            else "필수 API 환경변수가 설정되어 있습니다.",
+            f"{', '.join(str(item) for item in api_envs) or 'TOSS_CLIENT_ID, TOSS_CLIENT_SECRET'} 값을 설정하세요."
+            if api_blocked
+            else "인증 정보는 화면에 노출하지 않습니다.",
+        ),
+        _readiness_check(
+            "toss_account",
+            "계좌 연결",
+            "blocked" if account_blocked or not account_configured else "done",
+            "거래 계좌 번호가 아직 확인되지 않았습니다."
+            if account_blocked or not account_configured
+            else "계좌 식별자가 로컬 설정에 들어 있습니다.",
+            "설정 파일의 toss.account_seq 값을 넣고 다시 확인하세요."
+            if account_blocked or not account_configured
+            else "실거래 전 계좌가 의도한 계좌인지 한 번 더 확인하세요.",
+        ),
+        _readiness_check(
+            "strategy_mode",
+            "전략/런타임 모드",
+            "done" if strategy_kind == "momentum" and runtime_mode in {"paper", "shadow"} else "warn",
+            f"{strategy_kind} 전략, {runtime_mode} 모드로 표시됩니다.",
+            "실거래 전에는 shadow 모드로 실제 계좌 read-only 검증을 먼저 돌리세요."
+            if runtime_mode != "shadow"
+            else "shadow 검증 결과와 이벤트를 확인하세요.",
+        ),
+        _readiness_check(
+            "universe",
+            "종목 후보",
+            "blocked" if universe_blocked else "done",
+            "감시할 종목 후보가 부족합니다."
+            if universe_blocked
+            else "종목 후보/유니버스 설정이 준비되어 있습니다.",
+            "runtime.symbols 또는 universe_candidate_symbols를 설정하세요."
+            if universe_blocked
+            else "PIT 유니버스와 로컬 가격 데이터 교집합을 계속 확인하세요.",
+        ),
+        _readiness_check(
+            "market_data",
+            "시장/시세 상태",
+            "warn" if market_blocked or reconcile_blocked or not status.get("ready") else "done",
+            "시장 시간, 캘린더, 시세 최신성 중 확인할 항목이 있습니다."
+            if market_blocked or reconcile_blocked or not status.get("ready")
+            else "현재 상태 payload 기준으로 막힌 시세 항목은 없습니다.",
+            "시장 개장 상태와 최근 heartbeat를 확인한 뒤 주문 판단을 진행하세요."
+            if market_blocked or reconcile_blocked or not status.get("ready")
+            else "초 단위 감시는 포지션 보유 중에만 켜는 구성이 좋습니다.",
+        ),
+        _readiness_check(
+            "open_orders",
+            "미체결 주문",
+            "warn" if open_order_count else "done",
+            f"미체결/주문 후보 {open_order_count}건이 표시됩니다."
+            if open_order_count
+            else "현재 표시된 미체결 주문은 없습니다.",
+            "실거래 전 중복 주문 여부를 먼저 정리하세요."
+            if open_order_count
+            else "주문 중복 위험은 낮아 보입니다.",
+        ),
+        _readiness_check(
+            "event_audit",
+            "최근 이벤트 기록",
+            "done" if event_total else "warn",
+            f"최근 이벤트 {event_total}건을 확인했습니다."
+            if event_total
+            else "아직 이벤트 로그가 비어 있습니다.",
+            "최소 한 번 이상 paper/shadow heartbeat가 쌓인 뒤 실전 전환을 검토하세요."
+            if not event_total
+            else "이벤트 탭에서 WARN/ERROR를 확인하세요.",
+        ),
+        _readiness_check(
+            "live_order_engine",
+            "실주문 제출 엔진",
+            "blocked",
+            "현재 코드에는 실제 주문 생성/정정/취소 계층이 연결되어 있지 않습니다.",
+            "토스 API 주문 계약 검증, 이중 확인, kill switch, 주문 한도 테스트가 끝나기 전까지 실주문은 비활성입니다.",
+        ),
+    ]
+    counts = Counter(str(item["status"]) for item in checks)
+    blocked_count = counts.get("blocked", 0)
+    warning_count = counts.get("warn", 0)
+    state = "blocked" if blocked_count else "needs_review" if warning_count else "ready_for_shadow"
+    headline = (
+        "실거래 주문 제출은 아직 비활성입니다"
+        if blocked_count
+        else "실거래 전 최종 검토가 필요합니다"
+        if warning_count
+        else "shadow 검증 기준은 통과했습니다"
+    )
+    return {
+        "state": state,
+        "headline": headline,
+        "summary": {
+            "done": counts.get("done", 0),
+            "warning": warning_count,
+            "blocked": blocked_count,
+        },
+        "runtime_mode": runtime_mode,
+        "strategy_kind": strategy_kind,
+        "live_enabled": live_enabled,
+        "can_submit_live_orders": False,
+        "submit_disabled_reason": "실제 주문 API 계층이 아직 연결되어 있지 않습니다.",
+        "checks": checks,
+    }
+
+
 def _events_for_day(items: list[Mapping[str, Any]], target: date_cls) -> list[Mapping[str, Any]]:
     output: list[Mapping[str, Any]] = []
     for item in items:
@@ -951,6 +1114,141 @@ def dashboard_html() -> str:
       min-height: 260px;
     }
 
+    .live-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.04fr) minmax(320px, 0.76fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .live-panel {
+      min-height: 280px;
+    }
+
+    .live-wide {
+      grid-column: 1 / -1;
+    }
+
+    .live-status-card {
+      border: 1px solid #fed7aa;
+      background: #fff7ed;
+    }
+
+    .live-status-card.done {
+      border-color: #a7f3d0;
+      background: #ecfdf5;
+    }
+
+    .live-status-card.blocked {
+      border-color: #fecaca;
+      background: #fff1f2;
+    }
+
+    .live-hero {
+      display: grid;
+      gap: 14px;
+    }
+
+    .live-hero strong {
+      color: #101828;
+      font-size: 22px;
+      line-height: 1.25;
+    }
+
+    .live-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .live-summary-item {
+      min-height: 82px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 12px;
+      display: grid;
+      gap: 6px;
+      align-content: center;
+    }
+
+    .live-summary-item span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .live-summary-item strong {
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .live-check-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .live-check {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .live-check strong {
+      display: block;
+      font-size: 14px;
+      line-height: 1.3;
+    }
+
+    .live-check p {
+      margin: 4px 0 0;
+      color: #516079;
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .live-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      margin-top: 3px;
+      background: #93c5fd;
+    }
+
+    .live-dot.done { background: #34d399; }
+    .live-dot.warn { background: #f59e0b; }
+    .live-dot.blocked { background: #ef4444; }
+
+    .live-disabled-box {
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      background: #fff1f2;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .live-disabled-box .btn {
+      justify-content: center;
+      cursor: not-allowed;
+      opacity: 0.72;
+      box-shadow: none;
+    }
+
+    .live-disabled-box ul {
+      margin: 0;
+      padding-left: 18px;
+      color: #516079;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
     .panel-heading {
       display: flex;
       align-items: flex-start;
@@ -1484,7 +1782,8 @@ def dashboard_html() -> str:
       }
 
       .dashboard-grid,
-      .empty-view {
+      .empty-view,
+      .live-grid {
         grid-template-columns: 1fr;
       }
 
@@ -1621,7 +1920,7 @@ def dashboard_html() -> str:
         bottom: calc(12px + env(safe-area-inset-bottom));
         z-index: 20;
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: repeat(6, minmax(0, 1fr));
         gap: 4px;
         padding: 8px 6px;
         background: rgba(255, 255, 255, 0.96);
@@ -1686,6 +1985,7 @@ def dashboard_html() -> str:
           <a href="#watchlist" data-view="watchlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 17 5-5 4 4 7-8"></path><path d="M16 8h4v4"></path></svg>관심</a>
           <a href="#positions" data-view="positions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12"></path><path d="M8 5V3h8v2"></path><path d="M4 11h16"></path></svg>포지션</a>
           <a href="#orders" data-view="orders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>주문</a>
+          <a href="#live" data-view="live"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z"></path><path d="m9 12 2 2 4-5"></path></svg>실거래</a>
           <a href="#events" data-view="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>이벤트</a>
           <a href="#raw" data-view="raw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 16v-2H3v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM3 8h18v4H3z"></path><path d="M3 8l6 5 5-3 7 3"></path></svg>개발자</a>
           <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>설정</a>
@@ -1898,6 +2198,48 @@ def dashboard_html() -> str:
           </div>
         </section>
 
+        <section id="view-live" class="view" data-view="live">
+          <div class="live-grid">
+            <article id="live-readiness-card" class="card data-panel live-panel live-status-card blocked">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">실거래 전환</p>
+                  <h2>실거래 준비도</h2>
+                </div>
+                <span id="live-readiness-status" class="status-pill blocked">확인 중</span>
+              </div>
+              <div class="live-hero">
+                <strong id="live-readiness-headline">실거래 상태를 불러오는 중입니다</strong>
+                <p id="live-readiness-copy" class="panel-copy">API, 계좌, 시장 상태, 이벤트 로그, 주문 엔진 연결 상태를 확인합니다.</p>
+                <div id="live-readiness-summary" class="live-summary"></div>
+              </div>
+            </article>
+            <article class="card data-panel live-panel">
+              <h2>주문 제출 상태</h2>
+              <div class="live-disabled-box">
+                <strong>실주문 제출 비활성</strong>
+                <p id="live-submit-reason" class="panel-copy">실제 주문 API 계층이 아직 연결되어 있지 않습니다.</p>
+                <button type="button" class="btn primary" disabled>실거래 주문 제출 불가</button>
+                <ul>
+                  <li>토스 주문 API 요청/응답 계약 검증 필요</li>
+                  <li>kill switch, 주문 한도, 중복 주문 방지 필요</li>
+                  <li>shadow 검증 로그와 계좌 대조 통과 필요</li>
+                </ul>
+              </div>
+            </article>
+            <article class="card data-panel live-panel live-wide">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">체크리스트</p>
+                  <h2>운영자가 확인할 항목</h2>
+                </div>
+                <span id="live-check-count" class="status-pill">0개</span>
+              </div>
+              <div id="live-readiness-checks" class="live-check-list"></div>
+            </article>
+          </div>
+        </section>
+
         <section id="view-events" class="view" data-view="events">
           <div class="user-view">
             <article class="card data-panel primary-panel">
@@ -2020,6 +2362,7 @@ def dashboard_html() -> str:
     <a href="#watchlist" data-view="watchlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 17 5-5 4 4 7-8"></path><path d="M16 8h4v4"></path></svg>관심 종목</a>
     <a href="#positions" data-view="positions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M13 2.1a10 10 0 1 0 8.9 8.9H13V2.1Z"></path><path d="M15 2.1V9h6.9"></path></svg>포지션</a>
     <a href="#orders" data-view="orders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>주문</a>
+    <a href="#live" data-view="live"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z"></path><path d="m9 12 2 2 4-5"></path></svg>실거래</a>
     <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>설정</a>
   </nav>
 
@@ -2314,6 +2657,88 @@ def dashboard_html() -> str:
       if (kind === "warn") return "진행 필요";
       if (kind === "blocked") return "차단";
       return "확인";
+    }
+
+    function liveStateLabel(state) {
+      if (state === "ready_for_shadow") return "shadow 기준 통과";
+      if (state === "needs_review") return "검토 필요";
+      if (state === "blocked") return "실거래 차단";
+      return "확인 중";
+    }
+
+    function liveStateClass(state) {
+      if (state === "ready_for_shadow") return "done";
+      if (state === "needs_review") return "warn";
+      return "blocked";
+    }
+
+    function renderLiveReadiness(readiness) {
+      const data = readiness || {};
+      const state = data.state || "blocked";
+      const kind = liveStateClass(state);
+      const card = document.getElementById("live-readiness-card");
+      const badge = document.getElementById("live-readiness-status");
+      const headline = document.getElementById("live-readiness-headline");
+      const copy = document.getElementById("live-readiness-copy");
+      const summary = document.getElementById("live-readiness-summary");
+      const checksBox = document.getElementById("live-readiness-checks");
+      const checkCount = document.getElementById("live-check-count");
+      const submitReason = document.getElementById("live-submit-reason");
+      const checks = Array.isArray(data.checks) ? data.checks : [];
+      const counts = data.summary || {};
+
+      if (card) {
+        card.className = `card data-panel live-panel live-status-card ${kind}`;
+      }
+      if (badge) {
+        badge.className = `status-pill ${kind}`;
+        badge.textContent = liveStateLabel(state);
+      }
+      if (headline) {
+        headline.textContent = data.headline || "실거래 상태를 확인하세요";
+      }
+      if (copy) {
+        const mode = data.runtime_mode ? modeLabel(data.runtime_mode) : "대기";
+        const strategy = data.strategy_kind || "unknown";
+        const liveFlag = data.live_enabled ? "켜짐" : "꺼짐";
+        copy.textContent = `현재 전략 ${strategy}, 런타임 ${mode}, live_enabled ${liveFlag}. 실제 주문 제출 가능 여부: ${data.can_submit_live_orders ? "가능" : "불가"}.`;
+      }
+      if (summary) {
+        const items = [
+          ["통과", counts.done || 0],
+          ["검토", counts.warning || 0],
+          ["차단", counts.blocked || 0],
+        ];
+        summary.innerHTML = items.map(([label, value]) => `
+          <div class="live-summary-item">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value)}</strong>
+          </div>`).join("");
+      }
+      if (submitReason) {
+        submitReason.textContent = data.submit_disabled_reason || "실제 주문 제출은 비활성입니다.";
+      }
+      if (checkCount) {
+        checkCount.textContent = `${checks.length}개`;
+      }
+      if (checksBox) {
+        if (!checks.length) {
+          checksBox.innerHTML = emptyState("확인 항목이 없습니다", "대시보드 데이터를 다시 불러오세요.", "#dashboard", "대시보드 보기");
+          return;
+        }
+        checksBox.innerHTML = checks.map((check) => {
+          const checkKind = check.status || "warn";
+          return `<div class="live-check">
+            <span class="live-dot ${escapeHtml(checkKind)}"></span>
+            <div>
+              <strong>${escapeHtml(check.label || "확인 항목")}</strong>
+              <p>${escapeHtml(check.summary || "")}</p>
+              <p>${escapeHtml(check.action || "")}</p>
+            </div>
+            <span class="status-pill ${escapeHtml(checkKind)}">${escapeHtml(statusText(checkKind))}</span>
+          </div>`;
+        }).join("");
+      }
     }
 
     function uniqueValues(items) {
@@ -2904,6 +3329,7 @@ def dashboard_html() -> str:
       renderHealthPanel(status);
       renderWatchSummary(watchRows);
       renderPositionSummary(positionRows);
+      renderLiveReadiness(dashboard.live_readiness || {});
       renderTable("dashboard-open-orders-table", orderRows, null, "미체결 주문이 없습니다", "페이퍼 모드에서 주문 후보가 생기면 여기에 표시됩니다.", "#events");
       renderTimeline("dashboard-events-timeline", eventRows);
       renderBotSummary(status, summary, watchRows, orderRows);
@@ -2941,7 +3367,7 @@ def dashboard_html() -> str:
     }
 
     function initialView() {
-      const allowed = new Set(["dashboard", "watchlist", "positions", "orders", "events", "raw", "settings"]);
+      const allowed = new Set(["dashboard", "watchlist", "positions", "orders", "live", "events", "raw", "settings"]);
       const hash = window.location.hash ? window.location.hash.slice(1) : "dashboard";
       return allowed.has(hash) ? hash : "dashboard";
     }
@@ -4315,6 +4741,7 @@ class HealthServer:
         status = snapshot.status_payload()
         if first is not None:
             status["last_event_at"] = _iso_datetime(first.get("created_at"))
+        runtime_summary = _summarize_events(events)
 
         return {
             "generated_at": snapshot.generated_at.isoformat(),
@@ -4329,9 +4756,15 @@ class HealthServer:
                 "count": len(events),
                 "items": _coerce_events_payload(events),
             },
-            "runtime_summary": _summarize_events(events),
+            "runtime_summary": runtime_summary,
             "settings": self._settings,
             "settings_write_enabled": self._settings_updater is not None,
+            "live_readiness": _build_live_readiness_payload(
+                status=status,
+                settings=self._settings,
+                snapshot=snapshot,
+                events_summary=runtime_summary,
+            ),
             "raw_links": {
                 "health": "/health",
                 "positions": "/positions",

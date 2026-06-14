@@ -104,6 +104,12 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     assert dashboard["paper_intents"]["count"] == 1
     assert dashboard["runtime_events"]["count"] == 2
     assert dashboard["settings"]["momentum"]["cash_reserve_pct"] == "0.50"
+    assert dashboard["live_readiness"]["can_submit_live_orders"] is False
+    assert dashboard["live_readiness"]["summary"]["blocked"] >= 1
+    assert any(
+        check["id"] == "live_order_engine"
+        for check in dashboard["live_readiness"]["checks"]
+    )
     assert dashboard["raw_links"]["events"] == "/events"
 
 
@@ -140,8 +146,13 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "window.location.hash = view" in html
     assert "history.replaceState" not in html
     assert "width: auto;" in html
-    assert "repeat(5, minmax(0, 1fr))" in html
+    assert "repeat(6, minmax(0, 1fr))" in html
     assert "dashboard.settings_write_enabled" in html
+    assert 'id="view-live"' in html
+    assert 'id="live-readiness-checks"' in html
+    assert "function renderLiveReadiness" in html
+    assert "dashboard.live_readiness" in html
+    assert "can_submit_live_orders" in html
     assert "cash_reserve_pct" in html
     assert "현금 보유 비중" in html
     assert "설정 저장" in html

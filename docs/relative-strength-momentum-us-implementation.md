@@ -105,6 +105,26 @@ momentum paper positions below the 75-day moving average, blocks same-iteration
 re-entry after an exit, and accepts the top-ranked candidates until the
 configured position limits are reached.
 
+## Dashboard Live Readiness
+
+The dashboard includes a Korean operator-facing `실거래` page. It is meant for
+live-readiness review, not broker order submission. The page checks:
+
+- Toss API credential readiness without exposing secret values.
+- Local account sequence configuration.
+- Strategy kind and runtime mode.
+- Candidate universe readiness.
+- Market/session and stale-data blockers.
+- Open order visibility.
+- Recent runtime event/audit log presence.
+- Whether a live order submission engine is connected.
+
+`can_submit_live_orders` remains `false` until a separate live order layer is
+implemented and verified against the Toss order API contract. Before this flag
+can become true, the project still needs duplicate-order protection, a kill
+switch, order-size limits, request/response contract tests, and successful
+shadow validation logs.
+
 ## Shadow Validation Runtime
 
 The next operational step after paper mode is `runtime.mode: shadow`:
