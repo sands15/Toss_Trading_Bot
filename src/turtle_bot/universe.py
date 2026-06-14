@@ -28,10 +28,10 @@ class UniverseMarketDataProvider(Protocol):
 
 
 class ReadOnlyUniverseClient(Protocol):
-    def get_stocks(self, symbols: list[str] | tuple[str, ...]) -> Mapping[str, Any]:
+    def get_stocks(self, symbols: list[str] | tuple[str, ...]) -> Any:
         ...
 
-    def get_stock_warnings(self, symbol: str) -> Mapping[str, Any]:
+    def get_stock_warnings(self, symbol: str) -> Any:
         ...
 
 
@@ -125,7 +125,8 @@ class UniverseBuilder:
         decisions = []
         for symbol in self.policy.candidate_symbols:
             stock = stocks.get(symbol, {})
-            warnings = self.client.get_stock_warnings(symbol)
+            raw_warnings = self.client.get_stock_warnings(symbol)
+            warnings = _payload_mapping(raw_warnings, array_key="warnings")
             try:
                 candles = tuple(self.market_data.get_completed_candles(symbol))
             except Exception as exc:
@@ -208,12 +209,17 @@ class UniverseBuilder:
         )
 
 
-def normalize_stock_payload(payload: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    raw_items = payload.get("stocks", payload.get("items", payload.get("data", ())))
-    if isinstance(raw_items, Mapping):
-        items = raw_items.values()
-    elif isinstance(raw_items, list):
-        items = raw_items
+def normalize_stock_payload(payload: Any) -> dict[str, Mapping[str, Any]]:
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, Mapping):
+        raw_items = payload.get("stocks", payload.get("items", payload.get("data", ())))
+        if isinstance(raw_items, Mapping):
+            items = raw_items.values()
+        elif isinstance(raw_items, list):
+            items = raw_items
+        else:
+            items = ()
     else:
         items = ()
     result: dict[str, Mapping[str, Any]] = {}
@@ -226,7 +232,7 @@ def normalize_stock_payload(payload: Mapping[str, Any]) -> dict[str, Mapping[str
     return result
 
 
-def warning_blockers(payload: Mapping[str, Any]) -> tuple[str, ...]:
+def warning_blockers(payload: Any) -> tuple[str, ...]:
     blockers: list[str] = []
     for item in _warning_items(payload):
         for key in WARNING_KEYS:
@@ -248,7 +254,11 @@ def average_traded_value(
     return sum(candle.close * candle.volume for candle in recent) / Decimal(len(recent))
 
 
-def _warning_items(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+def _warning_items(payload: Any) -> tuple[Mapping[str, Any], ...]:
+    if isinstance(payload, list):
+        return tuple(item for item in payload if isinstance(item, Mapping))
+    if not isinstance(payload, Mapping):
+        return ()
     for key in ("warnings", "items", "data"):
         value = payload.get(key)
         if isinstance(value, list):
@@ -256,6 +266,14 @@ def _warning_items(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
         if isinstance(value, Mapping):
             return (value,)
     return (payload,)
+
+
+def _payload_mapping(payload: Any, *, array_key: str) -> Mapping[str, Any]:
+    if isinstance(payload, Mapping):
+        return payload
+    if isinstance(payload, list):
+        return {array_key: payload}
+    return {}
 
 
 def _truthy_warning(value: Any) -> bool:
@@ -281,4 +299,3 @@ def _is_etf(stock: Mapping[str, Any]) -> bool:
     stock_type = str(_first(stock, "type", "stockType", "instrumentType") or "").upper()
     name = str(_first(stock, "name", "stockName", "displayName") or "").upper()
     return any(keyword in stock_type or keyword in name for keyword in ETF_KEYWORDS)
-

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Sequence
@@ -10,6 +9,7 @@ from .domain import (
     IndicatorSnapshot,
     PositionState,
     PositionStatus,
+    PositionDirection,
     Side,
     Signal,
     SignalKind,
@@ -38,6 +38,8 @@ def build_indicator_snapshot(
             entry_low_20=None,
             entry_high_55=None,
             entry_low_55=None,
+            exit_high_10=None,
+            exit_high_20=None,
             exit_low_10=None,
             exit_low_20=None,
             ready=False,
@@ -56,12 +58,12 @@ def build_indicator_snapshot(
         55,
         exclude_current=exclude_current,
     )
-    _, exit_low_10 = donchian_channel(
+    exit_high_10, exit_low_10 = donchian_channel(
         candles,
         10,
         exclude_current=exclude_current,
     )
-    _, exit_low_20 = donchian_channel(
+    exit_high_20, exit_low_20 = donchian_channel(
         candles,
         20,
         exclude_current=exclude_current,
@@ -82,6 +84,8 @@ def build_indicator_snapshot(
         entry_low_20=entry_low_20,
         entry_high_55=entry_high_55,
         entry_low_55=entry_low_55,
+        exit_high_10=exit_high_10,
+        exit_high_20=exit_high_20,
         exit_low_10=exit_low_10,
         exit_low_20=exit_low_20,
         ready=ready,
@@ -97,14 +101,78 @@ def apply_trade_outcomes(
     current = state
     for trade in outcomes:
         if trade.system == TurtleSystem.S1 and trade.realized_pnl > 0:
-            current = current.with_s1_skip(trade.symbol)
+            current = current.with_s1_skip(trade.symbol, trade.direction)
     return current
+
+
+def _entry_directions(
+    allowed_directions: Sequence[PositionDirection] | None,
+) -> tuple[PositionDirection, ...]:
+    if allowed_directions is None:
+        return (PositionDirection.LONG,)
+    return tuple(allowed_directions)
+
+
+def _entry_side(direction: PositionDirection) -> Side:
+    return Side.SELL if direction == PositionDirection.SHORT else Side.BUY
+
+
+def _exit_side(direction: PositionDirection) -> Side:
+    return Side.BUY if direction == PositionDirection.SHORT else Side.SELL
+
+
+def _stop_hit(
+    position: PositionState,
+    current_price: Decimal,
+) -> bool:
+    stop_price = position.current_stop_price
+    if stop_price is None:
+        return False
+    if position.direction == PositionDirection.SHORT:
+        return current_price >= stop_price
+    return current_price <= stop_price
+
+
+def _channel_exit_level(
+    snapshot: IndicatorSnapshot,
+    position: PositionState,
+) -> Decimal | None:
+    if position.direction == PositionDirection.SHORT:
+        return (
+            snapshot.exit_high_10
+            if position.system == TurtleSystem.S1
+            else snapshot.exit_high_20
+        )
+    return (
+        snapshot.exit_low_10
+        if position.system == TurtleSystem.S1
+        else snapshot.exit_low_20
+    )
+
+
+def _channel_exit_hit(
+    position: PositionState,
+    current_price: Decimal,
+    exit_level: Decimal,
+) -> bool:
+    if position.direction == PositionDirection.SHORT:
+        return current_price >= exit_level
+    return current_price <= exit_level
+
+
+def _pyramid_trigger_price(
+    position: PositionState,
+    pyramid_step_n: Decimal,
+) -> Decimal:
+    step = pyramid_step_n * position.entry_n
+    if position.direction == PositionDirection.SHORT:
+        return position.last_unit_entry_price - step
+    return position.last_unit_entry_price + step
 
 
 def _should_take_pyramid(
     position: PositionState,
     current_price: Decimal,
-    n: Decimal,
     max_units: int,
     pyramid_step_n: Decimal,
 ) -> bool:
@@ -113,8 +181,12 @@ def _should_take_pyramid(
     if len(position.units) == 0:
         return False
 
-    last_entry = position.last_unit_entry_price
-    if current_price < last_entry + pyramid_step_n * n:
+    trigger_price = _pyramid_trigger_price(position, pyramid_step_n)
+    if position.direction == PositionDirection.SHORT:
+        if current_price > trigger_price:
+            return False
+        return True
+    if current_price < trigger_price:
         return False
     return True
 
@@ -131,6 +203,7 @@ def evaluate_signals(
     n_method: str = "turtle",
     max_units_per_symbol: int = 4,
     pyramid_step_n: Decimal = Decimal("0.5"),
+    allowed_directions: Sequence[PositionDirection] | None = None,
 ) -> tuple[list[Signal], StrategyState]:
     """Return ordered decision signals for one symbol with exit/entry priority."""
 
@@ -142,16 +215,17 @@ def evaluate_signals(
     )
     now = datetime.now(timezone.utc)
     next_state = state
+    directions = _entry_directions(allowed_directions)
 
     if position is not None and position.status == PositionStatus.OPEN:
         stop_price = position.current_stop_price
-        if stop_price is not None and current_price <= stop_price:
+        if _stop_hit(position, current_price):
             return [
                 Signal.new(
                     symbol=symbol,
                     system=position.system,
                     kind=SignalKind.STOP,
-                    side=Side.SELL,
+                    side=_exit_side(position.direction),
                     trigger_price=stop_price,
                     observed_price=current_price,
                     triggered_at=now,
@@ -159,18 +233,14 @@ def evaluate_signals(
                 )
             ], next_state
 
-        exit_level = (
-            snapshot.exit_low_10
-            if position.system == TurtleSystem.S1
-            else snapshot.exit_low_20
-        )
-        if exit_level is not None and current_price <= exit_level:
+        exit_level = _channel_exit_level(snapshot, position)
+        if exit_level is not None and _channel_exit_hit(position, current_price, exit_level):
             return [
                 Signal.new(
                     symbol=symbol,
                     system=position.system,
                     kind=SignalKind.EXIT,
-                    side=Side.SELL,
+                    side=_exit_side(position.direction),
                     trigger_price=exit_level,
                     observed_price=current_price,
                     triggered_at=now,
@@ -181,7 +251,6 @@ def evaluate_signals(
         if _should_take_pyramid(
             position=position,
             current_price=current_price,
-            n=position.entry_n,
             max_units=max_units_per_symbol,
             pyramid_step_n=pyramid_step_n,
         ):
@@ -190,8 +259,8 @@ def evaluate_signals(
                     symbol=symbol,
                     system=position.system,
                     kind=SignalKind.PYRAMID,
-                    side=Side.BUY,
-                    trigger_price=position.last_unit_entry_price + (pyramid_step_n * position.entry_n),
+                    side=_entry_side(position.direction),
+                    trigger_price=_pyramid_trigger_price(position, pyramid_step_n),
                     observed_price=current_price,
                     triggered_at=now,
                     reason="pyramid_0.5N",
@@ -203,35 +272,72 @@ def evaluate_signals(
     if snapshot.n is None:
         return [], next_state
 
-    if snapshot.entry_high_55 is not None and current_price >= snapshot.entry_high_55 + minimum_tick:
-        return [
-            Signal.new(
-                symbol=symbol,
-                system=TurtleSystem.S2,
-                kind=SignalKind.ENTRY,
-                side=Side.BUY,
-                trigger_price=snapshot.entry_high_55 + minimum_tick,
-                observed_price=current_price,
-                triggered_at=now,
-                reason="s2_breakout",
-            )
-        ], next_state
+    for direction in directions:
+        if direction == PositionDirection.SHORT:
+            if snapshot.entry_low_55 is not None and current_price <= snapshot.entry_low_55 - minimum_tick:
+                return [
+                    Signal.new(
+                        symbol=symbol,
+                        system=TurtleSystem.S2,
+                        kind=SignalKind.ENTRY,
+                        side=Side.SELL,
+                        trigger_price=snapshot.entry_low_55 - minimum_tick,
+                        observed_price=current_price,
+                        triggered_at=now,
+                        reason="s2_short_breakout",
+                    )
+                ], next_state
+            continue
 
-    if snapshot.entry_high_20 is not None and current_price >= snapshot.entry_high_20 + minimum_tick:
-        if symbol in next_state.pending_s1_skip:
-            next_state = next_state.clear_s1_skip(symbol)
-            return [], next_state
-        return [
-            Signal.new(
-                symbol=symbol,
-                system=TurtleSystem.S1,
-                kind=SignalKind.ENTRY,
-                side=Side.BUY,
-                trigger_price=snapshot.entry_high_20 + minimum_tick,
-                observed_price=current_price,
-                triggered_at=now,
-                reason="s1_breakout",
-            )
-        ], next_state
+        if snapshot.entry_high_55 is not None and current_price >= snapshot.entry_high_55 + minimum_tick:
+            return [
+                Signal.new(
+                    symbol=symbol,
+                    system=TurtleSystem.S2,
+                    kind=SignalKind.ENTRY,
+                    side=Side.BUY,
+                    trigger_price=snapshot.entry_high_55 + minimum_tick,
+                    observed_price=current_price,
+                    triggered_at=now,
+                    reason="s2_breakout",
+                )
+            ], next_state
+
+    for direction in directions:
+        if direction == PositionDirection.SHORT:
+            if snapshot.entry_low_20 is not None and current_price <= snapshot.entry_low_20 - minimum_tick:
+                if next_state.should_skip_s1(symbol, direction):
+                    next_state = next_state.clear_s1_skip(symbol, direction)
+                    return [], next_state
+                return [
+                    Signal.new(
+                        symbol=symbol,
+                        system=TurtleSystem.S1,
+                        kind=SignalKind.ENTRY,
+                        side=Side.SELL,
+                        trigger_price=snapshot.entry_low_20 - minimum_tick,
+                        observed_price=current_price,
+                        triggered_at=now,
+                        reason="s1_short_breakout",
+                    )
+                ], next_state
+            continue
+
+        if snapshot.entry_high_20 is not None and current_price >= snapshot.entry_high_20 + minimum_tick:
+            if next_state.should_skip_s1(symbol, direction):
+                next_state = next_state.clear_s1_skip(symbol, direction)
+                return [], next_state
+            return [
+                Signal.new(
+                    symbol=symbol,
+                    system=TurtleSystem.S1,
+                    kind=SignalKind.ENTRY,
+                    side=Side.BUY,
+                    trigger_price=snapshot.entry_high_20 + minimum_tick,
+                    observed_price=current_price,
+                    triggered_at=now,
+                    reason="s1_breakout",
+                )
+            ], next_state
 
     return [], next_state

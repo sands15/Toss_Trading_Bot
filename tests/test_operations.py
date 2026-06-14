@@ -69,6 +69,8 @@ def _write_config(
     account_seq: str | None = None,
     universe_enabled: bool = False,
     universe_candidate_symbols: tuple[str, ...] = (),
+    strategy_kind: str = "turtle",
+    runtime_mode: str = "paper",
     client_id_env: str = "TOSS_CLIENT_ID",
     client_secret_env: str = "TOSS_CLIENT_SECRET",
 ) -> None:
@@ -87,7 +89,7 @@ def _write_config(
                 f"  client_id_env: {client_id_env}",
                 f"  client_secret_env: {client_secret_env}",
                 "runtime:",
-                "  mode: paper",
+                f"  mode: {runtime_mode}",
                 "  market: KR",
                 "  timezone: Asia/Seoul",
                 "  use_market_calendar: true",
@@ -100,8 +102,22 @@ def _write_config(
                 "  candle_count: 25",
                 "  exclude_current_session: true",
                 "strategy:",
+                f"  kind: {strategy_kind}",
                 "  minimum_tick: 1",
                 "  n_method: turtle",
+                "  momentum:",
+                "    market_symbol: SPY",
+                "    lookback_days: 5",
+                "    skip_days: 1",
+                "    trend_ma_days: 3",
+                "    exit_ma_days: 2",
+                "    max_positions: 1",
+                "    accept_top_n: 1",
+                "    target_position_pct: 0.10",
+                "    min_price: 0",
+                "    min_average_daily_value: 0",
+                "    average_daily_value_days: 2",
+                "    use_market_filter: true",
                 "  risk:",
                 "    risk_pct_per_unit: 0.005",
                 "    stop_n: 2",
@@ -136,6 +152,27 @@ def _api_candle(day: int) -> dict[str, Any]:
         "closePrice": str(candle.close),
         "volume": str(candle.volume),
         "currency": "KRW",
+    }
+
+
+def _api_trend_candle(day: int, *, close: Decimal, volume: str = "1000000") -> dict[str, Any]:
+    candle = Candle(
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=day),
+        symbol="TEST",
+        open=close,
+        high=close + Decimal("1"),
+        low=close - Decimal("1"),
+        close=close,
+        volume=Decimal(volume),
+    )
+    return {
+        "timestamp": candle.timestamp.isoformat(),
+        "openPrice": str(candle.open),
+        "highPrice": str(candle.high),
+        "lowPrice": str(candle.low),
+        "closePrice": str(candle.close),
+        "volume": str(candle.volume),
+        "currency": "USD",
     }
 
 
@@ -380,6 +417,132 @@ def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
         "paper_order_intent",
         "paper_order_guard",
     ]
+
+
+def test_paper_service_can_run_momentum_strategy_from_config(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(
+        config_path,
+        symbols=("AAA", "BBB"),
+        account_seq="7",
+        strategy_kind="momentum",
+    )
+    spy_candles = [
+        _api_trend_candle(day, close=Decimal("100") + Decimal(day))
+        for day in range(12)
+    ]
+    aaa_candles = [
+        _api_trend_candle(day, close=Decimal("100") + Decimal(day * 4))
+        for day in range(12)
+    ]
+    bbb_candles = [
+        _api_trend_candle(day, close=Decimal("100") + Decimal(day * 2))
+        for day in range(12)
+    ]
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"candles": aaa_candles}),
+            TossHttpResponse(200, {}, {"candles": bbb_candles}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"candles": spy_candles}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "SPY", "lastPrice": "112"}]}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "AAA", "lastPrice": "148"}]}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "BBB", "lastPrice": "124"}]}),
+        ]
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    events = store.list_runtime_events(limit=8)
+    saved_position = store.load_paper_position("AAA")
+    assert snapshot.ready is True
+    assert snapshot.open_orders[0]["system"] == "MOMENTUM"
+    assert snapshot.open_orders[0]["symbol"] == "AAA"
+    assert saved_position is not None
+    assert saved_position.system.value == "MOMENTUM"
+    assert any(event["message"] == "momentum_runtime_ranked" for event in events)
+
+
+def test_shadow_service_allows_read_only_broker_mismatches_for_validation(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(
+        config_path,
+        symbols=("AAA", "BBB"),
+        account_seq="7",
+        strategy_kind="momentum",
+        runtime_mode="shadow",
+    )
+    spy_candles = [
+        _api_trend_candle(day, close=Decimal("100") + Decimal(day))
+        for day in range(12)
+    ]
+    aaa_candles = [
+        _api_trend_candle(day, close=Decimal("100") + Decimal(day * 4))
+        for day in range(12)
+    ]
+    bbb_candles = [
+        _api_trend_candle(day, close=Decimal("100") + Decimal(day * 2))
+        for day in range(12)
+    ]
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"candles": aaa_candles}),
+            TossHttpResponse(200, {}, {"candles": bbb_candles}),
+            TossHttpResponse(
+                200,
+                {},
+                {"items": [{"symbol": "OTHER", "quantity": "1"}]},
+            ),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"candles": spy_candles}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "SPY", "lastPrice": "112"}]}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "AAA", "lastPrice": "148"}]}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "BBB", "lastPrice": "124"}]}),
+        ]
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    messages = [event["message"] for event in store.list_runtime_events(limit=10)]
+    saved_position = store.load_paper_position("AAA")
+    assert snapshot.mode == "shadow"
+    assert snapshot.ready is True
+    assert snapshot.open_orders[0]["mode"] == "shadow"
+    assert saved_position is not None
+    assert "shadow_reconcile_warning" in messages
+    assert "shadow_order_intent" in messages
+    assert "shadow_service_heartbeat" in messages
 
 
 def test_paper_service_uses_rule_based_universe_when_enabled(

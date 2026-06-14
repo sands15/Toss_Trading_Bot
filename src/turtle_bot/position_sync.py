@@ -17,7 +17,18 @@ UNRESOLVED_BROKER_STATUSES = frozenset(
         "PENDING_REPLACE",
     }
 )
-CLOSED_BROKER_STATUSES = frozenset({"CLOSED", "FILLED", "CANCELED", "REJECTED", "EXPIRED"})
+CLOSED_BROKER_STATUSES = frozenset(
+    {
+        "CLOSED",
+        "FILLED",
+        "CANCELED",
+        "REJECTED",
+        "EXPIRED",
+        "CANCEL_REJECTED",
+        "REPLACE_REJECTED",
+        "REPLACED",
+    }
+)
 
 
 class PositionStore(Protocol):

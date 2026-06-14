@@ -75,6 +75,7 @@ def test_extract_price_accepts_common_toss_payload_shapes() -> None:
     assert extract_price({"prices": [{"symbol": "AAA", "lastPrice": "10.5"}]}, "AAA") == Decimal("10.5")
     assert extract_price({"AAA": {"price": "11"}}, "AAA") == Decimal("11")
     assert extract_price({"items": [{"symbol": "AAA", "closePrice": "12"}]}, "AAA") == Decimal("12")
+    assert extract_price([{"symbol": "AAA", "lastPrice": "13"}], "AAA") == Decimal("13")
 
 
 def test_toss_market_data_provider_caches_and_records_snapshots() -> None:

@@ -40,6 +40,10 @@ behavior as an explicit deviation and block live trading until approved.
   records would-be order intents through runtime events and notifications.
 - Paper-only guard, fill/state simulator, repeated-iteration scheduler, and
   JSON report export.
+- Shadow validation mode for the step after paper trading. It uses real
+  read-only Toss account/market data, records shadow order intents and virtual
+  fills, tolerates unrelated broker holdings as warnings, and still has no live
+  order submission path.
 - macOS paper-service shell with launchd plist rendering, runtime directory
   setup, operations checks, and a read-only blocked health payload until market
   data wiring is present.
@@ -66,6 +70,7 @@ behavior as an explicit deviation and block live trading until approved.
 
 ## Documentation
 
+- [Setup](docs/setup.md)
 - [Turtle Rules](docs/turtle-rules.md)
 - [System Architecture](docs/architecture.md)
 - [Toss API Contract](docs/toss-api-contract.md)
@@ -73,26 +78,23 @@ behavior as an explicit deviation and block live trading until approved.
 - [Implementation Plan](docs/implementation-plan.md)
 - [Reference Project Notes](docs/reference-project-notes.md)
 
-## Toss API 연결 준비 체크리스트
+## Quick Setup
 
-Toss API 연결 전, 값만 주입하면 다음 단계로 진행할 수 있게 준비 항목은 아래 3개입니다.
+Windows:
 
-1. `config/local.yaml` (또는 동일 구조의 설정 파일)에 값 채우기
-   - `toss.account_seq` (숫자/문자열)
-   - `runtime.symbols` 또는 `runtime.universe_candidate_symbols`
-   - `toss.client_id_env`, `toss.client_secret_env` (기본값: `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET`)
-2. 운영 환경에 `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET` 실제 값 주입
-3. `--ops-check`로 상태 점검 실행
-
-```bash
-python -m turtle_bot \
-  --config config/local.yaml \
-  --state-db state/turtle.sqlite3 \
-  --log-dir logs \
-  --ops-check
+```powershell
+.\ops\setup-local.ps1
 ```
 
-체크가 통과되면 메시지/블로커에 `configured` 상태가 남고, 실제 paper service 점검으로 넘어갈 수 있습니다.
+macOS or Linux:
+
+```bash
+bash ops/setup-local.sh
+```
+
+Then fill `config/local.yaml`, set `TOSS_CLIENT_ID` and
+`TOSS_CLIENT_SECRET`, and run `--ops-check`. See [Setup](docs/setup.md) for the
+full first-run flow.
 
 ## Official References
 

@@ -32,10 +32,15 @@ def _history(symbol: str = "TEST", days: int = 21) -> tuple[Candle, ...]:
     return tuple(_c(day, symbol=symbol) for day in range(days))
 
 
-def _position(symbol: str = "TEST", qty: str = "3") -> PositionState:
+def _position(
+    symbol: str = "TEST",
+    qty: str = "3",
+    *,
+    system: TurtleSystem = TurtleSystem.S1,
+) -> PositionState:
     return PositionState(
         symbol=symbol,
-        system=TurtleSystem.S1,
+        system=system,
         status=PositionStatus.OPEN,
         total_qty=Decimal(qty),
         avg_entry_price=Decimal("100"),
@@ -125,6 +130,54 @@ def test_paper_runtime_reconcile_block_stops_before_market_data():
     assert market_data.calls == []
     assert notifier.snapshot()[0].message == "paper_reconcile_blocked"
     assert events[0]["message"] == "paper_reconcile_blocked"
+
+
+def test_shadow_runtime_reconcile_warning_allows_signal_generation():
+    market_data = FakeMarketData(
+        candles={"TEST": _history("TEST")},
+        prices={"TEST": Decimal("105")},
+    )
+    sync = FakePositionSync(
+        ReconcileResult(
+            issues=(
+                ReconcileIssue(
+                    code="broker_only_holding",
+                    symbol="OTHER",
+                    message="OTHER exists at broker but not in local state",
+                ),
+            ),
+            holdings=(BrokerHolding(symbol="OTHER", quantity=Decimal("1")),),
+            open_orders=(),
+        )
+    )
+    notifier = MemoryNotifier()
+
+    with SQLiteStateStore() as store:
+        runtime = PaperTradingRuntime(
+            config=PaperRuntimeConfig(
+                symbols=("TEST",),
+                mode="shadow",
+                require_clean_reconcile=False,
+            ),
+            market_data=market_data,
+            position_sync=sync,
+            store=store,
+            notifier=notifier,
+        )
+        result = runtime.run_once()
+        events = store.list_runtime_events(limit=4)
+        health = runtime.health_snapshot()
+
+    assert result.ready is True
+    assert len(result.intents) == 1
+    assert result.intents[0].mode == "shadow"
+    assert health.mode == "shadow"
+    assert [event["message"] for event in events] == [
+        "shadow_fill",
+        "shadow_order_intent",
+        "shadow_order_guard",
+        "shadow_reconcile_warning",
+    ]
 
 
 def test_paper_runtime_records_entry_intent_without_submitting_order():
@@ -274,3 +327,123 @@ def test_paper_scheduler_runs_repeated_iterations_with_sleep():
 
     assert len(results) == 2
     assert sleeps == [5]
+
+
+def test_paper_runtime_momentum_records_relative_strength_entry():
+    def trend(symbol: str, step: str) -> tuple[Candle, ...]:
+        return tuple(
+            Candle(
+                timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc)
+                + timedelta(days=day),
+                symbol=symbol,
+                open=Decimal("100") + Decimal(step) * Decimal(day),
+                high=Decimal("101") + Decimal(step) * Decimal(day),
+                low=Decimal("99") + Decimal(step) * Decimal(day),
+                close=Decimal("100") + Decimal(step) * Decimal(day),
+                volume=Decimal("1000000"),
+            )
+            for day in range(12)
+        )
+
+    market_data = FakeMarketData(
+        candles={
+            "SPY": trend("SPY", "1"),
+            "AAA": trend("AAA", "4"),
+            "BBB": trend("BBB", "2"),
+        },
+        prices={"SPY": Decimal("112"), "AAA": Decimal("148"), "BBB": Decimal("124")},
+    )
+    notifier = MemoryNotifier()
+
+    with SQLiteStateStore() as store:
+        runtime = PaperTradingRuntime(
+            config=PaperRuntimeConfig(
+                symbols=("AAA", "BBB"),
+                strategy_kind="momentum",
+                momentum_lookback_days=5,
+                momentum_skip_days=1,
+                momentum_trend_ma_days=3,
+                momentum_exit_ma_days=2,
+                momentum_max_positions=1,
+                momentum_accept_top_n=1,
+                momentum_target_position_pct=Decimal("0.10"),
+                momentum_min_price=Decimal("0"),
+                momentum_min_average_daily_value=Decimal("0"),
+                momentum_average_daily_value_days=2,
+                initial_equity=Decimal("10000"),
+            ),
+            market_data=market_data,
+            position_sync=FakePositionSync(_clean_reconcile()),
+            store=store,
+            notifier=notifier,
+        )
+        result = runtime.run_once()
+        saved_position = store.load_paper_position("AAA")
+
+    assert result.ready is True
+    assert len(result.intents) == 1
+    intent = result.intents[0]
+    assert intent.system == "MOMENTUM"
+    assert intent.symbol == "AAA"
+    assert intent.side == "BUY"
+    assert intent.quantity == Decimal("6")
+    assert intent.reason == "relative_momentum"
+    assert saved_position is not None
+    assert saved_position.system == TurtleSystem.MOMENTUM
+
+
+def test_paper_runtime_momentum_exits_below_exit_ma_without_same_day_reentry():
+    candles = tuple(
+        Candle(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=day),
+            symbol="AAA",
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=Decimal("1000000"),
+        )
+        for day in range(12)
+    )
+    market_data = FakeMarketData(
+        candles={
+            "SPY": candles,
+            "AAA": candles,
+        },
+        prices={"SPY": Decimal("100"), "AAA": Decimal("90")},
+    )
+    notifier = MemoryNotifier()
+
+    with SQLiteStateStore() as store:
+        store.save_paper_position(
+            _position("AAA", qty="3", system=TurtleSystem.MOMENTUM)
+        )
+        runtime = PaperTradingRuntime(
+            config=PaperRuntimeConfig(
+                symbols=("AAA",),
+                strategy_kind="momentum",
+                momentum_lookback_days=5,
+                momentum_skip_days=1,
+                momentum_trend_ma_days=3,
+                momentum_exit_ma_days=2,
+                momentum_min_price=Decimal("0"),
+                momentum_min_average_daily_value=Decimal("0"),
+                momentum_average_daily_value_days=2,
+                momentum_use_market_filter=False,
+            ),
+            market_data=market_data,
+            position_sync=FakePositionSync(_clean_reconcile()),
+            store=store,
+            notifier=notifier,
+        )
+        result = runtime.run_once()
+        saved_position = store.load_paper_position("AAA")
+
+    assert len(result.intents) == 1
+    intent = result.intents[0]
+    assert intent.system == "MOMENTUM"
+    assert intent.side == "SELL"
+    assert intent.quantity == Decimal("3")
+    assert intent.reason == "momentum_exit_ma"
+    assert saved_position is not None
+    assert saved_position.status == PositionStatus.CLOSED

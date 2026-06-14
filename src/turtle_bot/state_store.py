@@ -7,7 +7,7 @@ from typing import Any
 import json
 import sqlite3
 
-from .domain import PositionStatus, TurtleSystem, UnitState, PositionState, as_decimal
+from .domain import PositionDirection, PositionStatus, TurtleSystem, UnitState, PositionState, as_decimal
 from .watchlist import Watchlist, WatchlistRow
 
 
@@ -110,10 +110,12 @@ class SQLiteStateStore:
                   avg_entry_price TEXT NOT NULL,
                   entry_n TEXT NOT NULL,
                   current_stop_price TEXT NOT NULL,
-                  last_unit_entry_price TEXT NOT NULL
+                  last_unit_entry_price TEXT NOT NULL,
+                  direction TEXT NOT NULL DEFAULT 'LONG'
                 )
                 """
             )
+            self._ensure_column("positions", "direction", "TEXT NOT NULL DEFAULT 'LONG'")
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS position_units (
@@ -140,10 +142,12 @@ class SQLiteStateStore:
                   avg_entry_price TEXT NOT NULL,
                   entry_n TEXT NOT NULL,
                   current_stop_price TEXT NOT NULL,
-                  last_unit_entry_price TEXT NOT NULL
+                  last_unit_entry_price TEXT NOT NULL,
+                  direction TEXT NOT NULL DEFAULT 'LONG'
                 )
                 """
             )
+            self._ensure_column("paper_positions", "direction", "TEXT NOT NULL DEFAULT 'LONG'")
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS paper_position_units (
@@ -204,6 +208,12 @@ class SQLiteStateStore:
                 )
                 """
             )
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if any(row["name"] == column for row in rows):
+            return
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @staticmethod
     def _now_iso(at: datetime | None = None) -> str:
@@ -390,9 +400,10 @@ class SQLiteStateStore:
                     avg_entry_price,
                     entry_n,
                     current_stop_price,
-                    last_unit_entry_price
+                    last_unit_entry_price,
+                    direction
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(symbol) DO UPDATE SET
                   system = excluded.system,
                   status = excluded.status,
@@ -400,7 +411,8 @@ class SQLiteStateStore:
                   avg_entry_price = excluded.avg_entry_price,
                   entry_n = excluded.entry_n,
                   current_stop_price = excluded.current_stop_price,
-                  last_unit_entry_price = excluded.last_unit_entry_price
+                  last_unit_entry_price = excluded.last_unit_entry_price,
+                  direction = excluded.direction
                 """,
                 (
                     position.symbol,
@@ -411,6 +423,7 @@ class SQLiteStateStore:
                     self._to_str(position.entry_n),
                     self._to_str(position.current_stop_price),
                     self._to_str(position.last_unit_entry_price),
+                    position.direction.value,
                 ),
             )
             self._conn.execute(
@@ -460,7 +473,8 @@ class SQLiteStateStore:
                 avg_entry_price,
                 entry_n,
                 current_stop_price,
-                last_unit_entry_price
+                last_unit_entry_price,
+                direction
             FROM {positions_table}
             WHERE symbol = ?
             """.format(positions_table=positions_table),
@@ -509,6 +523,7 @@ class SQLiteStateStore:
             entry_n=self._from_str(position_row["entry_n"]),
             current_stop_price=self._from_str(position_row["current_stop_price"]),
             last_unit_entry_price=self._from_str(position_row["last_unit_entry_price"]),
+            direction=PositionDirection(position_row["direction"]),
             units=units,
         )
 

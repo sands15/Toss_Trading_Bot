@@ -1,11 +1,7 @@
 toss:
   live_enabled: false
-  # Set account_seq in this file only (number/string). No secret value here.
-  account_seq:
-  # Environment variable names for Toss credentials.
-  # Keep these values in your shell/OS profile or process manager.
-  # Do not write real client keys in this file.
-  # Default values are used when omitted.
+  # Fill this locally. Do not commit config/local.yaml.
+  account_seq: ""
   client_id_env: TOSS_CLIENT_ID
   client_secret_env: TOSS_CLIENT_SECRET
 
@@ -20,21 +16,17 @@ ai:
   temperature: 0.2
 
 runtime:
-  # paper: forward-test with virtual fills.
-  # shadow: real read-only account/market validation with virtual fills and no live orders.
-  mode: paper
-  market: KR
-  timezone: Asia/Seoul
+  # Use paper for virtual-only forward tests.
+  # Use shadow for real read-only account/market validation with virtual fills.
+  mode: shadow
+  market: US
+  timezone: America/New_York
   use_market_calendar: true
-  symbols: []
-# You can also provide universe candidates and enable universe mode.
-# runtime.universe_enabled: false
-# runtime.universe_candidate_symbols: []
   state_db: state/turtle.sqlite3
   log_dir: logs
   interval_seconds: 60
   candle_interval: 1d
-  # Momentum runtime needs at least lookback_days + skip_days + MA warmup.
+  # Momentum needs at least lookback_days + skip_days + MA warmup.
   candle_count: 320
   exclude_current_session: true
   watchlist_enabled: true
@@ -42,16 +34,26 @@ runtime:
   watchlist_name: premarket
   universe_enabled: false
   universe_candidate_symbols: []
-  universe_include_etfs: false
-  universe_min_price: 1000
-  universe_min_average_daily_value: 100000000
-  universe_min_completed_candles: 56
+  universe_include_etfs: true
+  universe_min_price: 5
+  universe_min_average_daily_value: 50000000
+  universe_min_completed_candles: 275
+  # Start with a small liquid list. Replace with your own candidate universe.
+  symbols:
+    - QQQ
+    - SPY
+    - XLK
+    - SMH
+    - NVDA
+    - MSFT
+    - AAPL
+    - AVGO
+    - AMD
+    - META
 
 strategy:
-  # turtle keeps the original Turtle signal runtime.
-  # momentum enables the saved US relative-strength momentum runtime.
-  kind: turtle
-  minimum_tick: 1
+  kind: momentum
+  minimum_tick: 0.01
   n_method: turtle
   momentum:
     market_symbol: SPY
@@ -67,7 +69,7 @@ strategy:
     average_daily_value_days: 20
     use_market_filter: true
   risk:
-    risk_pct_per_unit: 0.007
+    risk_pct_per_unit: 0.005
     stop_n: 2.0
     pyramid_step_n: 0.5
     max_units_per_symbol: 4

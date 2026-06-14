@@ -6,8 +6,10 @@ from dataclasses import replace
 
 from turtle_bot.domain import (
     Candle,
+    PositionDirection,
     PositionState,
     PositionStatus,
+    Side,
     SignalKind,
     StrategyState,
     TurtleSystem,
@@ -100,6 +102,42 @@ def test_s2_not_skipped_when_s1_skip_applies():
     assert "TEST" in next_state.pending_s1_skip
 
 
+def test_short_s1_entry_uses_20_day_low_when_enabled():
+    candles = _trend_candles(30)
+
+    signals, _ = evaluate_signals(
+        symbol="TEST",
+        completed_candles=candles,
+        current_price=Decimal("99"),
+        state=StrategyState(),
+        minimum_tick=Decimal("0"),
+        allowed_directions=(PositionDirection.SHORT,),
+    )
+
+    assert len(signals) == 1
+    assert signals[0].system == TurtleSystem.S1
+    assert signals[0].side == Side.SELL
+    assert signals[0].reason == "s1_short_breakout"
+
+
+def test_short_s2_not_skipped_when_short_s1_skip_applies():
+    candles = _trend_candles(60)
+
+    signals, next_state = evaluate_signals(
+        symbol="TEST",
+        completed_candles=candles,
+        current_price=Decimal("99"),
+        state=StrategyState(pending_s1_skip=frozenset({"TEST:SHORT"})),
+        minimum_tick=Decimal("0"),
+        allowed_directions=(PositionDirection.SHORT,),
+    )
+
+    assert len(signals) == 1
+    assert signals[0].system == TurtleSystem.S2
+    assert signals[0].side == Side.SELL
+    assert "TEST:SHORT" in next_state.pending_s1_skip
+
+
 def test_stop_priority_over_pyramid_and_entry():
     candles = _trend_candles(60)
     position = PositionState(
@@ -133,6 +171,80 @@ def test_stop_priority_over_pyramid_and_entry():
 
     assert len(signals) == 1
     assert signals[0].kind == SignalKind.STOP
+
+
+def test_short_stop_priority_over_channel_exit_and_pyramid():
+    candles = _trend_candles(60)
+    position = PositionState(
+        symbol="TEST",
+        system=TurtleSystem.S1,
+        status=PositionStatus.OPEN,
+        total_qty=Decimal("1"),
+        avg_entry_price=Decimal("100"),
+        entry_n=Decimal("2"),
+        current_stop_price=Decimal("100.50"),
+        last_unit_entry_price=Decimal("100"),
+        direction=PositionDirection.SHORT,
+        units=(
+            UnitState(
+                unit_no=1,
+                qty=Decimal("1"),
+                entry_price=Decimal("100"),
+                n_at_entry=Decimal("2"),
+                stop_price=Decimal("104"),
+            ),
+        ),
+    )
+
+    signals, _ = evaluate_signals(
+        symbol="TEST",
+        completed_candles=candles,
+        current_price=Decimal("101"),
+        state=StrategyState(),
+        position=position,
+        pyramid_step_n=Decimal("0.5"),
+    )
+
+    assert len(signals) == 1
+    assert signals[0].kind == SignalKind.STOP
+    assert signals[0].side == Side.BUY
+
+
+def test_short_channel_exit_uses_10_day_high_for_s1():
+    candles = _trend_candles(60)
+    position = PositionState(
+        symbol="TEST",
+        system=TurtleSystem.S1,
+        status=PositionStatus.OPEN,
+        total_qty=Decimal("1"),
+        avg_entry_price=Decimal("100"),
+        entry_n=Decimal("2"),
+        current_stop_price=Decimal("120"),
+        last_unit_entry_price=Decimal("100"),
+        direction=PositionDirection.SHORT,
+        units=(
+            UnitState(
+                unit_no=1,
+                qty=Decimal("1"),
+                entry_price=Decimal("100"),
+                n_at_entry=Decimal("2"),
+                stop_price=Decimal("104"),
+            ),
+        ),
+    )
+
+    signals, _ = evaluate_signals(
+        symbol="TEST",
+        completed_candles=candles,
+        current_price=Decimal("101"),
+        state=StrategyState(),
+        position=position,
+    )
+
+    assert len(signals) == 1
+    assert signals[0].kind == SignalKind.EXIT
+    assert signals[0].side == Side.BUY
+    assert signals[0].trigger_price == Decimal("101")
 
 
 def test_pyramid_only_after_favorable_half_n_and_cap_applies():
@@ -216,6 +328,55 @@ def test_pyramid_only_after_favorable_half_n_and_cap_applies():
     assert signals[0].kind == SignalKind.PYRAMID
 
 
+def test_short_pyramid_only_after_favorable_half_n():
+    candles = _trend_candles(60)
+    position = PositionState(
+        symbol="TEST",
+        system=TurtleSystem.S1,
+        status=PositionStatus.OPEN,
+        total_qty=Decimal("1"),
+        avg_entry_price=Decimal("100"),
+        entry_n=Decimal("2"),
+        current_stop_price=Decimal("110"),
+        last_unit_entry_price=Decimal("100"),
+        direction=PositionDirection.SHORT,
+        units=(
+            UnitState(
+                unit_no=1,
+                qty=Decimal("1"),
+                entry_price=Decimal("100"),
+                n_at_entry=Decimal("2"),
+                stop_price=Decimal("104"),
+            ),
+        ),
+    )
+
+    signals, _ = evaluate_signals(
+        symbol="TEST",
+        completed_candles=candles,
+        current_price=Decimal("99.10"),
+        state=StrategyState(),
+        position=position,
+        pyramid_step_n=Decimal("0.5"),
+        max_units_per_symbol=4,
+    )
+    assert signals == []
+
+    signals, _ = evaluate_signals(
+        symbol="TEST",
+        completed_candles=candles,
+        current_price=Decimal("99"),
+        state=StrategyState(),
+        position=position,
+        pyramid_step_n=Decimal("0.5"),
+        max_units_per_symbol=4,
+    )
+    assert len(signals) == 1
+    assert signals[0].kind == SignalKind.PYRAMID
+    assert signals[0].side == Side.SELL
+    assert signals[0].trigger_price == Decimal("99.0")
+
+
 def test_pyramid_uses_entry_n_not_latest_n_snapshot():
     candles = _trend_candles(60)
     position = PositionState(
@@ -281,3 +442,20 @@ def test_apply_trade_outcome_sets_s1_skip():
         [TradeOutcome(symbol="TEST", system=TurtleSystem.S1, realized_pnl=Decimal("12.34"))],
     )
     assert "TEST" in state.pending_s1_skip
+
+
+def test_apply_trade_outcome_sets_direction_specific_short_s1_skip():
+    state = apply_trade_outcomes(
+        StrategyState(),
+        [
+            TradeOutcome(
+                symbol="TEST",
+                system=TurtleSystem.S1,
+                realized_pnl=Decimal("12.34"),
+                direction=PositionDirection.SHORT,
+            )
+        ],
+    )
+
+    assert "TEST:SHORT" in state.pending_s1_skip
+    assert "TEST" not in state.pending_s1_skip

@@ -441,7 +441,7 @@ class TossClient:
                 group=group,
             )
         self._raise_for_error(response)
-        return response.payload
+        return _normalize_decimal_payload(_unwrap_result(response.payload))
 
     def _send(
         self,
@@ -529,6 +529,12 @@ def _query_value(value: Any) -> str:
 def _expect_mapping(payload: Any) -> Mapping[str, Any]:
     if not isinstance(payload, Mapping):
         raise TypeError(f"expected object response, got {type(payload)!r}")
+    return payload
+
+
+def _unwrap_result(payload: Any) -> Any:
+    if isinstance(payload, Mapping) and "result" in payload:
+        return payload["result"]
     return payload
 
 

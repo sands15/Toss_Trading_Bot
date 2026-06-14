@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from turtle_bot import PositionState, PositionStatus, TurtleSystem, UnitState
+from turtle_bot import PositionDirection, PositionState, PositionStatus, TurtleSystem, UnitState
 from turtle_bot.state_store import SQLiteStateStore
 from turtle_bot.watchlist import Watchlist, WatchlistRow
 
@@ -78,6 +78,7 @@ def test_position_roundtrip_with_units() -> None:
         entry_n=Decimal("1.5"),
         current_stop_price=Decimal("98.0"),
         last_unit_entry_price=Decimal("100.25"),
+        direction=PositionDirection.SHORT,
         units=(
             UnitState(
                 unit_no=1,
@@ -105,6 +106,49 @@ def test_position_roundtrip_with_units() -> None:
         loaded = store.load_position("SAMPLE")
 
     assert loaded == position
+
+
+def test_existing_position_schema_migrates_direction_column(tmp_path) -> None:
+    path = tmp_path / "legacy.sqlite"
+    with SQLiteStateStore(path) as store:
+        with store._conn:
+            store._conn.execute("ALTER TABLE positions RENAME TO old_positions")
+            store._conn.execute(
+                """
+                CREATE TABLE positions (
+                  symbol TEXT PRIMARY KEY,
+                  system TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  total_qty TEXT NOT NULL,
+                  avg_entry_price TEXT NOT NULL,
+                  entry_n TEXT NOT NULL,
+                  current_stop_price TEXT NOT NULL,
+                  last_unit_entry_price TEXT NOT NULL
+                )
+                """
+            )
+            store._conn.execute(
+                """
+                INSERT INTO positions (
+                    symbol,
+                    system,
+                    status,
+                    total_qty,
+                    avg_entry_price,
+                    entry_n,
+                    current_stop_price,
+                    last_unit_entry_price
+                )
+                VALUES ('LEGACY', 'S1', 'OPEN', '1', '100', '2', '96', '100')
+                """
+            )
+            store._conn.execute("DROP TABLE old_positions")
+
+    with SQLiteStateStore(path) as reopened:
+        loaded = reopened.load_position("LEGACY")
+
+    assert loaded is not None
+    assert loaded.direction == PositionDirection.LONG
 
 
 def test_list_positions_filters_by_status() -> None:

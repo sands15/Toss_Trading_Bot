@@ -15,6 +15,10 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+data = [
+    "pandas>=2.0",
+    "pykrx>=1.0.51",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

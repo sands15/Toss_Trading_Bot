@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from .domain import PositionDirection
+
 
 @dataclass(frozen=True)
 class TossConfig:
@@ -39,6 +41,7 @@ class RuntimeConfig:
     universe_min_price: Decimal = Decimal("1000")
     universe_min_average_daily_value: Decimal = Decimal("100000000")
     universe_min_completed_candles: int = 56
+    pit_universe_csv: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,13 +61,28 @@ class TradingConfig:
     toss: TossConfig = field(default_factory=TossConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     ai: AiConfig = field(default_factory=AiConfig)
+    strategy_kind: str = "turtle"
     minimum_tick: Decimal = Decimal("1")
     risk_pct_per_unit: Decimal = Decimal("0.005")
     stop_n: Decimal = Decimal("2")
     pyramid_step_n: Decimal = Decimal("0.5")
     max_units_per_symbol: int = 4
     max_total_long_units: int = 12
+    max_total_short_units: int = 12
+    backtest_allowed_directions: tuple[PositionDirection, ...] = (PositionDirection.LONG,)
     n_method: str = "turtle"
+    momentum_market_symbol: str = "SPY"
+    momentum_lookback_days: int = 252
+    momentum_skip_days: int = 21
+    momentum_trend_ma_days: int = 200
+    momentum_exit_ma_days: int = 100
+    momentum_max_positions: int = 10
+    momentum_accept_top_n: int = 3
+    momentum_target_position_pct: Decimal = Decimal("0.10")
+    momentum_min_price: Decimal = Decimal("5")
+    momentum_min_average_daily_value: Decimal = Decimal("50000000")
+    momentum_average_daily_value_days: int = 20
+    momentum_use_market_filter: bool = True
 
     @property
     def live_enabled(self) -> bool:
@@ -95,6 +113,29 @@ def _to_clean_string(value: Any, *, allow_empty: bool = False) -> str | None:
     if not text and not allow_empty:
         return None
     return text
+
+
+def _to_directions(value: Any) -> tuple[PositionDirection, ...]:
+    if value is None:
+        return (PositionDirection.LONG,)
+    raw_values: tuple[Any, ...]
+    if isinstance(value, str):
+        raw_values = tuple(part.strip() for part in value.split(",") if part.strip())
+    elif isinstance(value, list):
+        raw_values = tuple(value)
+    else:
+        raw_values = (value,)
+
+    directions: list[PositionDirection] = []
+    for item in raw_values:
+        clean = str(item).strip().upper()
+        if clean == "BOTH":
+            directions.extend([PositionDirection.LONG, PositionDirection.SHORT])
+            continue
+        direction = PositionDirection(clean)
+        if direction not in directions:
+            directions.append(direction)
+    return tuple(directions) or (PositionDirection.LONG,)
 
 
 def load_config(path: str | Path | None = None) -> TradingConfig:
@@ -162,6 +203,10 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             universe_min_completed_candles=int(
                 runtime.get("universe_min_completed_candles", 56)
             ),
+            pit_universe_csv=_to_clean_string(
+                runtime.get("pit_universe_csv"),
+                allow_empty=False,
+            ),
         ),
         ai=AiConfig(
             enabled=bool(ai.get("enabled", False)),
@@ -174,10 +219,54 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             temperature=_to_decimal(ai.get("temperature"), Decimal("0.2")),
         ),
         minimum_tick=_to_decimal(strategy.get("minimum_tick"), Decimal("1")),
+        strategy_kind=str(strategy.get("kind", "turtle")).strip().lower(),
         risk_pct_per_unit=_to_decimal(risk.get("risk_pct_per_unit"), Decimal("0.005")),
         stop_n=_to_decimal(risk.get("stop_n"), Decimal("2")),
         pyramid_step_n=_to_decimal(risk.get("pyramid_step_n"), Decimal("0.5")),
         max_units_per_symbol=int(risk.get("max_units_per_symbol", 4)),
         max_total_long_units=int(risk.get("max_total_long_units", 12)),
+        max_total_short_units=int(risk.get("max_total_short_units", 12)),
+        backtest_allowed_directions=_to_directions(
+            strategy.get("backtest_allowed_directions")
+        ),
         n_method=strategy.get("n_method", "turtle"),
+        momentum_market_symbol=str(
+            (strategy.get("momentum", {}) or {}).get("market_symbol", "SPY")
+        ),
+        momentum_lookback_days=int(
+            (strategy.get("momentum", {}) or {}).get("lookback_days", 252)
+        ),
+        momentum_skip_days=int(
+            (strategy.get("momentum", {}) or {}).get("skip_days", 21)
+        ),
+        momentum_trend_ma_days=int(
+            (strategy.get("momentum", {}) or {}).get("trend_ma_days", 200)
+        ),
+        momentum_exit_ma_days=int(
+            (strategy.get("momentum", {}) or {}).get("exit_ma_days", 100)
+        ),
+        momentum_max_positions=int(
+            (strategy.get("momentum", {}) or {}).get("max_positions", 10)
+        ),
+        momentum_accept_top_n=int(
+            (strategy.get("momentum", {}) or {}).get("accept_top_n", 3)
+        ),
+        momentum_target_position_pct=_to_decimal(
+            (strategy.get("momentum", {}) or {}).get("target_position_pct"),
+            Decimal("0.10"),
+        ),
+        momentum_min_price=_to_decimal(
+            (strategy.get("momentum", {}) or {}).get("min_price"),
+            Decimal("5"),
+        ),
+        momentum_min_average_daily_value=_to_decimal(
+            (strategy.get("momentum", {}) or {}).get("min_average_daily_value"),
+            Decimal("50000000"),
+        ),
+        momentum_average_daily_value_days=int(
+            (strategy.get("momentum", {}) or {}).get("average_daily_value_days", 20)
+        ),
+        momentum_use_market_filter=bool(
+            (strategy.get("momentum", {}) or {}).get("use_market_filter", True)
+        ),
     )

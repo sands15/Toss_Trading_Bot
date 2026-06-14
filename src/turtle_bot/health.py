@@ -178,6 +178,9 @@ def _summarize_events(items: list[Mapping[str, Any]]) -> dict[str, Any]:
             "paper_order_intents": 0,
             "paper_fills": 0,
             "paper_guard_checks": 0,
+            "shadow_order_intents": 0,
+            "shadow_fills": 0,
+            "shadow_guard_checks": 0,
             "paper_runtime_blocks": 0,
         }
 
@@ -210,7 +213,11 @@ def _summarize_events(items: list[Mapping[str, Any]]) -> dict[str, Any]:
         "paper_order_intents": by_message.get("paper_order_intent", 0),
         "paper_fills": by_message.get("paper_fill", 0),
         "paper_guard_checks": by_message.get("paper_order_guard", 0),
-        "paper_runtime_blocks": by_message.get("paper_service_blocked", 0),
+        "shadow_order_intents": by_message.get("shadow_order_intent", 0),
+        "shadow_fills": by_message.get("shadow_fill", 0),
+        "shadow_guard_checks": by_message.get("shadow_order_guard", 0),
+        "paper_runtime_blocks": by_message.get("paper_service_blocked", 0)
+        + by_message.get("shadow_service_blocked", 0),
     }
 
 

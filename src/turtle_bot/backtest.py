@@ -6,12 +6,14 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from .domain import (
     Candle,
+    PositionDirection,
     PositionState,
     PositionStatus,
+    Side,
     Signal,
     SignalKind,
     StrategyState,
@@ -41,7 +43,10 @@ class BacktestConfig:
     n_method: str = "turtle"
     stop_n: Decimal = Decimal("2")
     max_units_per_symbol: int = 4
+    max_total_long_units: int | None = 12
+    max_total_short_units: int | None = 12
     pyramid_step_n: Decimal = Decimal("0.5")
+    allowed_directions: tuple[PositionDirection, ...] = (PositionDirection.LONG,)
     costs: BacktestCosts = field(default_factory=BacktestCosts)
 
 
@@ -80,6 +85,7 @@ class BacktestTrade:
     realized_pnl: Decimal
     exit_reason: str
     units: int
+    direction: str = PositionDirection.LONG.value
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,7 @@ class BacktestResult:
     equity_curve: tuple[EquityPoint, ...]
     audit_log: tuple[AuditEvent, ...]
     strategy_state: StrategyState
+    initial_equity: Decimal = Decimal("0")
 
 
 @dataclass
@@ -111,6 +118,7 @@ def load_candles_csv(path: str | Path, *, default_symbol: str = "") -> list[Cand
 def backtest_result_to_dict(result: BacktestResult) -> dict[str, Any]:
     return {
         "final_equity": _json_value(result.final_equity),
+        "summary": _json_value(summarize_backtest_result(result)),
         "trades": [_dataclass_to_dict(trade) for trade in result.trades],
         "equity_curve": [_dataclass_to_dict(point) for point in result.equity_curve],
         "audit_log": [_dataclass_to_dict(event) for event in result.audit_log],
@@ -118,6 +126,72 @@ def backtest_result_to_dict(result: BacktestResult) -> dict[str, Any]:
             "pending_s1_skip": sorted(result.strategy_state.pending_s1_skip),
         },
     }
+
+
+def summarize_backtest_result(
+    result: BacktestResult,
+    *,
+    initial_equity: Decimal | None = None,
+) -> dict[str, Any]:
+    """Calculate review metrics without changing the backtest trading rules."""
+
+    starting_equity = initial_equity or (
+        result.initial_equity
+        if result.initial_equity != 0
+        else result.equity_curve[0].total_equity
+        if result.equity_curve
+        else result.final_equity
+    )
+    net_pnl = result.final_equity - starting_equity
+    realized_pnl = sum((trade.realized_pnl for trade in result.trades), Decimal("0"))
+    winning_trades = sum(1 for trade in result.trades if trade.realized_pnl > 0)
+    losing_trades = sum(1 for trade in result.trades if trade.realized_pnl < 0)
+    trade_count = len(result.trades)
+    max_drawdown, max_drawdown_pct = _max_drawdown(
+        [point.total_equity for point in result.equity_curve],
+        starting_equity=starting_equity,
+    )
+
+    return {
+        "initial_equity": starting_equity,
+        "final_equity": result.final_equity,
+        "net_pnl": net_pnl,
+        "realized_pnl": realized_pnl,
+        "return_pct": _pct(net_pnl, starting_equity),
+        "loss_pct": _pct(max(Decimal("0"), -net_pnl), starting_equity),
+        "max_drawdown": max_drawdown,
+        "max_drawdown_pct": max_drawdown_pct,
+        "trade_count": trade_count,
+        "winning_trades": winning_trades,
+        "losing_trades": losing_trades,
+        "win_rate_pct": _pct(Decimal(winning_trades), Decimal(trade_count))
+        if trade_count
+        else None,
+    }
+
+
+def _pct(numerator: Decimal, denominator: Decimal) -> Decimal | None:
+    if denominator == 0:
+        return None
+    return (numerator / denominator) * Decimal("100")
+
+
+def _max_drawdown(
+    equity_values: Sequence[Decimal],
+    *,
+    starting_equity: Decimal,
+) -> tuple[Decimal, Decimal | None]:
+    peak = starting_equity
+    max_drawdown = Decimal("0")
+    max_drawdown_pct: Decimal | None = Decimal("0") if starting_equity != 0 else None
+    for equity in equity_values:
+        if equity > peak:
+            peak = equity
+        drawdown = peak - equity
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+            max_drawdown_pct = _pct(drawdown, peak)
+    return max_drawdown, max_drawdown_pct
 
 
 def export_backtest_report_json(result: BacktestResult, path: str | Path) -> None:
@@ -206,6 +280,7 @@ class BacktestEngine:
                 equity_curve=(),
                 audit_log=(),
                 strategy_state=StrategyState(),
+                initial_equity=self.config.initial_equity,
             )
 
         symbol = ordered[0].symbol
@@ -228,7 +303,7 @@ class BacktestEngine:
                 exit_signals, state = evaluate_signals(
                     symbol=symbol,
                     completed_candles=history,
-                    current_price=candle.low,
+                    current_price=self._exit_observed_price(candle, position),
                     state=state,
                     position=position,
                     minimum_tick=self.config.minimum_tick,
@@ -241,7 +316,7 @@ class BacktestEngine:
                     {SignalKind.STOP, SignalKind.EXIT},
                 )
                 if exit_signal is not None:
-                    fill_price = self._sell_fill_price(candle, exit_signal.trigger_price)
+                    fill_price = self._fill_price(candle, exit_signal)
                     cash, trade = self._exit_position(
                         position=position,
                         open_cost=open_cost,
@@ -258,6 +333,7 @@ class BacktestEngine:
                                 symbol=trade.symbol,
                                 system=position.system,
                                 realized_pnl=trade.realized_pnl,
+                                direction=position.direction,
                             )
                         ],
                     )
@@ -268,7 +344,7 @@ class BacktestEngine:
                         self._audit(
                             candle=candle,
                             signal=exit_signal,
-                            action="fill_sell",
+                            action=self._fill_action(exit_signal),
                             fill_price=fill_price,
                             qty=trade.qty,
                             cash_after=cash,
@@ -281,7 +357,7 @@ class BacktestEngine:
                     pyramid_signals, state = evaluate_signals(
                         symbol=symbol,
                         completed_candles=history,
-                        current_price=candle.high,
+                        current_price=self._pyramid_observed_price(candle, position),
                         state=state,
                         position=position,
                         minimum_tick=self.config.minimum_tick,
@@ -291,7 +367,7 @@ class BacktestEngine:
                     )
                     pyramid_signal = self._first_signal(pyramid_signals, {SignalKind.PYRAMID})
                     if pyramid_signal is not None:
-                        fill_price = self._buy_fill_price(candle, pyramid_signal.trigger_price)
+                        fill_price = self._fill_price(candle, pyramid_signal)
                         qty = self._unit_qty(
                             self._equity(cash, position, candle.close),
                             position.entry_n,
@@ -321,12 +397,15 @@ class BacktestEngine:
                                 cash += cash_delta
                                 position = next_position
                                 if open_cost is not None:
-                                    open_cost.total_cost += -cash_delta
+                                    open_cost.total_cost += self._open_cost_amount(
+                                        position.direction,
+                                        cash_delta,
+                                    )
                                 audit_log.append(
                                     self._audit(
                                         candle=candle,
                                         signal=pyramid_signal,
-                                        action="fill_buy",
+                                        action=self._fill_action(pyramid_signal),
                                         fill_price=fill_price,
                                         qty=qty,
                                         cash_after=cash,
@@ -348,16 +427,11 @@ class BacktestEngine:
                                     )
                                 )
                 else:
-                    entry_signals, state = evaluate_signals(
+                    entry_signals, state = self._entry_signals(
                         symbol=symbol,
                         completed_candles=history,
-                        current_price=candle.high,
+                        candle=candle,
                         state=state,
-                        position=None,
-                        minimum_tick=self.config.minimum_tick,
-                        n_method=self.config.n_method,
-                        max_units_per_symbol=self.config.max_units_per_symbol,
-                        pyramid_step_n=self.config.pyramid_step_n,
                     )
                     entry_signal = self._first_signal(entry_signals, {SignalKind.ENTRY})
                     if entry_signal is not None:
@@ -382,7 +456,7 @@ class BacktestEngine:
                                 )
                             )
                         else:
-                            fill_price = self._buy_fill_price(candle, entry_signal.trigger_price)
+                            fill_price = self._fill_price(candle, entry_signal)
                             qty = self._unit_qty(
                                 self._equity(cash, position, candle.close),
                                 snapshot.n,
@@ -413,13 +487,16 @@ class BacktestEngine:
                                     position = next_position
                                     open_cost = _OpenCost(
                                         entry_at=candle.timestamp,
-                                        total_cost=-cash_delta,
+                                        total_cost=self._open_cost_amount(
+                                            position.direction,
+                                            cash_delta,
+                                        ),
                                     )
                                     audit_log.append(
                                         self._audit(
                                             candle=candle,
                                             signal=entry_signal,
-                                            action="fill_buy",
+                                            action=self._fill_action(entry_signal),
                                             fill_price=fill_price,
                                             qty=qty,
                                             cash_after=cash,
@@ -458,9 +535,16 @@ class BacktestEngine:
             equity_curve=tuple(equity_curve),
             audit_log=tuple(audit_log),
             strategy_state=state,
+            initial_equity=self.config.initial_equity,
         )
 
-    def run_portfolio(self, candles: Sequence[Candle]) -> BacktestResult:
+    def run_portfolio(
+        self,
+        candles: Sequence[Candle],
+        *,
+        entry_filter: Callable[[datetime, str], bool] | None = None,
+        entry_direction_filter: Callable[[datetime, str, PositionDirection], bool] | None = None,
+    ) -> BacktestResult:
         ordered = sorted(candles, key=lambda candle: (candle.timestamp, candle.symbol))
         if not ordered:
             return BacktestResult(
@@ -469,6 +553,7 @@ class BacktestEngine:
                 equity_curve=(),
                 audit_log=(),
                 strategy_state=StrategyState(),
+                initial_equity=self.config.initial_equity,
             )
 
         cash = self.config.initial_equity
@@ -495,7 +580,7 @@ class BacktestEngine:
                 exit_signals, state = evaluate_signals(
                     symbol=symbol,
                     completed_candles=histories[symbol],
-                    current_price=candle.low,
+                    current_price=self._exit_observed_price(candle, position),
                     state=state,
                     position=position,
                     minimum_tick=self.config.minimum_tick,
@@ -510,7 +595,7 @@ class BacktestEngine:
                 if exit_signal is None:
                     continue
 
-                fill_price = self._sell_fill_price(candle, exit_signal.trigger_price)
+                fill_price = self._fill_price(candle, exit_signal)
                 cash, trade = self._exit_position(
                     position=position,
                     open_cost=open_costs.get(symbol),
@@ -527,6 +612,7 @@ class BacktestEngine:
                             symbol=trade.symbol,
                             system=position.system,
                             realized_pnl=trade.realized_pnl,
+                            direction=position.direction,
                         )
                     ],
                 )
@@ -537,7 +623,7 @@ class BacktestEngine:
                     self._portfolio_audit(
                         candle=candle,
                         signal=exit_signal,
-                        action="fill_sell",
+                        action=self._fill_action(exit_signal),
                         fill_price=fill_price,
                         qty=trade.qty,
                         cash_after=cash,
@@ -557,7 +643,7 @@ class BacktestEngine:
                     pyramid_signals, state = evaluate_signals(
                         symbol=symbol,
                         completed_candles=histories[symbol],
-                        current_price=candle.high,
+                        current_price=self._pyramid_observed_price(candle, position),
                         state=state,
                         position=position,
                         minimum_tick=self.config.minimum_tick,
@@ -569,7 +655,19 @@ class BacktestEngine:
                     if pyramid_signal is None:
                         continue
 
-                    fill_price = self._buy_fill_price(candle, pyramid_signal.trigger_price)
+                    fill_price = self._fill_price(candle, pyramid_signal)
+                    if self._max_total_units_reached(positions, position.direction):
+                        audit_log.append(
+                            self._portfolio_block_buy_event(
+                                candle=candle,
+                                signal=pyramid_signal,
+                                reason=self._max_total_units_reason(position.direction),
+                                cash=cash,
+                                positions=positions,
+                                last_closes=last_closes,
+                            )
+                        )
+                        continue
                     qty = self._unit_qty(equity_before, position.entry_n)
                     if qty <= Decimal("0"):
                         audit_log.append(
@@ -594,12 +692,15 @@ class BacktestEngine:
                         cash += cash_delta
                         positions[symbol] = next_position
                         if symbol in open_costs:
-                            open_costs[symbol].total_cost += -cash_delta
+                            open_costs[symbol].total_cost += self._open_cost_amount(
+                                position.direction,
+                                cash_delta,
+                            )
                         audit_log.append(
                             self._portfolio_audit(
                                 candle=candle,
                                 signal=pyramid_signal,
-                                action="fill_buy",
+                                action=self._fill_action(pyramid_signal),
                                 fill_price=fill_price,
                                 qty=qty,
                                 cash_after=cash,
@@ -619,16 +720,22 @@ class BacktestEngine:
                             )
                         )
                 else:
-                    entry_signals, state = evaluate_signals(
+                    if entry_filter is not None and not entry_filter(timestamp, symbol):
+                        continue
+                    allowed_directions = tuple(
+                        direction
+                        for direction in self.config.allowed_directions
+                        if entry_direction_filter is None
+                        or entry_direction_filter(timestamp, symbol, direction)
+                    )
+                    if not allowed_directions:
+                        continue
+                    entry_signals, state = self._entry_signals(
                         symbol=symbol,
                         completed_candles=histories[symbol],
-                        current_price=candle.high,
+                        candle=candle,
                         state=state,
-                        position=None,
-                        minimum_tick=self.config.minimum_tick,
-                        n_method=self.config.n_method,
-                        max_units_per_symbol=self.config.max_units_per_symbol,
-                        pyramid_step_n=self.config.pyramid_step_n,
+                        allowed_directions=allowed_directions,
                     )
                     entry_signal = self._first_signal(entry_signals, {SignalKind.ENTRY})
                     if entry_signal is None:
@@ -653,7 +760,21 @@ class BacktestEngine:
                         )
                         continue
 
-                    fill_price = self._buy_fill_price(candle, entry_signal.trigger_price)
+                    entry_direction = self._signal_direction(entry_signal)
+                    if self._max_total_units_reached(positions, entry_direction):
+                        audit_log.append(
+                            self._portfolio_block_buy_event(
+                                candle=candle,
+                                signal=entry_signal,
+                                reason=self._max_total_units_reason(entry_direction),
+                                cash=cash,
+                                positions=positions,
+                                last_closes=last_closes,
+                            )
+                        )
+                        continue
+
+                    fill_price = self._fill_price(candle, entry_signal)
                     qty = self._unit_qty(equity_before, snapshot.n)
                     if qty <= Decimal("0"):
                         audit_log.append(
@@ -679,13 +800,16 @@ class BacktestEngine:
                         positions[symbol] = next_position
                         open_costs[symbol] = _OpenCost(
                             entry_at=candle.timestamp,
-                            total_cost=-cash_delta,
+                            total_cost=self._open_cost_amount(
+                                next_position.direction,
+                                cash_delta,
+                            ),
                         )
                         audit_log.append(
                             self._portfolio_audit(
                                 candle=candle,
                                 signal=entry_signal,
-                                action="fill_buy",
+                                action=self._fill_action(entry_signal),
                                 fill_price=fill_price,
                                 qty=qty,
                                 cash_after=cash,
@@ -723,6 +847,7 @@ class BacktestEngine:
             equity_curve=tuple(equity_curve),
             audit_log=tuple(audit_log),
             strategy_state=state,
+            initial_equity=self.config.initial_equity,
         )
 
     @staticmethod
@@ -743,6 +868,55 @@ class BacktestEngine:
         price = candle.open if candle.open <= trigger_price else trigger_price
         return price * (Decimal("1") - self.config.costs.slippage_rate)
 
+    def _fill_price(self, candle: Candle, signal: Signal) -> Decimal:
+        if signal.side == Side.SELL:
+            return self._sell_fill_price(candle, signal.trigger_price)
+        return self._buy_fill_price(candle, signal.trigger_price)
+
+    @staticmethod
+    def _fill_action(signal: Signal) -> str:
+        return "fill_sell" if signal.side == Side.SELL else "fill_buy"
+
+    @staticmethod
+    def _signal_direction(signal: Signal) -> PositionDirection:
+        return PositionDirection.SHORT if signal.side == Side.SELL else PositionDirection.LONG
+
+    @staticmethod
+    def _exit_observed_price(candle: Candle, position: PositionState) -> Decimal:
+        return candle.high if position.direction == PositionDirection.SHORT else candle.low
+
+    @staticmethod
+    def _pyramid_observed_price(candle: Candle, position: PositionState) -> Decimal:
+        return candle.low if position.direction == PositionDirection.SHORT else candle.high
+
+    def _entry_signals(
+        self,
+        *,
+        symbol: str,
+        completed_candles: Sequence[Candle],
+        candle: Candle,
+        state: StrategyState,
+        allowed_directions: Sequence[PositionDirection] | None = None,
+    ) -> tuple[list[Signal], StrategyState]:
+        next_state = state
+        for direction in allowed_directions or self.config.allowed_directions:
+            current_price = candle.low if direction == PositionDirection.SHORT else candle.high
+            signals, next_state = evaluate_signals(
+                symbol=symbol,
+                completed_candles=completed_candles,
+                current_price=current_price,
+                state=next_state,
+                position=None,
+                minimum_tick=self.config.minimum_tick,
+                n_method=self.config.n_method,
+                max_units_per_symbol=self.config.max_units_per_symbol,
+                pyramid_step_n=self.config.pyramid_step_n,
+                allowed_directions=(direction,),
+            )
+            if signals:
+                return signals, next_state
+        return [], next_state
+
     def _buy_cash_delta(self, fill_price: Decimal, qty: Decimal) -> Decimal:
         gross = fill_price * qty
         fee = gross * self.config.costs.commission_rate + self.config.costs.fixed_commission
@@ -754,6 +928,42 @@ class BacktestEngine:
         tax = gross * self.config.costs.tax_rate
         return gross - fee - tax
 
+    def _entry_cash_delta(
+        self,
+        direction: PositionDirection,
+        fill_price: Decimal,
+        qty: Decimal,
+    ) -> Decimal:
+        if direction == PositionDirection.SHORT:
+            return self._sell_cash_delta(fill_price, qty)
+        return self._buy_cash_delta(fill_price, qty)
+
+    def _exit_cash_delta(
+        self,
+        direction: PositionDirection,
+        fill_price: Decimal,
+        qty: Decimal,
+    ) -> Decimal:
+        if direction == PositionDirection.SHORT:
+            return self._buy_cash_delta(fill_price, qty)
+        return self._sell_cash_delta(fill_price, qty)
+
+    def _entry_stop_price(
+        self,
+        direction: PositionDirection,
+        fill_price: Decimal,
+        n: Decimal,
+    ) -> Decimal:
+        if direction == PositionDirection.SHORT:
+            return fill_price + self.config.stop_n * n
+        return fill_price - self.config.stop_n * n
+
+    @staticmethod
+    def _open_cost_amount(direction: PositionDirection, cash_delta: Decimal) -> Decimal:
+        if direction == PositionDirection.SHORT:
+            return cash_delta
+        return -cash_delta
+
     def _open_position(
         self,
         signal: Signal,
@@ -762,7 +972,8 @@ class BacktestEngine:
         qty: Decimal | None = None,
     ) -> tuple[PositionState, Decimal]:
         unit_qty = qty if qty is not None else self.config.unit_qty
-        stop_price = fill_price - self.config.stop_n * n
+        direction = self._signal_direction(signal)
+        stop_price = self._entry_stop_price(direction, fill_price, n)
         unit = UnitState(
             unit_no=1,
             qty=unit_qty,
@@ -781,8 +992,9 @@ class BacktestEngine:
             current_stop_price=stop_price,
             last_unit_entry_price=fill_price,
             units=(unit,),
+            direction=direction,
         )
-        return position, self._buy_cash_delta(fill_price, unit_qty)
+        return position, self._entry_cash_delta(direction, fill_price, unit_qty)
 
     def _add_unit(
         self,
@@ -796,7 +1008,7 @@ class BacktestEngine:
         avg_entry = (
             position.avg_entry_price * position.total_qty + fill_price * unit_qty
         ) / next_qty
-        stop_price = fill_price - self.config.stop_n * position.entry_n
+        stop_price = self._entry_stop_price(position.direction, fill_price, position.entry_n)
         unit = UnitState(
             unit_no=len(position.units) + 1,
             qty=unit_qty,
@@ -816,8 +1028,9 @@ class BacktestEngine:
                 current_stop_price=stop_price,
                 last_unit_entry_price=fill_price,
                 units=position.units + (unit,),
+                direction=position.direction,
             ),
-            self._buy_cash_delta(fill_price, unit_qty),
+            self._entry_cash_delta(position.direction, fill_price, unit_qty),
         )
 
     def _unit_qty(self, equity: Decimal, n: Decimal) -> Decimal:
@@ -840,14 +1053,17 @@ class BacktestEngine:
         cash: Decimal,
         at: datetime,
     ) -> tuple[Decimal, BacktestTrade]:
-        cash_delta = self._sell_cash_delta(fill_price, position.total_qty)
+        cash_delta = self._exit_cash_delta(position.direction, fill_price, position.total_qty)
         next_cash = cash + cash_delta
-        total_cost = (
+        entry_cash_basis = (
             open_cost.total_cost
             if open_cost is not None
             else position.avg_entry_price * position.total_qty
         )
-        realized_pnl = cash_delta - total_cost
+        if position.direction == PositionDirection.SHORT:
+            realized_pnl = entry_cash_basis + cash_delta
+        else:
+            realized_pnl = cash_delta - entry_cash_basis
         entry_at = open_cost.entry_at if open_cost is not None else at
         return (
             next_cash,
@@ -862,6 +1078,7 @@ class BacktestEngine:
                 realized_pnl=realized_pnl,
                 exit_reason=signal.reason,
                 units=len(position.units),
+                direction=position.direction.value,
             ),
         )
 
@@ -942,12 +1159,26 @@ class BacktestEngine:
     def _reason(candle: Candle, signal: Signal) -> str:
         if (
             signal.kind in {SignalKind.ENTRY, SignalKind.PYRAMID}
+            and signal.side == Side.BUY
             and candle.open >= signal.trigger_price
         ):
             return f"gap_breakout:{signal.reason}"
         if (
-            signal.kind in {SignalKind.STOP, SignalKind.EXIT}
+            signal.kind in {SignalKind.ENTRY, SignalKind.PYRAMID}
+            and signal.side == Side.SELL
             and candle.open <= signal.trigger_price
+        ):
+            return f"gap_breakout:{signal.reason}"
+        if (
+            signal.kind in {SignalKind.STOP, SignalKind.EXIT}
+            and signal.side == Side.SELL
+            and candle.open <= signal.trigger_price
+        ):
+            return f"gap_exit:{signal.reason}"
+        if (
+            signal.kind in {SignalKind.STOP, SignalKind.EXIT}
+            and signal.side == Side.BUY
+            and candle.open >= signal.trigger_price
         ):
             return f"gap_exit:{signal.reason}"
         return signal.reason
@@ -956,6 +1187,8 @@ class BacktestEngine:
     def _position_value(position: PositionState | None, mark_price: Decimal) -> Decimal:
         if position is None:
             return Decimal("0")
+        if position.direction == PositionDirection.SHORT:
+            return -(position.total_qty * mark_price)
         return position.total_qty * mark_price
 
     def _equity(
@@ -984,3 +1217,34 @@ class BacktestEngine:
         last_closes: dict[str, Decimal],
     ) -> Decimal:
         return cash + self._portfolio_position_value(positions, last_closes)
+
+    def _total_units(
+        self,
+        positions: dict[str, PositionState],
+        direction: PositionDirection,
+    ) -> int:
+        return sum(
+            len(position.units)
+            for position in positions.values()
+            if position.direction == direction
+        )
+
+    def _max_total_units_reached(
+        self,
+        positions: dict[str, PositionState],
+        direction: PositionDirection,
+    ) -> bool:
+        max_units = (
+            self.config.max_total_short_units
+            if direction == PositionDirection.SHORT
+            else self.config.max_total_long_units
+        )
+        if max_units is None:
+            return False
+        return self._total_units(positions, direction) >= max_units
+
+    @staticmethod
+    def _max_total_units_reason(direction: PositionDirection) -> str:
+        if direction == PositionDirection.SHORT:
+            return "max_total_short_units"
+        return "max_total_long_units"

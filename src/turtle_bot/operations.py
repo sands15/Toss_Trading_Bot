@@ -24,7 +24,7 @@ from .watchlist import Watchlist, WatchlistBuilder, WatchlistRow
 
 DEFAULT_SERVICE_LABEL = "com.sands15.toss-turtle-bot"
 DEFAULT_DASHBOARD_BLOCKERS = (
-    "runtime.mode must be paper",
+    "runtime.mode must be paper or shadow",
     "runtime.symbols or runtime.universe_candidate_symbols is required",
     "TOSS_CLIENT_ID is not configured",
     "TOSS_CLIENT_SECRET is not configured",
@@ -285,6 +285,7 @@ def run_dashboard_server(
 def paper_service_health(
     store: SQLiteStateStore,
     *,
+    mode: str = "paper",
     blockers: Sequence[str] = ("market_data_provider_not_configured",),
     ready: bool = False,
     watchlist_name: str = "premarket",
@@ -299,7 +300,7 @@ def paper_service_health(
         for position in store.list_paper_positions()
     )
     return HealthSnapshot(
-        mode="paper",
+        mode=mode,
         ready=ready,
         blockers=tuple(blockers),
         positions=positions,
@@ -377,13 +378,14 @@ def run_paper_service(
     config = load_config(config_path)
     if config.live_enabled:
         raise RuntimeError("paper service refuses configs with toss.live_enabled=true")
+    service_mode = _runtime_mode(config)
 
     ensure_runtime_dirs(state_db=state_db, log_dir=log_dir)
     store = SQLiteStateStore(state_db)
     store.record_runtime_event(
         "INFO",
-        "paper_service_started",
-        {"mode": "paper", "interval_seconds": interval_seconds},
+        f"{service_mode}_service_started",
+        {"mode": service_mode, "interval_seconds": interval_seconds},
     )
 
     env_values = env if env is not None else environ
@@ -395,7 +397,11 @@ def run_paper_service(
         now=now,
     )
     if once:
-        store.record_runtime_event("INFO", "paper_service_heartbeat", snapshot.as_payload())
+        store.record_runtime_event(
+            "INFO",
+            f"{service_mode}_service_heartbeat",
+            snapshot.as_payload(),
+        )
         return snapshot
 
     while True:  # pragma: no cover - exercised by launchd, not unit tests
@@ -408,7 +414,7 @@ def run_paper_service(
         )
         store.record_runtime_event(
             "INFO",
-            "paper_service_heartbeat",
+            f"{service_mode}_service_heartbeat",
             snapshot.as_payload(),
         )
         sleep(interval_seconds)
@@ -423,16 +429,18 @@ def _paper_service_iteration(
     now,
 ) -> HealthSnapshot:
     config = load_config(config_path)
+    service_mode = _runtime_mode(config)
     blockers = _paper_service_config_blockers(config, env)
     if blockers:
         snapshot = paper_service_health(
             store,
+            mode=service_mode,
             blockers=blockers,
             watchlist_name=config.runtime.watchlist_name,
         )
         store.record_runtime_event(
             "WARN",
-            "paper_service_blocked",
+            f"{service_mode}_service_blocked",
             snapshot.as_payload(),
         )
         return snapshot
@@ -453,6 +461,7 @@ def _paper_service_iteration(
         config=TossMarketDataConfig(
             candle_interval=config.runtime.candle_interval,
             candle_count=config.runtime.candle_count,
+            local_timezone=config.runtime.timezone_name,
             exclude_current_session=config.runtime.exclude_current_session,
         ),
         store=store,
@@ -487,13 +496,14 @@ def _paper_service_iteration(
                 if not selected_symbols:
                     snapshot = paper_service_health(
                         store,
+                        mode=service_mode,
                         blockers=("universe_empty",),
                         ready=False,
                         watchlist_name=config.runtime.watchlist_name,
                     )
                     store.record_runtime_event(
                         "WARN",
-                        "paper_service_blocked",
+                        f"{service_mode}_service_blocked",
                         snapshot.as_payload() | {"universe": universe.as_payload()},
                     )
                     return snapshot
@@ -509,13 +519,14 @@ def _paper_service_iteration(
         if session.blocker is not None:
             snapshot = paper_service_health(
                 store,
+                mode=service_mode,
                 blockers=(session.blocker,),
                 ready=False,
                 watchlist_name=config.runtime.watchlist_name,
             )
             store.record_runtime_event(
                 "WARN",
-                "paper_service_market_closed",
+                f"{service_mode}_service_market_closed",
                 snapshot.as_payload() | {"market_session": session.as_payload()},
             )
             return snapshot
@@ -533,13 +544,14 @@ def _paper_service_iteration(
             if not selected_symbols:
                 snapshot = paper_service_health(
                     store,
+                    mode=service_mode,
                     blockers=("universe_empty",),
                     ready=False,
                     watchlist_name=config.runtime.watchlist_name,
                 )
                 store.record_runtime_event(
                     "WARN",
-                    "paper_service_blocked",
+                    f"{service_mode}_service_blocked",
                     snapshot.as_payload() | {"universe": universe.as_payload()},
                 )
                 return snapshot
@@ -554,11 +566,27 @@ def _paper_service_iteration(
     runtime = PaperTradingRuntime(
         config=PaperRuntimeConfig(
             symbols=selected_symbols,
+            mode=service_mode,
+            strategy_kind=config.strategy_kind,
             minimum_tick=config.minimum_tick,
             n_method=config.n_method,
             stop_n=config.stop_n,
             max_units_per_symbol=config.max_units_per_symbol,
             pyramid_step_n=config.pyramid_step_n,
+            simulate_fills=True,
+            require_clean_reconcile=service_mode != "shadow",
+            momentum_market_symbol=config.momentum_market_symbol,
+            momentum_lookback_days=config.momentum_lookback_days,
+            momentum_skip_days=config.momentum_skip_days,
+            momentum_trend_ma_days=config.momentum_trend_ma_days,
+            momentum_exit_ma_days=config.momentum_exit_ma_days,
+            momentum_max_positions=config.momentum_max_positions,
+            momentum_accept_top_n=config.momentum_accept_top_n,
+            momentum_target_position_pct=config.momentum_target_position_pct,
+            momentum_min_price=config.momentum_min_price,
+            momentum_min_average_daily_value=config.momentum_min_average_daily_value,
+            momentum_average_daily_value_days=config.momentum_average_daily_value_days,
+            momentum_use_market_filter=config.momentum_use_market_filter,
         ),
         market_data=market_data,
         position_sync=TossPositionSync(client=client, store=store),
@@ -582,6 +610,11 @@ def _paper_service_config_blockers(config, env: Mapping[str, str]) -> tuple[str,
     )
 
 
+def _runtime_mode(config) -> str:
+    mode = str(config.runtime.mode or "").strip().lower()
+    return mode or "paper"
+
+
 def _build_toss_readiness_checks(
     *,
     config,
@@ -596,14 +629,15 @@ def _build_toss_readiness_checks(
     )
     mode = str(config.runtime.mode or "").strip().lower()
     has_symbols = bool(config.runtime.symbols or config.runtime.universe_candidate_symbols)
+    mode_is_supported = mode in {"paper", "shadow"}
 
     return (
         OperationsCheck(
             "runtime_mode",
-            mode == "paper",
-            "runtime.mode is paper"
-            if mode == "paper"
-            else f"runtime.mode must be paper, got {config.runtime.mode}",
+            mode_is_supported,
+            f"runtime.mode is {mode}"
+            if mode_is_supported
+            else f"runtime.mode must be paper or shadow, got {config.runtime.mode}",
         ),
         OperationsCheck(
             "runtime_symbols_or_universe_candidates",
@@ -674,6 +708,7 @@ def _build_and_save_watchlist(
             config=TossMarketDataConfig(
                 candle_interval=config.runtime.candle_interval,
                 candle_count=config.runtime.candle_count,
+                local_timezone=config.runtime.timezone_name,
                 exclude_current_session=config.runtime.exclude_current_session,
             ),
             store=store,

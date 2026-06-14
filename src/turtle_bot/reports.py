@@ -106,6 +106,9 @@ def summarize_runtime_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "paper_order_intents": by_message.get("paper_order_intent", 0),
         "paper_fills": by_message.get("paper_fill", 0),
         "paper_guard_checks": by_message.get("paper_order_guard", 0),
+        "shadow_order_intents": by_message.get("shadow_order_intent", 0),
+        "shadow_fills": by_message.get("shadow_fill", 0),
+        "shadow_guard_checks": by_message.get("shadow_order_guard", 0),
         "paper_runtime_blocks": sum(
             count
             for message, count in by_message.items()
@@ -195,4 +198,3 @@ def _position_payload(position: PositionState) -> dict[str, Any]:
         "last_unit_entry_price": str(position.last_unit_entry_price),
         "units": len(position.units),
     }
-

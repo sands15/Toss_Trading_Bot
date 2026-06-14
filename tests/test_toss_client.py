@@ -133,6 +133,40 @@ def test_get_candles_normalizes_decimal_candles():
     assert client.rate_limits.get_group_snapshot("market").remaining == 5
 
 
+def test_get_candles_accepts_official_result_wrapper():
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": {
+                        "candles": [
+                            {
+                                "timestamp": "2026-01-01T00:00:00+00:00",
+                                "openPrice": "100",
+                                "highPrice": "110",
+                                "lowPrice": "90",
+                                "closePrice": "105",
+                                "volume": "12345",
+                                "currency": "KRW",
+                            }
+                        ],
+                        "nextBefore": "cursor-1",
+                    }
+                },
+            ),
+        ]
+    )
+    client = _client(transport)
+
+    page = client.get_candles("005930", count=1)
+
+    assert page.next_before == "cursor-1"
+    assert page.candles[0].close == Decimal("105")
+
+
 def test_account_read_methods_include_required_account_header():
     transport = FakeTransport(
         [
@@ -152,6 +186,62 @@ def test_account_read_methods_include_required_account_header():
     assert transport.requests[2].headers[ACCOUNT_HEADER] == "99"
     assert transport.requests[3].headers[ACCOUNT_HEADER] == "99"
     assert sellable["sellableQuantity"] == Decimal("10")
+
+
+def test_account_read_methods_accept_official_result_wrappers():
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": {
+                        "items": [
+                            {
+                                "symbol": "AAPL",
+                                "quantity": "2",
+                                "averagePurchasePrice": "100",
+                            }
+                        ]
+                    }
+                },
+            ),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": {
+                        "orders": [
+                            {
+                                "orderId": "order-1",
+                                "symbol": "AAPL",
+                                "side": "BUY",
+                                "status": "PENDING",
+                                "quantity": "2",
+                            }
+                        ],
+                        "nextCursor": None,
+                        "hasNext": False,
+                    }
+                },
+            ),
+            TossHttpResponse(
+                200,
+                {},
+                {"result": {"sellableQuantity": "2"}},
+            ),
+        ]
+    )
+    client = _client(transport, account_seq=99)
+
+    holdings = client.get_holdings()
+    orders = client.get_orders(status="OPEN")
+    sellable = client.get_sellable_quantity("AAPL")
+
+    assert holdings["items"][0]["quantity"] == Decimal("2")
+    assert orders["orders"][0]["status"] == "PENDING"
+    assert sellable["sellableQuantity"] == Decimal("2")
 
 
 def test_account_numbers_stay_strings_while_money_fields_become_decimal():
@@ -189,6 +279,61 @@ def test_account_numbers_stay_strings_while_money_fields_become_decimal():
     assert accounts["accounts"][0]["accountNo"] == "12345678901"
     assert accounts["accounts"][0]["accountSeq"] == 99
     assert buying_power["cashBuyingPower"] == Decimal("5000000")
+
+
+def test_array_result_endpoints_return_official_arrays():
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": [
+                        {
+                            "symbol": "AAPL",
+                            "lastPrice": "200",
+                            "currency": "USD",
+                        }
+                    ]
+                },
+            ),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": [
+                        {
+                            "symbol": "AAPL",
+                            "name": "Apple",
+                            "market": "US",
+                        }
+                    ]
+                },
+            ),
+            TossHttpResponse(200, {}, {"result": []}),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": [
+                        {"marketCountry": "US", "commissionRate": "0.001"}
+                    ]
+                },
+            ),
+        ]
+    )
+    client = _client(transport, account_seq=99)
+
+    prices = client.get_prices(["AAPL"])
+    stocks = client.get_stocks(("AAPL",))
+    warnings = client.get_stock_warnings("AAPL")
+    commissions = client.get_commissions()
+
+    assert prices[0]["lastPrice"] == Decimal("200")
+    assert stocks[0]["symbol"] == "AAPL"
+    assert warnings == []
+    assert commissions[0]["commissionRate"] == Decimal("0.001")
 
 
 def test_market_info_methods_use_official_read_only_paths():

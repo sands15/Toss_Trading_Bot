@@ -62,6 +62,62 @@ def test_parse_market_session_unknown_when_payload_has_no_state() -> None:
     assert session.blocker == "market_calendar_unknown"
 
 
+def test_parse_official_us_market_calendar_regular_session() -> None:
+    session = parse_market_session(
+        {
+            "today": {
+                "date": "2026-01-02",
+                "regularMarket": {
+                    "startTime": "2026-01-02T14:30:00+00:00",
+                    "endTime": "2026-01-02T21:00:00+00:00",
+                },
+            }
+        },
+        market="US",
+        session_date=date(2026, 1, 2),
+        now=datetime(2026, 1, 2, 15, tzinfo=timezone.utc),
+    )
+
+    assert session.is_open is True
+    assert session.known is True
+    assert session.status == "REGULARMARKET"
+    assert session.blocker is None
+
+
+def test_parse_official_us_market_calendar_closed_outside_regular_session() -> None:
+    session = parse_market_session(
+        {
+            "today": {
+                "date": "2026-01-02",
+                "regularMarket": {
+                    "startTime": "2026-01-02T14:30:00+00:00",
+                    "endTime": "2026-01-02T21:00:00+00:00",
+                },
+            }
+        },
+        market="US",
+        session_date=date(2026, 1, 2),
+        now=datetime(2026, 1, 2, 22, tzinfo=timezone.utc),
+    )
+
+    assert session.is_open is False
+    assert session.known is True
+    assert session.blocker == "market_session_not_open:closed"
+
+
+def test_parse_official_kr_market_calendar_holiday() -> None:
+    session = parse_market_session(
+        {"today": {"date": "2026-01-02", "integrated": None}},
+        market="KR",
+        session_date=date(2026, 1, 2),
+        now=datetime(2026, 1, 2, 1, tzinfo=timezone.utc),
+    )
+
+    assert session.is_open is False
+    assert session.known is True
+    assert session.blocker == "market_session_not_open:holiday"
+
+
 def test_market_calendar_gate_uses_local_session_date() -> None:
     client = FakeCalendarClient({"status": "OPEN"})
     gate = MarketCalendarGate(

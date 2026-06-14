@@ -29,11 +29,17 @@ def parse_timestamp(value: Any) -> datetime:
 class TurtleSystem(str, Enum):
     S1 = "S1"
     S2 = "S2"
+    MOMENTUM = "MOMENTUM"
 
 
 class Side(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
+
+
+class PositionDirection(str, Enum):
+    LONG = "LONG"
+    SHORT = "SHORT"
 
 
 class SignalKind(str, Enum):
@@ -102,6 +108,7 @@ class PositionState:
     current_stop_price: Decimal
     last_unit_entry_price: Decimal
     units: tuple[UnitState, ...] = field(default_factory=tuple)
+    direction: PositionDirection = PositionDirection.LONG
 
 
 @dataclass(frozen=True)
@@ -114,6 +121,8 @@ class IndicatorSnapshot:
     entry_low_20: Decimal | None
     entry_high_55: Decimal | None
     entry_low_55: Decimal | None
+    exit_high_10: Decimal | None
+    exit_high_20: Decimal | None
     exit_low_10: Decimal | None
     exit_low_20: Decimal | None
     ready: bool
@@ -160,11 +169,32 @@ class Signal:
 class StrategyState:
     pending_s1_skip: frozenset[str] = field(default_factory=frozenset)
 
-    def with_s1_skip(self, symbol: str) -> "StrategyState":
-        return replace(self, pending_s1_skip=self.pending_s1_skip | {symbol})
+    def with_s1_skip(
+        self,
+        symbol: str,
+        direction: PositionDirection = PositionDirection.LONG,
+    ) -> "StrategyState":
+        return replace(self, pending_s1_skip=self.pending_s1_skip | {_s1_skip_key(symbol, direction)})
 
-    def clear_s1_skip(self, symbol: str) -> "StrategyState":
-        return replace(self, pending_s1_skip=self.pending_s1_skip - {symbol})
+    def clear_s1_skip(
+        self,
+        symbol: str,
+        direction: PositionDirection = PositionDirection.LONG,
+    ) -> "StrategyState":
+        return replace(self, pending_s1_skip=self.pending_s1_skip - {_s1_skip_key(symbol, direction)})
+
+    def should_skip_s1(
+        self,
+        symbol: str,
+        direction: PositionDirection = PositionDirection.LONG,
+    ) -> bool:
+        return _s1_skip_key(symbol, direction) in self.pending_s1_skip
+
+
+def _s1_skip_key(symbol: str, direction: PositionDirection) -> str:
+    if direction == PositionDirection.LONG:
+        return symbol
+    return f"{symbol}:{direction.value}"
 
 
 @dataclass(frozen=True)
@@ -172,3 +202,4 @@ class TradeOutcome:
     symbol: str
     system: TurtleSystem
     realized_pnl: Decimal
+    direction: PositionDirection = PositionDirection.LONG

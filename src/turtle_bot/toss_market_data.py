@@ -32,7 +32,7 @@ class ReadOnlyMarketDataClient(Protocol):
     ) -> CandlePage:
         ...
 
-    def get_prices(self, symbols: list[str] | tuple[str, ...]) -> Mapping[str, Any]:
+    def get_prices(self, symbols: list[str] | tuple[str, ...]) -> Any:
         ...
 
 
@@ -148,7 +148,7 @@ class TossReadOnlyMarketDataProvider:
         )
 
 
-def extract_price(payload: Mapping[str, Any], symbol: str) -> Decimal:
+def extract_price(payload: Any, symbol: str) -> Decimal:
     for candidate in _price_candidates(payload, symbol):
         if isinstance(candidate, Mapping):
             price = _price_from_mapping(candidate)
@@ -159,8 +159,18 @@ def extract_price(payload: Mapping[str, Any], symbol: str) -> Decimal:
     raise ValueError(f"price not found for {symbol}")
 
 
-def _price_candidates(payload: Mapping[str, Any], symbol: str) -> tuple[Any, ...]:
+def _price_candidates(payload: Any, symbol: str) -> tuple[Any, ...]:
     candidates: list[Any] = []
+    if isinstance(payload, list):
+        candidates.extend(
+            item
+            for item in payload
+            if isinstance(item, Mapping)
+            and str(item.get("symbol", "")).strip() == symbol
+        )
+        return tuple(candidates)
+    if not isinstance(payload, Mapping):
+        return (payload,)
     if symbol in payload:
         candidates.append(payload[symbol])
     for key in ("prices", "items", "data"):
@@ -186,4 +196,3 @@ def _price_from_mapping(payload: Mapping[str, Any]) -> Decimal | None:
         if value is not None:
             return as_decimal(value)
     return None
-

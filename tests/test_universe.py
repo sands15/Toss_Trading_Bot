@@ -57,10 +57,20 @@ def test_normalize_stock_payload_accepts_common_shapes() -> None:
     assert sorted(normalize_stock_payload(payload)) == ["AAA", "BBB"]
 
 
+def test_normalize_stock_payload_accepts_official_result_array() -> None:
+    payload = [{"symbol": "AAA", "market": "KR"}]
+
+    assert normalize_stock_payload(payload)["AAA"]["market"] == "KR"
+
+
 def test_warning_blockers_detects_truthy_warning_fields() -> None:
     blockers = warning_blockers({"warnings": [{"investmentWarning": True, "halted": "N"}]})
 
     assert blockers == ("warning:investmentWarning",)
+
+
+def test_warning_blockers_accepts_official_result_array() -> None:
+    assert warning_blockers([{"warningType": "INVESTMENT_WARNING"}]) == ()
 
 
 def test_average_traded_value_uses_recent_completed_candles() -> None:

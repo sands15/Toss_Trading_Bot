@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 from uuid import uuid4
@@ -22,6 +22,7 @@ from .health import HealthSnapshot
 from .notifier import Notifier
 from .position_sync import ReconcileResult
 from .strategy import build_indicator_snapshot, evaluate_signals
+from .universe import average_traded_value
 
 
 class PaperMarketDataProvider(Protocol):
@@ -68,13 +69,29 @@ class PaperPositionSync(Protocol):
 @dataclass(frozen=True)
 class PaperRuntimeConfig:
     symbols: tuple[str, ...]
+    mode: str = "paper"
     unit_qty: Decimal = Decimal("1")
+    initial_equity: Decimal = Decimal("100000")
+    strategy_kind: str = "turtle"
     minimum_tick: Decimal = Decimal("0")
     n_method: str = "turtle"
     stop_n: Decimal = Decimal("2")
     max_units_per_symbol: int = 4
     pyramid_step_n: Decimal = Decimal("0.5")
     simulate_fills: bool = True
+    require_clean_reconcile: bool = True
+    momentum_market_symbol: str = "SPY"
+    momentum_lookback_days: int = 252
+    momentum_skip_days: int = 21
+    momentum_trend_ma_days: int = 200
+    momentum_exit_ma_days: int = 100
+    momentum_max_positions: int = 10
+    momentum_accept_top_n: int = 3
+    momentum_target_position_pct: Decimal = Decimal("0.10")
+    momentum_min_price: Decimal = Decimal("5")
+    momentum_min_average_daily_value: Decimal = Decimal("50000000")
+    momentum_average_daily_value_days: int = 20
+    momentum_use_market_filter: bool = True
 
 
 @dataclass(frozen=True)
@@ -160,6 +177,9 @@ class GuardResult:
 
 
 class PaperOrderGuard:
+    def __init__(self, *, require_clean_reconcile: bool = True) -> None:
+        self.require_clean_reconcile = require_clean_reconcile
+
     def validate(
         self,
         intent: PaperOrderIntent,
@@ -170,8 +190,16 @@ class PaperOrderGuard:
         checks = [
             GuardCheck(
                 name="reconcile_clean",
-                passed=reconcile.clean,
-                message="reconcile is clean" if reconcile.clean else "reconcile has blockers",
+                passed=reconcile.clean or not self.require_clean_reconcile,
+                message=(
+                    "reconcile is clean"
+                    if reconcile.clean
+                    else (
+                        "reconcile issues allowed in shadow mode"
+                        if not self.require_clean_reconcile
+                        else "reconcile has blockers"
+                    )
+                ),
             ),
             GuardCheck(
                 name="quantity_positive",
@@ -182,9 +210,16 @@ class PaperOrderGuard:
                 name="buy_has_n",
                 passed=(
                     intent.side != "BUY"
+                    or intent.system == TurtleSystem.MOMENTUM.value
                     or (intent.entry_n is not None and intent.entry_n > Decimal("0"))
                 ),
-                message="buy has entry N" if intent.side != "BUY" or intent.entry_n else "buy missing entry N",
+                message=(
+                    "buy has entry N"
+                    if intent.side != "BUY"
+                    or intent.system == TurtleSystem.MOMENTUM.value
+                    or intent.entry_n
+                    else "buy missing entry N"
+                ),
             ),
             GuardCheck(
                 name="sell_has_position",
@@ -208,8 +243,9 @@ class PaperBrokerSimulator:
     def fill(self, intent: PaperOrderIntent) -> PositionState | None:
         current = self.store.load_paper_position(intent.symbol)
         if intent.side == "BUY":
-            if intent.entry_n is None or intent.stop_price is None:
-                raise ValueError("paper BUY fill requires entry_n and stop_price")
+            if intent.stop_price is None:
+                raise ValueError("paper BUY fill requires stop_price")
+            entry_n = intent.entry_n if intent.entry_n is not None else Decimal("0")
             if current is None or current.status != PositionStatus.OPEN:
                 position = PositionState(
                     symbol=intent.symbol,
@@ -217,7 +253,7 @@ class PaperBrokerSimulator:
                     status=PositionStatus.OPEN,
                     total_qty=intent.quantity,
                     avg_entry_price=intent.fill_price,
-                    entry_n=intent.entry_n,
+                    entry_n=entry_n,
                     current_stop_price=intent.stop_price,
                     last_unit_entry_price=intent.fill_price,
                     units=(
@@ -225,7 +261,7 @@ class PaperBrokerSimulator:
                             unit_no=1,
                             qty=intent.quantity,
                             entry_price=intent.fill_price,
-                            n_at_entry=intent.entry_n,
+                            n_at_entry=entry_n,
                             stop_price=intent.stop_price,
                             client_order_id=intent.intent_id,
                         ),
@@ -302,7 +338,9 @@ class PaperTradingRuntime:
         self.position_sync = position_sync
         self.store = store
         self.notifier = notifier
-        self.order_guard = order_guard or PaperOrderGuard()
+        self.order_guard = order_guard or PaperOrderGuard(
+            require_clean_reconcile=config.require_clean_reconcile
+        )
         self.paper_broker = paper_broker or PaperBrokerSimulator(store)
         self._now = now
         self._strategy_state = StrategyState()
@@ -311,30 +349,56 @@ class PaperTradingRuntime:
     def run_once(self) -> PaperRunResult:
         reconcile = self.position_sync.reconcile()
         if not reconcile.clean:
-            blockers = reconcile.blockers
             payload = reconcile.as_payload()
-            self.store.record_runtime_event("WARN", "paper_reconcile_blocked", payload)
+            if self.config.require_clean_reconcile:
+                blockers = reconcile.blockers
+                self.store.record_runtime_event(
+                    "WARN",
+                    f"{self.config.mode}_reconcile_blocked",
+                    payload,
+                )
+                self.notifier.notify(
+                    f"{self.config.mode}_reconcile_blocked",
+                    level="warn",
+                    payload=payload,
+                )
+                result = PaperRunResult(
+                    ready=False,
+                    blockers=blockers,
+                    reconcile=reconcile,
+                    intents=(),
+                    guard_results=(),
+                    evaluated_symbols=(),
+                    generated_at=self._now(),
+                )
+                self._last_result = result
+                return result
+            self.store.record_runtime_event(
+                "WARN",
+                f"{self.config.mode}_reconcile_warning",
+                payload,
+            )
             self.notifier.notify(
-                "paper_reconcile_blocked",
+                f"{self.config.mode}_reconcile_warning",
                 level="warn",
                 payload=payload,
             )
-            result = PaperRunResult(
-                ready=False,
-                blockers=blockers,
-                reconcile=reconcile,
-                intents=(),
-                guard_results=(),
-                evaluated_symbols=(),
-                generated_at=self._now(),
-            )
-            self._last_result = result
-            return result
 
         blockers: list[str] = []
         intents: list[PaperOrderIntent] = []
         guard_results: list[GuardResult] = []
         evaluated_symbols: list[str] = []
+
+        if self.config.strategy_kind == "momentum":
+            result = self._run_momentum_once(
+                reconcile=reconcile,
+                blockers=blockers,
+                intents=intents,
+                guard_results=guard_results,
+                evaluated_symbols=evaluated_symbols,
+            )
+            self._last_result = result
+            return result
 
         for symbol in self.config.symbols:
             try:
@@ -377,7 +441,7 @@ class PaperTradingRuntime:
                 guard_results.append(guard_result)
                 self.store.record_runtime_event(
                     "INFO" if guard_result.passed else "WARN",
-                    "paper_order_guard",
+                    f"{self.config.mode}_order_guard",
                     guard_result.as_payload(),
                 )
                 if not guard_result.passed:
@@ -386,9 +450,13 @@ class PaperTradingRuntime:
 
                 intents.append(intent)
                 payload = intent.as_payload()
-                self.store.record_runtime_event("INFO", "paper_order_intent", payload)
+                self.store.record_runtime_event(
+                    "INFO",
+                    f"{self.config.mode}_order_intent",
+                    payload,
+                )
                 self.notifier.notify(
-                    "paper_order_intent",
+                    f"{self.config.mode}_order_intent",
                     level="info",
                     payload=payload,
                 )
@@ -396,7 +464,7 @@ class PaperTradingRuntime:
                     filled_position = self.paper_broker.fill(intent)
                     self.store.record_runtime_event(
                         "INFO",
-                        "paper_fill",
+                        f"{self.config.mode}_fill",
                         {
                             "intent": payload,
                             "position": _position_payload(filled_position)
@@ -408,7 +476,7 @@ class PaperTradingRuntime:
         ready = not blockers
         if blockers:
             self.notifier.notify(
-                "paper_runtime_blocked",
+                f"{self.config.mode}_runtime_blocked",
                 level="warn",
                 payload={"blockers": blockers},
             )
@@ -425,6 +493,250 @@ class PaperTradingRuntime:
         self._last_result = result
         return result
 
+    def _run_momentum_once(
+        self,
+        *,
+        reconcile: ReconcileResult,
+        blockers: list[str],
+        intents: list[PaperOrderIntent],
+        guard_results: list[GuardResult],
+        evaluated_symbols: list[str],
+    ) -> PaperRunResult:
+        positions = {
+            position.symbol: position
+            for position in self.store.list_paper_positions(status=PositionStatus.OPEN)
+            if position.system == TurtleSystem.MOMENTUM
+        }
+        symbols = tuple(
+            dict.fromkeys(
+                (
+                    self.config.momentum_market_symbol,
+                    *self.config.symbols,
+                    *positions.keys(),
+                )
+            )
+        )
+        candles_by_symbol: dict[str, tuple[Candle, ...]] = {}
+        prices: dict[str, Decimal] = {}
+        for symbol in symbols:
+            try:
+                candles_by_symbol[symbol] = tuple(
+                    self.market_data.get_completed_candles(symbol)
+                )
+                prices[symbol] = self.market_data.get_current_price(symbol)
+            except Exception as exc:
+                blockers.append(f"{symbol} market data unavailable: {exc}")
+                self.store.record_runtime_event(
+                    "WARN",
+                    "paper_market_data_blocked",
+                    {"symbol": symbol, "error": str(exc), "strategy": "momentum"},
+                )
+                continue
+            evaluated_symbols.append(symbol)
+
+        if blockers:
+            return self._build_result(
+                reconcile=reconcile,
+                blockers=blockers,
+                intents=intents,
+                guard_results=guard_results,
+                evaluated_symbols=evaluated_symbols,
+            )
+
+        exited_symbols: set[str] = set()
+        for symbol, position in tuple(positions.items()):
+            exit_ma = _sma(
+                candles_by_symbol.get(symbol, ()),
+                self.config.momentum_exit_ma_days,
+            )
+            current_price = prices.get(symbol)
+            if exit_ma is None or current_price is None or current_price >= exit_ma:
+                continue
+            intent = self._momentum_intent(
+                symbol=symbol,
+                side="SELL",
+                signal_kind=SignalKind.EXIT.value,
+                quantity=position.total_qty,
+                price=current_price,
+                trigger_price=exit_ma,
+                reason="momentum_exit_ma",
+                stop_price=exit_ma,
+            )
+            if self._record_intent(
+                intent,
+                position=position,
+                reconcile=reconcile,
+                blockers=blockers,
+                intents=intents,
+                guard_results=guard_results,
+            ):
+                exited_symbols.add(symbol)
+                positions.pop(symbol, None)
+
+        if self.config.momentum_use_market_filter and not self._momentum_market_ok(
+            candles_by_symbol.get(self.config.momentum_market_symbol, ())
+        ):
+            self.store.record_runtime_event(
+                "INFO",
+                "momentum_market_filter_blocked",
+                {"market_symbol": self.config.momentum_market_symbol},
+            )
+            return self._build_result(
+                reconcile=reconcile,
+                blockers=blockers,
+                intents=intents,
+                guard_results=guard_results,
+                evaluated_symbols=evaluated_symbols,
+            )
+
+        candidates = [
+            candidate
+            for symbol, candles in candles_by_symbol.items()
+            if symbol != self.config.momentum_market_symbol
+            for candidate in (self._momentum_candidate(symbol, candles),)
+            if candidate is not None
+        ]
+        candidates.sort(key=lambda candidate: (-candidate["score"], candidate["symbol"]))
+        accepted_symbols: list[str] = []
+        for candidate in candidates:
+            symbol = str(candidate["symbol"])
+            if len(accepted_symbols) >= self.config.momentum_accept_top_n:
+                break
+            if len(positions) >= self.config.momentum_max_positions:
+                break
+            if symbol in positions or symbol in exited_symbols:
+                continue
+            current_price = prices.get(symbol)
+            if current_price is None or current_price <= candidate["exit_ma"]:
+                continue
+            quantity = self._momentum_quantity(current_price, positions, prices)
+            if quantity <= Decimal("0"):
+                continue
+            intent = self._momentum_intent(
+                symbol=symbol,
+                side="BUY",
+                signal_kind=SignalKind.ENTRY.value,
+                quantity=quantity,
+                price=current_price,
+                trigger_price=current_price,
+                reason="relative_momentum",
+                stop_price=candidate["exit_ma"],
+            )
+            if self._record_intent(
+                intent,
+                position=None,
+                reconcile=reconcile,
+                blockers=blockers,
+                intents=intents,
+                guard_results=guard_results,
+            ):
+                accepted_symbols.append(symbol)
+                filled = self.store.load_paper_position(symbol)
+                if filled is not None and filled.status == PositionStatus.OPEN:
+                    positions[symbol] = filled
+
+        self.store.record_runtime_event(
+            "INFO",
+            "momentum_runtime_ranked",
+            {
+                "recommended": [
+                    {
+                        "symbol": str(candidate["symbol"]),
+                        "score": str(candidate["score"]),
+                        "price": str(candidate["price"]),
+                        "trend_ma": str(candidate["trend_ma"]),
+                        "exit_ma": str(candidate["exit_ma"]),
+                    }
+                    for candidate in candidates[: self.config.momentum_accept_top_n]
+                ],
+                "accepted": accepted_symbols,
+                "open_positions": sorted(positions),
+            },
+        )
+        return self._build_result(
+            reconcile=reconcile,
+            blockers=blockers,
+            intents=intents,
+            guard_results=guard_results,
+            evaluated_symbols=evaluated_symbols,
+        )
+
+    def _build_result(
+        self,
+        *,
+        reconcile: ReconcileResult,
+        blockers: list[str],
+        intents: list[PaperOrderIntent],
+        guard_results: list[GuardResult],
+        evaluated_symbols: list[str],
+    ) -> PaperRunResult:
+        ready = not blockers
+        if blockers:
+            self.notifier.notify(
+                f"{self.config.mode}_runtime_blocked",
+                level="warn",
+                payload={"blockers": blockers},
+            )
+        return PaperRunResult(
+            ready=ready,
+            blockers=tuple(blockers),
+            reconcile=reconcile,
+            intents=tuple(intents),
+            guard_results=tuple(guard_results),
+            evaluated_symbols=tuple(evaluated_symbols),
+            generated_at=self._now(),
+        )
+
+    def _record_intent(
+        self,
+        intent: PaperOrderIntent,
+        *,
+        position: PositionState | None,
+        reconcile: ReconcileResult,
+        blockers: list[str],
+        intents: list[PaperOrderIntent],
+        guard_results: list[GuardResult],
+    ) -> bool:
+        guard_result = self.order_guard.validate(
+            intent,
+            position=position,
+            reconcile=reconcile,
+        )
+        guard_results.append(guard_result)
+        self.store.record_runtime_event(
+            "INFO" if guard_result.passed else "WARN",
+            f"{self.config.mode}_order_guard",
+            guard_result.as_payload(),
+        )
+        if not guard_result.passed:
+            blockers.extend(guard_result.blockers)
+            return False
+        intents.append(intent)
+        payload = intent.as_payload()
+        self.store.record_runtime_event(
+            "INFO",
+            f"{self.config.mode}_order_intent",
+            payload,
+        )
+        self.notifier.notify(
+            f"{self.config.mode}_order_intent",
+            level="info",
+            payload=payload,
+        )
+        if self.config.simulate_fills:
+            filled_position = self.paper_broker.fill(intent)
+            self.store.record_runtime_event(
+                "INFO",
+                f"{self.config.mode}_fill",
+                {
+                    "intent": payload,
+                    "position": _position_payload(filled_position)
+                    if filled_position is not None
+                    else None,
+                },
+            )
+        return True
+
     def health_snapshot(self) -> HealthSnapshot:
         result = self._last_result
         if result is None:
@@ -433,7 +745,7 @@ class PaperTradingRuntime:
                 for position in self.store.list_paper_positions()
             )
             return HealthSnapshot(
-                mode="paper",
+                mode=self.config.mode,
                 ready=True,
                 positions=positions,
                 open_orders=(),
@@ -446,7 +758,7 @@ class PaperTradingRuntime:
             for position in self.store.list_paper_positions()
         )
         return HealthSnapshot(
-            mode="paper",
+            mode=self.config.mode,
             ready=result.ready,
             blockers=result.blockers,
             positions=positions,
@@ -483,7 +795,7 @@ class PaperTradingRuntime:
             else self.config.unit_qty
         )
         return PaperOrderIntent(
-            intent_id=f"paper-{uuid4()}",
+            intent_id=f"{self.config.mode}-{uuid4()}",
             symbol=signal.symbol,
             side=signal.side.value,
             signal_kind=signal.kind.value,
@@ -497,6 +809,102 @@ class PaperTradingRuntime:
             source_signal_id=signal.signal_id,
             reason=signal.reason,
             created_at=self._now(),
+            mode=self.config.mode,
+        )
+
+    def _momentum_market_ok(self, candles: Sequence[Candle]) -> bool:
+        market_ma = _sma(candles, self.config.momentum_trend_ma_days)
+        return bool(candles and market_ma is not None and candles[-1].close > market_ma)
+
+    def _momentum_candidate(
+        self,
+        symbol: str,
+        candles: Sequence[Candle],
+    ) -> dict[str, Decimal | str] | None:
+        required = max(
+            self.config.momentum_lookback_days,
+            self.config.momentum_trend_ma_days,
+            self.config.momentum_average_daily_value_days,
+            self.config.momentum_exit_ma_days,
+        ) + self.config.momentum_skip_days
+        if len(candles) <= required:
+            return None
+        price = candles[-1].close
+        if price < self.config.momentum_min_price:
+            return None
+        average_value = average_traded_value(
+            candles,
+            days=self.config.momentum_average_daily_value_days,
+        )
+        if (
+            average_value is None
+            or average_value < self.config.momentum_min_average_daily_value
+        ):
+            return None
+        trend_ma = _sma(candles, self.config.momentum_trend_ma_days)
+        exit_ma = _sma(candles, self.config.momentum_exit_ma_days)
+        if trend_ma is None or exit_ma is None or price <= trend_ma or price <= exit_ma:
+            return None
+        recent = candles[-self.config.momentum_skip_days - 1].close
+        past = candles[
+            -self.config.momentum_lookback_days
+            - self.config.momentum_skip_days
+            - 1
+        ].close
+        if past <= Decimal("0"):
+            return None
+        score = (recent - past) / past
+        if score <= Decimal("0"):
+            return None
+        return {
+            "symbol": symbol,
+            "score": score,
+            "price": price,
+            "trend_ma": trend_ma,
+            "exit_ma": exit_ma,
+        }
+
+    def _momentum_quantity(
+        self,
+        price: Decimal,
+        positions: Mapping[str, PositionState],
+        prices: Mapping[str, Decimal],
+    ) -> Decimal:
+        equity = self.config.initial_equity
+        for symbol, position in positions.items():
+            mark = prices.get(symbol, position.avg_entry_price)
+            equity += (mark - position.avg_entry_price) * position.total_qty
+        allocation = equity * self.config.momentum_target_position_pct
+        return (allocation / price).to_integral_value(rounding=ROUND_FLOOR)
+
+    def _momentum_intent(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        signal_kind: str,
+        quantity: Decimal,
+        price: Decimal,
+        trigger_price: Decimal,
+        reason: str,
+        stop_price: Decimal,
+    ) -> PaperOrderIntent:
+        return PaperOrderIntent(
+            intent_id=f"{self.config.mode}-{uuid4()}",
+            symbol=symbol,
+            side=side,
+            signal_kind=signal_kind,
+            system=TurtleSystem.MOMENTUM.value,
+            quantity=quantity,
+            trigger_price=trigger_price,
+            observed_price=price,
+            fill_price=price,
+            entry_n=Decimal("0"),
+            stop_price=stop_price,
+            source_signal_id=f"sig-{uuid4()}",
+            reason=reason,
+            created_at=self._now(),
+            mode=self.config.mode,
         )
 
 
@@ -512,6 +920,12 @@ def _position_payload(position: PositionState) -> dict[str, Any]:
         "last_unit_entry_price": str(position.last_unit_entry_price),
         "units": len(position.units),
     }
+
+
+def _sma(history: Sequence[Candle], days: int) -> Decimal | None:
+    if days <= 0 or len(history) < days:
+        return None
+    return sum((candle.close for candle in history[-days:]), Decimal("0")) / Decimal(days)
 
 
 def export_paper_report_json(result: PaperRunResult, path: str | Path) -> None:
