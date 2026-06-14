@@ -208,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pit-universe-csv",
         type=Path,
         help=(
-            "Point-in-time universe CSV for portfolio/scan backtests; "
+            "Point-in-time universe CSV for portfolio/scan/momentum backtests; "
             "requires snapshot coverage for every tested date"
         ),
         metavar="PATH",
@@ -635,7 +635,11 @@ def _backtest_config(args: argparse.Namespace) -> BacktestConfig:
     )
 
 
-def _momentum_backtest_config(args: argparse.Namespace) -> MomentumBacktestConfig:
+def _momentum_backtest_config(
+    args: argparse.Namespace,
+    *,
+    pit_universe,
+) -> MomentumBacktestConfig:
     return MomentumBacktestConfig(
         initial_equity=_decimal(args.initial_equity, Decimal("100000")),
         market_symbol=args.momentum_market_symbol,
@@ -653,6 +657,7 @@ def _momentum_backtest_config(args: argparse.Namespace) -> MomentumBacktestConfi
         sell_commission_rate=_decimal(args.momentum_sell_commission_rate),
         sell_sec_fee_rate=_decimal(args.momentum_sell_sec_fee_rate),
         min_sec_fee=_decimal(args.momentum_min_sec_fee),
+        pit_universe=pit_universe,
     )
 
 
@@ -805,9 +810,13 @@ def run(argv: list[str] | None = None) -> int:
 
     if args.momentum_backtest:
         candles = load_momentum_backtest_candles(args.momentum_data_dir)
+        pit_universe = _load_pit_universe_from_args(args)
         result = run_momentum_backtest(
             candles,
-            config=_momentum_backtest_config(args),
+            config=_momentum_backtest_config(
+                args,
+                pit_universe=pit_universe,
+            ),
         )
         if args.backtest_report is not None:
             export_momentum_backtest_report_json(result, args.backtest_report)

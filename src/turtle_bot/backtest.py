@@ -151,13 +151,20 @@ def summarize_backtest_result(
         [point.total_equity for point in result.equity_curve],
         starting_equity=starting_equity,
     )
+    min_equity = _min_equity(
+        [point.total_equity for point in result.equity_curve],
+        starting_equity=starting_equity,
+        final_equity=result.final_equity,
+    )
 
     return {
         "initial_equity": starting_equity,
         "final_equity": result.final_equity,
+        "min_equity": min_equity,
         "net_pnl": net_pnl,
         "realized_pnl": realized_pnl,
         "return_pct": _pct(net_pnl, starting_equity),
+        "min_return_pct": _pct(min_equity - starting_equity, starting_equity),
         "loss_pct": _pct(max(Decimal("0"), -net_pnl), starting_equity),
         "max_drawdown": max_drawdown,
         "max_drawdown_pct": max_drawdown_pct,
@@ -174,6 +181,16 @@ def _pct(numerator: Decimal, denominator: Decimal) -> Decimal | None:
     if denominator == 0:
         return None
     return (numerator / denominator) * Decimal("100")
+
+
+def _min_equity(
+    equity_values: Sequence[Decimal],
+    *,
+    starting_equity: Decimal,
+    final_equity: Decimal,
+) -> Decimal:
+    values = [starting_equity, final_equity, *equity_values]
+    return min(values)
 
 
 def _max_drawdown(

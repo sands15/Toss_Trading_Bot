@@ -16,6 +16,7 @@ from .backtest import (
     load_candles_csv,
 )
 from .domain import Candle, StrategyState
+from .pit_universe import PitUniverse
 from .universe import average_traded_value
 
 
@@ -38,6 +39,7 @@ class MomentumBacktestConfig:
     sell_commission_rate: Decimal = Decimal("0.001")
     sell_sec_fee_rate: Decimal = Decimal("0.0000206")
     min_sec_fee: Decimal = Decimal("0.01")
+    pit_universe: PitUniverse | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,7 @@ class MomentumBacktestResult:
             "momentum": {
                 "symbols": list(self.symbols),
                 "symbol_count": len(self.symbols),
+                "pit_universe_enabled": self.config.pit_universe is not None,
                 "decision_days": len(self.decisions),
                 "accepted_days": sum(1 for item in self.decisions if item.accepted_symbols),
                 "config": {
@@ -103,6 +106,7 @@ class MomentumBacktestResult:
                     "sell_commission_rate": str(self.config.sell_commission_rate),
                     "sell_sec_fee_rate": str(self.config.sell_sec_fee_rate),
                     "min_sec_fee": str(self.config.min_sec_fee),
+                    "pit_universe_enabled": self.config.pit_universe is not None,
                 },
                 "decisions": [decision.as_payload() for decision in self.decisions],
             },
@@ -144,6 +148,7 @@ def run_momentum_backtest(
     for timestamp, batch in _group_by_timestamp(ordered):
         batch_by_symbol = {candle.symbol: candle for candle in batch}
         exited_symbols: set[str] = set()
+        eligible_symbols = _pit_eligible_symbols(cfg.pit_universe, timestamp)
         for symbol, candle in batch_by_symbol.items():
             last_closes[symbol] = candle.close
 
@@ -188,7 +193,11 @@ def run_momentum_backtest(
 
         market_ok = _market_filter_passes(histories, cfg)
         candidates = (
-            _rank_candidates(histories, cfg)
+            _rank_candidates(
+                histories,
+                cfg,
+                eligible_symbols=eligible_symbols,
+            )
             if market_ok and len(positions) < cfg.max_positions
             else []
         )
@@ -302,10 +311,14 @@ def _group_by_timestamp(candles: Sequence[Candle]):
 def _rank_candidates(
     histories: Mapping[str, Sequence[Candle]],
     config: MomentumBacktestConfig,
+    *,
+    eligible_symbols: frozenset[str] | None = None,
 ) -> list[MomentumCandidate]:
     candidates: list[MomentumCandidate] = []
     for symbol, history in histories.items():
         if symbol == config.market_symbol:
+            continue
+        if eligible_symbols is not None and symbol not in eligible_symbols:
             continue
         candidate = _candidate(symbol, history, config)
         if candidate is not None:
@@ -373,6 +386,15 @@ def _sma(history: Sequence[Candle], days: int) -> Decimal | None:
     if days <= 0 or len(history) < days:
         return None
     return sum((candle.close for candle in history[-days:]), Decimal("0")) / Decimal(days)
+
+
+def _pit_eligible_symbols(
+    pit_universe: PitUniverse | None,
+    timestamp: datetime,
+) -> frozenset[str] | None:
+    if pit_universe is None:
+        return None
+    return pit_universe.eligible_symbols(timestamp)
 
 
 def _position_value(

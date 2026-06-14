@@ -383,6 +383,8 @@ def test_backtest_summary_reports_loss_and_mdd():
 
     assert summary["initial_equity"] == Decimal("1000")
     assert summary["final_equity"] == Decimal("996")
+    assert summary["min_equity"] == Decimal("996")
+    assert summary["min_return_pct"] == Decimal("-0.400")
     assert summary["loss_pct"] == Decimal("0.400")
     assert summary["max_drawdown"] == Decimal("7")
     assert summary["max_drawdown_pct"] == Decimal("0.6979062811565304087736789631")
