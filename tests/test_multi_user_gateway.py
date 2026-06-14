@@ -52,3 +52,95 @@ def test_setup_page_contains_required_first_user_fields() -> None:
     assert 'name="client_secret"' in html
     assert 'name="account_seq"' in html
     assert gateway.SETUP_CONFIRMATION in html
+
+
+def test_create_user_rolls_back_registry_when_container_creation_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gateway = _load_gateway_module()
+
+    def fail_container(_self, _user):
+        raise RuntimeError("docker unavailable")
+
+    monkeypatch.setattr(gateway.UserGateway, "ensure_container", fail_container)
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+
+    try:
+        manager.create_user(
+            client_ip="100.64.0.10",
+            display_name="Alice",
+            account_seq="7",
+            client_id="client-id",
+            client_secret="client-secret",
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("container creation unexpectedly succeeded")
+
+    registry = gateway.load_registry(config.registry_path)
+    assert registry["ip_map"] == {}
+    assert registry["users"] == {}
+
+
+def test_create_user_maps_ip_only_after_container_creation_succeeds(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gateway = _load_gateway_module()
+
+    monkeypatch.setattr(gateway.UserGateway, "ensure_container", lambda _self, _user: None)
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+
+    user = manager.create_user(
+        client_ip="100.64.0.10",
+        display_name="Alice",
+        account_seq="7",
+        client_id="client-id",
+        client_secret="client-secret",
+    )
+
+    registry = gateway.load_registry(config.registry_path)
+    assert registry["ip_map"]["100.64.0.10"] == user["slug"]
+    assert registry["users"][user["slug"]]["status"] == "running"
+    assert manager.user_for_ip("100.64.0.10")["slug"] == user["slug"]
+
+
+def test_create_user_rejects_non_numeric_account_sequence(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+
+    try:
+        manager.create_user(
+            client_ip="100.64.0.10",
+            display_name="Alice",
+            account_seq="abc",
+            client_id="client-id",
+            client_secret="client-secret",
+        )
+    except ValueError as exc:
+        assert "digits only" in str(exc)
+    else:
+        raise AssertionError("invalid account sequence unexpectedly succeeded")

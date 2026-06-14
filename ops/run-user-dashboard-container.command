@@ -8,6 +8,10 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "Docker was not found. Install Docker Desktop on this Mac first." >&2
   exit 1
 fi
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker is installed, but the Docker engine is not running. Start Docker Desktop first." >&2
+  exit 1
+fi
 
 user_slug="${TOSS_DASHBOARD_USER:-${1:-}}"
 if [ -z "$user_slug" ]; then

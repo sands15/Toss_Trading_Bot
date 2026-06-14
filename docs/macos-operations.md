@@ -92,6 +92,12 @@ The gateway stores its routing registry at:
 .local/users/registry.json
 ```
 
+The routing key is the Tailscale client IP. This is convenient for a private
+Tailnet, but it is device-based rather than identity-provider based: two people
+sharing the same device will share one dashboard, and a changed Tailscale IP
+must be registered again. To reset a mapping, stop the gateway and edit or
+remove the relevant entry in `.local/users/registry.json`.
+
 Each user gets separate local files:
 
 ```text

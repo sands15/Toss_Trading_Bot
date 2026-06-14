@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -194,12 +195,14 @@ class GatewayConfig:
 class UserGateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
+        self._registry_lock = threading.Lock()
 
     def ensure_image(self) -> None:
         run_command(["docker", "build", "-t", self.config.image_name, "."], cwd=self.config.repo_root)
 
     def user_for_ip(self, client_ip: str) -> dict[str, Any] | None:
-        registry = load_registry(self.config.registry_path)
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
         slug = registry.get("ip_map", {}).get(client_ip)
         if not slug:
             return None
@@ -215,9 +218,35 @@ class UserGateway:
         client_id: str,
         client_secret: str,
     ) -> dict[str, Any]:
-        registry = load_registry(self.config.registry_path)
-        slug = unique_slug(registry, display_name)
-        port = next_available_port(registry)
+        if not account_seq.strip().isdigit():
+            raise ValueError("account sequence must contain digits only")
+
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+            existing_slug = registry.get("ip_map", {}).get(client_ip)
+            if existing_slug:
+                existing_user = registry.get("users", {}).get(existing_slug)
+                if isinstance(existing_user, dict):
+                    return dict(existing_user)
+
+            slug = unique_slug(registry, display_name)
+            port = next_available_port(registry)
+            container_name = f"toss-dashboard-{slug}"
+            user_root = self.config.users_root / slug
+            user = {
+                "slug": slug,
+                "display_name": display_name.strip(),
+                "client_ip": client_ip,
+                "container_name": container_name,
+                "port": port,
+                "created_at": int(time.time()),
+                "status": "provisioning",
+                "user_root": str(user_root),
+            }
+            registry["users"][slug] = user
+            registry["ip_map"][client_ip] = slug
+            save_registry(self.config.registry_path, registry)
+
         container_name = f"toss-dashboard-{slug}"
         user_root = self.config.users_root / slug
         config_dir = user_root / "config"
@@ -231,20 +260,41 @@ class UserGateway:
         write_config_file(config_dir / "local.yaml", account_seq)
         write_env_file(env_file, client_id, client_secret)
 
-        user = {
-            "slug": slug,
-            "display_name": display_name.strip(),
-            "client_ip": client_ip,
-            "container_name": container_name,
-            "port": port,
-            "created_at": int(time.time()),
-            "user_root": str(user_root),
-        }
-        registry["users"][slug] = user
-        registry["ip_map"][client_ip] = slug
-        save_registry(self.config.registry_path, registry)
-        self.ensure_container(user)
+        try:
+            self.ensure_container(user)
+        except Exception:
+            with self._registry_lock:
+                registry = load_registry(self.config.registry_path)
+                if registry.get("ip_map", {}).get(client_ip) == slug:
+                    registry.get("ip_map", {}).pop(client_ip, None)
+                if registry.get("users", {}).get(slug, {}).get("client_ip") == client_ip:
+                    registry.get("users", {}).pop(slug, None)
+                save_registry(self.config.registry_path, registry)
+            raise
+
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+            saved_user = registry.get("users", {}).get(slug)
+            if isinstance(saved_user, dict):
+                saved_user["status"] = "running"
+                registry["users"][slug] = saved_user
+                save_registry(self.config.registry_path, registry)
+                return dict(saved_user)
         return user
+
+    def wait_for_user_http(self, user: dict[str, Any], *, timeout_seconds: float = 45.0) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        url = f"http://127.0.0.1:{int(user['port'])}/health"
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                with request.urlopen(url, timeout=2) as response:
+                    if 200 <= response.status < 500:
+                        return
+            except Exception as exc:  # pragma: no cover - timing dependent
+                last_error = exc
+            time.sleep(0.5)
+        raise TimeoutError(f"user container did not become ready: {last_error}")
 
     def ensure_container(self, user: dict[str, Any]) -> None:
         container_name = str(user["container_name"])
@@ -274,6 +324,7 @@ class UserGateway:
             if running == "true":
                 return
             run_command(["docker", "start", container_name], cwd=self.config.repo_root)
+            self.wait_for_user_http(user)
             return
 
         self.ensure_image()
@@ -309,6 +360,7 @@ class UserGateway:
             ],
             cwd=self.config.repo_root,
         )
+        self.wait_for_user_http(user)
 
 
 def setup_page(client_ip: str, message: str = "") -> bytes:
