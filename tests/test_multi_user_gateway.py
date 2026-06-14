@@ -103,7 +103,14 @@ def test_create_user_rolls_back_registry_when_container_creation_fails(
     def fail_container(_self, _user):
         raise RuntimeError("docker unavailable")
 
+    removed_containers = []
+
     monkeypatch.setattr(gateway.UserGateway, "ensure_container", fail_container)
+    monkeypatch.setattr(
+        gateway.UserGateway,
+        "remove_container",
+        lambda _self, container_name: removed_containers.append(container_name),
+    )
     config = gateway.GatewayConfig(
         repo_root=tmp_path,
         registry_path=tmp_path / "registry.json",
@@ -129,6 +136,7 @@ def test_create_user_rolls_back_registry_when_container_creation_fails(
     registry = gateway.load_registry(config.registry_path)
     assert registry["ip_map"] == {}
     assert registry["users"] == {}
+    assert removed_containers == ["toss-dashboard-alice"]
 
 
 def test_create_user_maps_ip_only_after_container_creation_succeeds(

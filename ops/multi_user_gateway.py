@@ -263,6 +263,15 @@ class UserGateway:
     def ensure_image(self) -> None:
         run_command(["docker", "build", "-t", self.config.image_name, "."], cwd=self.config.repo_root)
 
+    def remove_container(self, container_name: str) -> None:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            cwd=str(self.config.repo_root),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
     def user_for_ip(self, client_ip: str) -> dict[str, Any] | None:
         with self._registry_lock:
             registry = load_registry(self.config.registry_path)
@@ -325,6 +334,7 @@ class UserGateway:
             write_env_file(env_file, client_id, client_secret)
             self.ensure_container(user)
         except Exception:
+            self.remove_container(container_name)
             with self._registry_lock:
                 registry = load_registry(self.config.registry_path)
                 if registry.get("ip_map", {}).get(client_ip) == slug:
