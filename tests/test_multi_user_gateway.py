@@ -90,6 +90,9 @@ def test_setup_page_contains_required_first_user_fields() -> None:
 
     assert "처음 접속한 사용자 설정" in html
     assert "alice@example.com" in html
+    assert "100.64.0.10" not in html
+    assert "접속 IP" not in html
+    assert "Tailscale 계정으로 사용자를 구분합니다." in html
     assert 'name="csrf_token"' in html
     assert 'value="token-123"' in html
     assert 'name="client_id"' in html

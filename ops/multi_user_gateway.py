@@ -1100,7 +1100,6 @@ def setup_page(
     csrf_token: str = "",
 ) -> bytes:
     escaped_message = html.escape(message)
-    escaped_ip = html.escape(client_ip)
     escaped_identity = html.escape(tailscale_identity)
     escaped_display_name = html.escape(display_name)
     escaped_csrf = html.escape(csrf_token)
@@ -1132,7 +1131,7 @@ def setup_page(
     <div class="identity">
       <div><strong>{escaped_display_name}</strong></div>
       <div class="ip">{escaped_identity}</div>
-      <div class="ip">접속 IP: {escaped_ip}</div>
+      <div>Tailscale 계정으로 사용자를 구분합니다.</div>
     </div>
     <p class="hint">아래 값은 토스증권 Open API에서 발급받은 앱 정보와 연결할 계좌 식별번호입니다. API 값은 화면에 다시 보여주지 않고 이 서버의 보안 저장소에만 저장합니다.</p>
     {f'<div class="error">{escaped_message}</div>' if escaped_message else ''}
