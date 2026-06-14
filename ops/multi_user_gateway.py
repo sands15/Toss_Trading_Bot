@@ -172,14 +172,14 @@ def save_registry(path: Path, registry: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def append_audit_event(path: Path, event: str, **fields: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def append_audit_event(audit_log_path: Path, event: str, **fields: Any) -> None:
+    audit_log_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "time": int(time.time()),
         "event": event,
         **fields,
     }
-    with path.open("a", encoding="utf-8") as handle:
+    with audit_log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         handle.write("\n")
 
@@ -1218,6 +1218,16 @@ def make_handler(gateway: UserGateway):
             self.end_headers()
             self.wfile.write(body)
 
+        def send_json(self, status: int, payload: dict[str, Any]) -> None:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
         def send_setup_page(self, status: int = 200, message: str = "") -> None:
             identity = tailscale_identity_from_headers(self.headers)
             if identity is None:
@@ -1254,6 +1264,9 @@ def make_handler(gateway: UserGateway):
             )
 
         def do_GET(self) -> None:
+            if self.path == "/health":
+                self.send_json(200, {"status": "ok", "service": "multi-user-gateway"})
+                return
             if self.path.startswith("/__setup"):
                 self.send_setup_page()
                 return

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import http.client
 import json
 import sys
+import threading
 from pathlib import Path
 
 
@@ -106,6 +108,44 @@ def test_setup_csrf_token_must_match_cookie() -> None:
     assert not gateway.csrf_is_valid("toss_gateway_setup=abc", "wrong")
     assert not gateway.csrf_is_valid("", "abc")
     assert gateway.cookie_value("a=1; toss_gateway_setup=xyz", "toss_gateway_setup") == "xyz"
+
+
+def test_audit_event_allows_request_path_field(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    audit_log = tmp_path / "audit.log"
+
+    gateway.append_audit_event(audit_log, "identity_missing", client_ip="127.0.0.1", path="/")
+
+    event = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert event["event"] == "identity_missing"
+    assert event["path"] == "/"
+
+
+def test_gateway_health_endpoint_does_not_require_identity(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+    server = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.make_handler(manager))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/health")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert response.status == 200
+    assert body == {"status": "ok", "service": "multi-user-gateway"}
 
 
 def test_tailscale_identity_headers_are_required_and_decoded() -> None:
