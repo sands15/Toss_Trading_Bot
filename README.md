@@ -1,9 +1,15 @@
 # Toss Trading Bot
 
-Turtle Trading bot for Toss Securities Open API.
+Toss Securities Open API trading research and validation bot.
 
-The project is designed for 24/7 macOS operation, while keeping the strategy,
-backtest, API client, and tests runnable on Windows.
+The project started with original Turtle Trading rules and now also includes a
+US relative-strength momentum strategy, survivorship-bias controls, Toss
+read-only account/market integration, paper trading, and shadow validation.
+Shadow mode uses real Toss read-only data and virtual fills, but still has no
+live order submission path.
+
+The codebase is designed for 24/7 macOS operation, while keeping the strategy,
+backtest, API client, setup scripts, and tests runnable on Windows.
 
 ## Non-Negotiable Principle
 
@@ -16,10 +22,13 @@ behavior as an explicit deviation and block live trading until approved.
 - Primary runtime: macOS daemon managed by `launchd`
 - Sleep prevention: Amphetamine or equivalent macOS power policy
 - Development and tests: macOS and Windows
-- Strategy MVP: long-only stock trading, intraday breakout detection from
-  previous-day channels, no discretionary AI order decisions
+- Strategy scope: original Turtle rules plus saved US relative-strength
+  momentum strategy
 - Broker: Toss Securities Open API behind adapter interfaces
-- First safe modes: backtest, read-only live sync, paper trading
+- Safe modes: backtest, read-only sync, paper trading, and shadow validation
+- Live broker order submission is intentionally not implemented yet
+- AI is explanation-only and cannot select symbols, change sizing, or submit
+  orders
 
 ## Current Implementation
 
@@ -95,6 +104,20 @@ bash ops/setup-local.sh
 Then fill `config/local.yaml`, set `TOSS_CLIENT_ID` and
 `TOSS_CLIENT_SECRET`, and run `--ops-check`. See [Setup](docs/setup.md) for the
 full first-run flow.
+
+## Latest Test Result
+
+Last verified locally on 2026-06-14:
+
+```text
+python -m pytest -q
+148 passed
+```
+
+This test run covers the strategy core, long/short backtests, point-in-time
+universe filtering, scan and momentum backtests, Toss OpenAPI request/response
+compatibility, market-calendar parsing, paper runtime, shadow validation,
+setup/config parsing, reports, and state storage.
 
 ## Official References
 
