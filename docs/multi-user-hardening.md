@@ -6,13 +6,15 @@ use the Tailscale Docker gateway.
 ## Done
 
 - Per-user Docker containers are routed through one Tailscale-facing gateway.
-- Users are routed by a signed gateway login session instead of client IP.
-- First-time users see a signup form with login ID, password, Toss app ID, Toss
-  app secret, and account sequence.
+- Users are routed by Tailscale Serve identity headers instead of client IP or
+  an app password.
+- First-time users see a setup form with Toss app ID, Toss app secret, and
+  account sequence. The display name and identity come from Tailscale.
 - Toss credentials are stored through a secret-store backend. macOS gateway
   deployments use Keychain by default; Windows/test runs use the file backend.
-- User containers bind to `127.0.0.1:<internal-port>`; only the gateway binds to
-  the Tailscale address.
+- User containers bind to `127.0.0.1:<internal-port>`, and the gateway binds to
+  `127.0.0.1`. Tailscale Serve exposes the gateway to the tailnet and supplies
+  identity headers.
 - Setup forms use CSRF tokens and a maximum request body size.
 - Failed provisioning rolls back the registry and removes the failed container.
 - Registry helper commands can list users, unmap an IP, and delete registry
@@ -22,8 +24,8 @@ use the Tailscale Docker gateway.
 - Admin helper commands can stop, start, restart, and remove a user's Docker
   container without editing the registry by hand.
 - User containers have default Docker memory, CPU, and log-size limits.
-- Login, signup, registration denial, rate-limit, and container lifecycle events
-  are written as JSON lines to `.local/users/audit.log`.
+- Identity-missing, setup, registration denial, rate-limit, and container
+  lifecycle events are written as JSON lines to `.local/users/audit.log`.
 - Secret storage behavior is documented in `docs/secret-storage-plan.md`.
 
 ## Next Hardening Passes
@@ -36,8 +38,9 @@ use the Tailscale Docker gateway.
 
 ## Current Risk Notes
 
-- Tailscale currently controls network reachability only; it is not yet an
-  identity provider for the app login.
+- The gateway must be reached through Tailscale Serve. Direct HTTP access to the
+  localhost backend is for local debugging only because identity headers could
+  be spoofed by local processes.
 - Manual single-user Docker launches still use plaintext `.env` files; the
   multi-user gateway is the preferred path for other users.
 - Live order submission remains intentionally disabled in the dashboard flow.

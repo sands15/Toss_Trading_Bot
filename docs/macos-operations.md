@@ -69,10 +69,10 @@ DASHBOARD_HOST=127.0.0.1 ops/run-dashboard-macos.command
 ### Per-User Docker Containers
 
 If more than one person will use the dashboard, prefer the multi-user gateway.
-It identifies users by a local gateway login session. A first-time user creates
-an account with name, login ID, password, Toss app ID, Toss app secret, and
-account sequence. After login, that user is routed to their own Docker
-container from any device that can reach the Tailscale gateway.
+It identifies users by Tailscale Serve identity headers. A first-time Tailscale
+user enters only Toss app ID, Toss app secret, and account sequence. After that,
+the user's Tailscale login, for example `alice@example.com`, is routed to their
+own Docker container from any of their Tailscale devices.
 
 Start the gateway:
 
@@ -81,21 +81,25 @@ chmod +x ops/run-multi-user-gateway.command
 open ops/run-multi-user-gateway.command
 ```
 
-Open the gateway URL it prints:
+Open the Tailscale Serve HTTPS URL:
 
-```text
-http://<mac-tailscale-ip>:8765/
+```bash
+tailscale serve status
 ```
 
-By default, any first-time Tailscale IP that can reach the gateway may open the
-signup form. For a smaller private beta, restrict first-time signup to known
+The gateway process itself binds to `127.0.0.1` because Tailscale identity
+headers must come from the Serve proxy. Do not expose the gateway directly on a
+LAN or Tailscale IP, because direct callers could spoof identity headers.
+
+By default, any first-time Tailscale user who can reach the Serve URL may open
+the setup form. For a smaller private beta, restrict first-time setup to known
 Tailscale IPs or CIDR ranges:
 
 ```bash
 REGISTRATION_ALLOWLIST="100.64.0.10,100.64.0.0/24" open ops/run-multi-user-gateway.command
 ```
 
-Signup submissions are rate-limited per client IP. The defaults are 5 setup
+Setup submissions are rate-limited per client IP. The defaults are 5 setup
 submissions per 900 seconds. Override them only when onboarding many known
 devices at once:
 
@@ -122,9 +126,8 @@ It writes audit events for setup attempts and container lifecycle commands to:
 .local/users/audit.log
 ```
 
-The routing key is the signed gateway session cookie. Tailscale still controls
-network reachability, but the dashboard user is now the login account, not the
-device IP. The registry keeps `last_client_ip` for auditing and optional signup
+The routing key is the Tailscale user login from `Tailscale-User-Login`, not the
+device IP. The registry keeps `last_client_ip` for auditing and optional setup
 allowlists.
 
 Registry admin helpers:

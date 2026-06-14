@@ -27,7 +27,7 @@ configuration identifier, not an API secret.
 
 ## Runtime Flow
 
-1. User signs up in the gateway.
+1. A Tailscale-identified user completes first-time setup in the gateway.
 2. Gateway validates input.
 3. Gateway stores Toss app ID and app secret in the configured secret backend.
 4. Gateway writes the user config without API values.

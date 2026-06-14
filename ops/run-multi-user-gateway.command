@@ -15,7 +15,7 @@ fi
 
 python_bin="${PYTHON:-python3}"
 gateway_port="${GATEWAY_PORT:-8765}"
-gateway_host="${GATEWAY_HOST:-}"
+gateway_host="${GATEWAY_HOST:-127.0.0.1}"
 registration_allowlist="${REGISTRATION_ALLOWLIST:-}"
 setup_rate_limit="${SETUP_RATE_LIMIT:-5}"
 setup_rate_window_seconds="${SETUP_RATE_WINDOW_SECONDS:-900}"
@@ -25,21 +25,34 @@ container_log_max_size="${CONTAINER_LOG_MAX_SIZE:-10m}"
 container_log_max_files="${CONTAINER_LOG_MAX_FILES:-3}"
 secret_backend="${SECRET_BACKEND:-auto}"
 keychain_service="${KEYCHAIN_SERVICE:-toss-trading-bot}"
+enable_tailscale_serve="${TAILSCALE_SERVE:-1}"
 
-if [ -z "$gateway_host" ] && command -v tailscale >/dev/null 2>&1; then
-  gateway_host="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+if [ "$gateway_host" != "127.0.0.1" ] && [ "$gateway_host" != "localhost" ]; then
+  echo "For Tailscale identity headers, bind the gateway to 127.0.0.1 and expose it with tailscale serve." >&2
+  echo "Set GATEWAY_HOST=127.0.0.1 or leave it unset." >&2
+  exit 1
 fi
-gateway_host="${gateway_host:-127.0.0.1}"
+
+if [ "$enable_tailscale_serve" != "0" ]; then
+  if ! command -v tailscale >/dev/null 2>&1; then
+    echo "Tailscale was not found. Install and log in to Tailscale first, or set TAILSCALE_SERVE=0 for local test only." >&2
+    exit 1
+  fi
+  tailscale serve --bg "$gateway_port"
+fi
 
 cat <<EOF
 
 Toss multi-user dashboard gateway
-Gateway URL:
+Local gateway URL:
   http://${gateway_host}:${gateway_port}/
 
-Visitors will see a login page.
-First-time users can create an account and get their own Docker container.
-Set REGISTRATION_ALLOWLIST to restrict first-time signup by IP/CIDR.
+Open the Tailscale Serve HTTPS URL printed by:
+  tailscale serve status
+
+Users are identified by Tailscale-User-Login.
+First-time Tailscale users can connect Toss API values and get their own Docker container.
+Set REGISTRATION_ALLOWLIST to restrict first-time setup by IP/CIDR.
 On macOS, SECRET_BACKEND=auto stores Toss API credentials in Keychain.
 
 Press Ctrl+C in this window to stop the gateway.
