@@ -74,7 +74,17 @@ user enters only Toss app ID, Toss app secret, and account sequence. After that,
 the user's Tailscale login, for example `alice@example.com`, is routed to their
 own Docker container from any of their Tailscale devices.
 
-Start the gateway:
+The one-file launcher is:
+
+```bash
+chmod +x Start-Toss-Gateway.command
+open Start-Toss-Gateway.command
+```
+
+This prepares `.venv`, installs the local package, checks Docker Desktop and
+Tailscale, starts `tailscale serve`, and then runs the multi-user gateway.
+
+The lower-level gateway launcher is:
 
 ```bash
 chmod +x ops/run-multi-user-gateway.command
