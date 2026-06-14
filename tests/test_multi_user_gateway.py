@@ -56,12 +56,14 @@ def test_registry_admin_helpers_remove_mappings_without_secrets() -> None:
                 "container_name": "toss-dashboard-alice",
                 "port": 19000,
                 "client_secret": "should-not-appear",
+                "password_hash": "should-not-appear",
             }
         },
     }
 
     view = gateway.registry_public_view(registry)
     assert "client_secret" not in view["users"]["alice"]
+    assert "password_hash" not in view["users"]["alice"]
     assert gateway.unmap_ip(registry, "100.64.0.10") == "alice"
     assert registry["ip_map"] == {}
     registry["ip_map"]["100.64.0.10"] = "alice"
@@ -79,6 +81,8 @@ def test_setup_page_contains_required_first_user_fields() -> None:
     assert 'name="csrf_token"' in html
     assert 'value="token-123"' in html
     assert 'name="display_name"' in html
+    assert 'name="login_id"' in html
+    assert 'name="password"' in html
     assert 'name="client_id"' in html
     assert 'name="client_secret"' in html
     assert 'name="account_seq"' in html
@@ -92,6 +96,25 @@ def test_setup_csrf_token_must_match_cookie() -> None:
     assert not gateway.csrf_is_valid("toss_gateway_setup=abc", "wrong")
     assert not gateway.csrf_is_valid("", "abc")
     assert gateway.cookie_value("a=1; toss_gateway_setup=xyz", "toss_gateway_setup") == "xyz"
+
+
+def test_password_hash_and_session_cookie_are_verifiable(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    password_hash = gateway.make_password_hash("correct horse")
+
+    assert gateway.verify_password("correct horse", password_hash)
+    assert not gateway.verify_password("wrong password", password_hash)
+
+    secret_path = tmp_path / "session_secret"
+    secret = gateway.load_or_create_secret(secret_path)
+    assert secret_path.exists()
+    assert gateway.load_or_create_secret(secret_path) == secret
+
+    cookie_value = gateway.make_session_cookie_value(secret, "alice", now=100)
+    cookie_header = f"toss_gateway_session={cookie_value}"
+    assert gateway.session_slug_from_cookie(cookie_header, secret, now=101) == "alice"
+    assert gateway.session_slug_from_cookie(cookie_header, b"wrong", now=101) is None
+    assert gateway.session_slug_from_cookie(cookie_header, secret, now=100 + gateway.SESSION_TTL_SECONDS + 1) is None
 
 
 def test_setup_content_length_is_limited() -> None:
@@ -280,6 +303,8 @@ def test_create_user_rolls_back_registry_when_container_creation_fails(
         manager.create_user(
             client_ip="100.64.0.10",
             display_name="Alice",
+            login_id="alice",
+            password="correct horse",
             account_seq="7",
             client_id="client-id",
             client_secret="client-secret",
@@ -291,6 +316,7 @@ def test_create_user_rolls_back_registry_when_container_creation_fails(
 
     registry = gateway.load_registry(config.registry_path)
     assert registry["ip_map"] == {}
+    assert registry["login_map"] == {}
     assert registry["users"] == {}
     assert removed_containers == ["toss-dashboard-alice"]
 
@@ -314,6 +340,8 @@ def test_create_user_maps_ip_only_after_container_creation_succeeds(
     user = manager.create_user(
         client_ip="100.64.0.10",
         display_name="Alice",
+        login_id="Alice.Login",
+        password="correct horse",
         account_seq="7",
         client_id="client-id",
         client_secret="client-secret",
@@ -321,8 +349,14 @@ def test_create_user_maps_ip_only_after_container_creation_succeeds(
 
     registry = gateway.load_registry(config.registry_path)
     assert registry["ip_map"]["100.64.0.10"] == user["slug"]
+    assert registry["login_map"]["alice.login"] == user["slug"]
     assert registry["users"][user["slug"]]["status"] == "running"
+    assert "password_hash" in registry["users"][user["slug"]]
     assert manager.user_for_ip("100.64.0.10")["slug"] == user["slug"]
+    assert manager.authenticate("alice.login", "correct horse")["slug"] == user["slug"]
+    assert manager.authenticate("alice.login", "wrong password") is None
+    session_cookie = f"toss_gateway_session={manager.make_session_cookie(user['slug'])}"
+    assert manager.user_for_session_cookie(session_cookie)["slug"] == user["slug"]
 
 
 def test_create_user_rejects_non_numeric_account_sequence(tmp_path: Path) -> None:
@@ -340,6 +374,8 @@ def test_create_user_rejects_non_numeric_account_sequence(tmp_path: Path) -> Non
         manager.create_user(
             client_ip="100.64.0.10",
             display_name="Alice",
+            login_id="alice",
+            password="correct horse",
             account_seq="abc",
             client_id="client-id",
             client_secret="client-secret",
@@ -369,6 +405,8 @@ def test_create_user_rolls_back_when_credential_file_write_fails(
         manager.create_user(
             client_ip="100.64.0.10",
             display_name="Alice",
+            login_id="alice",
+            password="correct horse",
             account_seq="7",
             client_id="client-id",
             client_secret="bad\nsecret",
@@ -380,4 +418,5 @@ def test_create_user_rolls_back_when_credential_file_write_fails(
 
     registry = gateway.load_registry(config.registry_path)
     assert registry["ip_map"] == {}
+    assert registry["login_map"] == {}
     assert registry["users"] == {}

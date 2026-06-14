@@ -6,7 +6,9 @@ use the Tailscale Docker gateway.
 ## Done
 
 - Per-user Docker containers are routed through one Tailscale-facing gateway.
-- Unknown Tailscale client IPs see a first-run setup form.
+- Users are routed by a signed gateway login session instead of client IP.
+- First-time users see a signup form with login ID, password, Toss app ID, Toss
+  app secret, and account sequence.
 - Toss credentials are written only to local ignored user files.
 - User containers bind to `127.0.0.1:<internal-port>`; only the gateway binds to
   the Tailscale address.
@@ -19,23 +21,22 @@ use the Tailscale Docker gateway.
 - Admin helper commands can stop, start, restart, and remove a user's Docker
   container without editing the registry by hand.
 - User containers have default Docker memory, CPU, and log-size limits.
-- Setup, registration denial, rate-limit, and container lifecycle events are
-  written as JSON lines to `.local/users/audit.log`.
+- Login, signup, registration denial, rate-limit, and container lifecycle events
+  are written as JSON lines to `.local/users/audit.log`.
+- Encrypted Toss secret storage has a dedicated implementation plan in
+  `docs/secret-storage-plan.md`.
 
 ## Next Hardening Passes
 
 1. Add cleanup commands for orphaned containers and stale user folders.
 2. Verify the full Docker build/run path on the target Mac with Docker Desktop
    running.
-3. Replace IP-only routing with Tailscale identity or an authenticated app login
-   before this becomes anything beyond a private Tailnet tool.
-4. Move Toss secrets from plaintext `.env` files to macOS Keychain or another
+3. Move Toss secrets from plaintext `.env` files to macOS Keychain or another
    encrypted secret store.
 
 ## Current Risk Notes
 
-- IP-based routing is device-based, not person-based. If two people share one
-  Tailscale device, they share the same dashboard.
-- A new Tailscale IP is treated as a new visitor unless it is manually mapped.
+- Tailscale currently controls network reachability only; it is not yet an
+  identity provider for the app login.
 - Local `.env` files are ignored by git, but they are still plaintext on disk.
 - Live order submission remains intentionally disabled in the dashboard flow.

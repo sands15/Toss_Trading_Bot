@@ -35,9 +35,9 @@ Toss multi-user dashboard gateway
 Gateway URL:
   http://${gateway_host}:${gateway_port}/
 
-Unknown Tailscale client IPs will see a setup page.
-Known client IPs will be routed to their own Docker container.
-Set REGISTRATION_ALLOWLIST to restrict first-time setup by IP/CIDR.
+Visitors will see a login page.
+First-time users can create an account and get their own Docker container.
+Set REGISTRATION_ALLOWLIST to restrict first-time signup by IP/CIDR.
 
 Press Ctrl+C in this window to stop the gateway.
 User containers keep running until stopped with Docker.

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import hmac
 import html
 import ipaddress
@@ -24,11 +26,14 @@ DEFAULT_IMAGE = "toss-trading-bot:local"
 DEFAULT_REGISTRY = ".local/users/registry.json"
 DEFAULT_USER_ROOT = ".local/users"
 DEFAULT_AUDIT_LOG = ".local/users/audit.log"
+DEFAULT_SESSION_SECRET = ".local/users/session_secret"
 DEFAULT_CONTAINER_PORT = 8765
 DEFAULT_FIRST_PORT = 19000
 SETUP_CONFIRMATION = "토스 연결 승인"
 SETUP_CSRF_COOKIE = "toss_gateway_setup"
+SESSION_COOKIE = "toss_gateway_session"
 MAX_SETUP_BODY_BYTES = 32 * 1024
+SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_SETUP_RATE_LIMIT = 5
 DEFAULT_SETUP_RATE_WINDOW_SECONDS = 15 * 60
 DEFAULT_CONTAINER_MEMORY = "512m"
@@ -43,6 +48,12 @@ def slugify(value: str) -> str:
     return slug or "user"
 
 
+def normalize_login_id(value: str) -> str:
+    login_id = re.sub(r"[^a-z0-9_.@-]+", "-", value.strip().lower())
+    login_id = re.sub(r"-+", "-", login_id).strip("-")
+    return login_id
+
+
 def clean_env_value(value: str) -> str:
     cleaned = value.strip()
     if "\n" in cleaned or "\r" in cleaned:
@@ -52,6 +63,81 @@ def clean_env_value(value: str) -> str:
 
 def make_csrf_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def make_password_hash(password: str, *, salt: str | None = None, iterations: int = 260_000) -> str:
+    if not password or len(password) < 8:
+        raise ValueError("password must be at least 8 characters")
+    salt_value = salt or secrets.token_urlsafe(18)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt_value.encode("utf-8"),
+        iterations,
+    )
+    return f"pbkdf2_sha256${iterations}${salt_value}${base64.urlsafe_b64encode(digest).decode('ascii')}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, iterations_text, salt, expected = stored_hash.split("$", 3)
+        iterations = int(iterations_text)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256" or iterations < 100_000:
+        return False
+    actual = make_password_hash(password, salt=salt, iterations=iterations).rsplit("$", 1)[-1]
+    return hmac.compare_digest(actual, expected)
+
+
+def load_or_create_secret(path: Path) -> bytes:
+    if path.exists():
+        return path.read_bytes().strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secret = secrets.token_urlsafe(48).encode("ascii")
+    path.write_bytes(secret + b"\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return secret
+
+
+def make_session_cookie_value(secret: bytes, slug: str, *, now: int | None = None) -> str:
+    issued_at = int(time.time() if now is None else now)
+    expires_at = issued_at + SESSION_TTL_SECONDS
+    nonce = secrets.token_urlsafe(12)
+    payload = f"{slug}:{expires_at}:{nonce}"
+    signature = hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def session_slug_from_cookie(
+    cookie_header: str | None,
+    secret: bytes,
+    *,
+    now: int | None = None,
+) -> str | None:
+    value = cookie_value(cookie_header, SESSION_COOKIE)
+    if not value:
+        return None
+    parts = value.split(":")
+    if len(parts) != 4:
+        return None
+    slug, expires_text, nonce, signature = parts
+    try:
+        expires_at = int(expires_text)
+    except ValueError:
+        return None
+    if expires_at < int(time.time() if now is None else now):
+        return None
+    if not slugify(slug) == slug:
+        return None
+    payload = f"{slug}:{expires_at}:{nonce}"
+    expected = hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return slug
 
 
 def cookie_value(cookie_header: str | None, name: str) -> str:
@@ -108,14 +194,15 @@ def client_ip_is_allowed(client_ip: str, allowlist: tuple[str, ...]) -> bool:
 
 def load_registry(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {"version": 1, "next_port": DEFAULT_FIRST_PORT, "ip_map": {}, "users": {}}
+        return {"version": 2, "next_port": DEFAULT_FIRST_PORT, "ip_map": {}, "login_map": {}, "users": {}}
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
         raise ValueError(f"invalid registry: {path}")
-    data.setdefault("version", 1)
+    data.setdefault("version", 2)
     data.setdefault("next_port", DEFAULT_FIRST_PORT)
     data.setdefault("ip_map", {})
+    data.setdefault("login_map", {})
     data.setdefault("users", {})
     return data
 
@@ -147,6 +234,7 @@ def registry_public_view(registry: dict[str, Any]) -> dict[str, Any]:
         "version": registry.get("version", 1),
         "next_port": registry.get("next_port", DEFAULT_FIRST_PORT),
         "ip_map": dict(registry.get("ip_map", {})),
+        "login_map": dict(registry.get("login_map", {})),
         "users": {
             slug: {
                 key: value
@@ -161,6 +249,8 @@ def registry_public_view(registry: dict[str, Any]) -> dict[str, Any]:
                     "created_at",
                     "status",
                     "user_root",
+                    "login_id",
+                    "last_client_ip",
                 }
             }
             for slug, user in users.items()
@@ -179,6 +269,10 @@ def delete_user(registry: dict[str, Any], slug: str) -> dict[str, Any] | None:
     for ip, mapped_slug in list(ip_map.items()):
         if mapped_slug == slug:
             ip_map.pop(ip, None)
+    login_map = registry.get("login_map", {})
+    for login_id, mapped_slug in list(login_map.items()):
+        if mapped_slug == slug:
+            login_map.pop(login_id, None)
     return dict(removed) if isinstance(removed, dict) else None
 
 
@@ -312,6 +406,7 @@ class GatewayConfig:
     image_name: str
     container_port: int
     audit_log_path: Path | None = None
+    session_secret_path: Path | None = None
     setup_rate_limit: int = DEFAULT_SETUP_RATE_LIMIT
     setup_rate_window_seconds: int = DEFAULT_SETUP_RATE_WINDOW_SECONDS
     registration_allowlist: tuple[str, ...] = ()
@@ -325,6 +420,8 @@ class UserGateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
         self.audit_log_path = config.audit_log_path or config.registry_path.parent / "audit.log"
+        self.session_secret_path = config.session_secret_path or config.registry_path.parent / "session_secret"
+        self.session_secret = load_or_create_secret(self.session_secret_path)
         self._registry_lock = threading.Lock()
         self._setup_attempts_lock = threading.Lock()
         self._setup_attempts: dict[str, list[float]] = {}
@@ -374,6 +471,38 @@ class UserGateway:
         user = registry.get("users", {}).get(slug)
         return dict(user) if isinstance(user, dict) else None
 
+    def user_for_session_cookie(self, cookie_header: str | None) -> dict[str, Any] | None:
+        slug = session_slug_from_cookie(cookie_header, self.session_secret)
+        if not slug:
+            return None
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+        user = registry.get("users", {}).get(slug)
+        return dict(user) if isinstance(user, dict) else None
+
+    def authenticate(self, login_id: str, password: str) -> dict[str, Any] | None:
+        normalized_login = normalize_login_id(login_id)
+        if not normalized_login:
+            return None
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+        slug = registry.get("login_map", {}).get(normalized_login)
+        if not slug:
+            return None
+        user = registry.get("users", {}).get(slug)
+        if not isinstance(user, dict):
+            return None
+        try:
+            verified = verify_password(password, str(user.get("password_hash", "")))
+        except ValueError:
+            verified = False
+        if not verified:
+            return None
+        return dict(user)
+
+    def make_session_cookie(self, slug: str) -> str:
+        return make_session_cookie_value(self.session_secret, slug)
+
     def user_by_slug(self, slug: str) -> dict[str, Any]:
         with self._registry_lock:
             registry = load_registry(self.config.registry_path)
@@ -392,6 +521,15 @@ class UserGateway:
             registry["users"][slug] = user
             save_registry(self.config.registry_path, registry)
             return dict(user)
+
+    def record_user_client_ip(self, slug: str, client_ip: str) -> None:
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+            user = registry.get("users", {}).get(slug)
+            if isinstance(user, dict):
+                user["last_client_ip"] = client_ip
+                registry["users"][slug] = user
+                save_registry(self.config.registry_path, registry)
 
     def stop_user(self, slug: str) -> dict[str, Any]:
         user = self.user_by_slug(slug)
@@ -427,20 +565,26 @@ class UserGateway:
         *,
         client_ip: str,
         display_name: str,
+        login_id: str | None = None,
+        password: str | None = None,
         account_seq: str,
         client_id: str,
         client_secret: str,
     ) -> dict[str, Any]:
         if not account_seq.strip().isdigit():
             raise ValueError("account sequence must contain digits only")
+        normalized_login = normalize_login_id(login_id or display_name)
+        if not normalized_login:
+            raise ValueError("login id is required")
+        if password is None:
+            raise ValueError("password is required")
+        password_hash = make_password_hash(password)
 
         with self._registry_lock:
             registry = load_registry(self.config.registry_path)
-            existing_slug = registry.get("ip_map", {}).get(client_ip)
+            existing_slug = registry.get("login_map", {}).get(normalized_login)
             if existing_slug:
-                existing_user = registry.get("users", {}).get(existing_slug)
-                if isinstance(existing_user, dict):
-                    return dict(existing_user)
+                raise ValueError("that login id is already registered")
 
             slug = unique_slug(registry, display_name)
             port = next_available_port(registry)
@@ -450,6 +594,9 @@ class UserGateway:
                 "slug": slug,
                 "display_name": display_name.strip(),
                 "client_ip": client_ip,
+                "last_client_ip": client_ip,
+                "login_id": normalized_login,
+                "password_hash": password_hash,
                 "container_name": container_name,
                 "port": port,
                 "created_at": int(time.time()),
@@ -458,6 +605,7 @@ class UserGateway:
             }
             registry["users"][slug] = user
             registry["ip_map"][client_ip] = slug
+            registry["login_map"][normalized_login] = slug
             save_registry(self.config.registry_path, registry)
             self.audit("setup_provisioning", client_ip=client_ip, slug=slug, display_name=display_name.strip())
 
@@ -482,6 +630,8 @@ class UserGateway:
                 registry = load_registry(self.config.registry_path)
                 if registry.get("ip_map", {}).get(client_ip) == slug:
                     registry.get("ip_map", {}).pop(client_ip, None)
+                if registry.get("login_map", {}).get(normalized_login) == slug:
+                    registry.get("login_map", {}).pop(normalized_login, None)
                 if registry.get("users", {}).get(slug, {}).get("client_ip") == client_ip:
                     registry.get("users", {}).pop(slug, None)
                 save_registry(self.config.registry_path, registry)
@@ -612,12 +762,18 @@ def setup_page(client_ip: str, message: str = "", csrf_token: str = "") -> bytes
 <body>
   <main>
     <h1>처음 접속한 사용자 설정</h1>
-    <p>이 Tailscale IP(<span class="ip">{escaped_ip}</span>)에 연결할 전용 컨테이너를 만듭니다. 다음 접속부터는 자동으로 같은 대시보드로 이동합니다.</p>
+    <p>이 Tailscale IP(<span class="ip">{escaped_ip}</span>)에서 사용할 로그인 계정과 전용 컨테이너를 만듭니다. 다음 접속부터는 아이디와 비밀번호로 로그인합니다.</p>
     {f'<div class="error">{escaped_message}</div>' if escaped_message else ''}
     <form method="post" action="/__setup">
       <input type="hidden" name="csrf_token" value="{escaped_csrf}">
       <label>이름
         <input name="display_name" autocomplete="name" required placeholder="예: Alice">
+      </label>
+      <label>로그인 아이디
+        <input name="login_id" autocomplete="username" required placeholder="예: alice">
+      </label>
+      <label>로그인 비밀번호
+        <input name="password" type="password" autocomplete="new-password" minlength="8" required placeholder="8자 이상">
       </label>
       <label>토스 앱 ID
         <input name="client_id" autocomplete="off" required placeholder="토스 개발자센터에서 발급받은 앱 ID">
@@ -633,6 +789,50 @@ def setup_page(client_ip: str, message: str = "", csrf_token: str = "") -> bytes
       </label>
       <button type="submit">내 컨테이너 만들기</button>
     </form>
+    <p><a href="/__login">이미 계정이 있으면 로그인</a></p>
+  </main>
+</body>
+</html>"""
+    return body.encode("utf-8")
+
+
+def login_page(message: str = "", csrf_token: str = "") -> bytes:
+    escaped_message = html.escape(message)
+    escaped_csrf = html.escape(csrf_token)
+    body = f"""<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Toss Dashboard Login</title>
+  <style>
+    body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; background:#f6f8fb; color:#0f172a; }}
+    main {{ max-width:520px; margin:10vh auto; padding:24px; }}
+    form {{ display:grid; gap:14px; background:#fff; border:1px solid #dbe2ea; border-radius:10px; padding:22px; box-shadow:0 16px 36px rgba(15,23,42,.08); }}
+    label {{ display:grid; gap:6px; font-weight:800; font-size:14px; }}
+    input {{ height:42px; border:1px solid #cbd5e1; border-radius:8px; padding:0 12px; font-size:15px; }}
+    button {{ height:44px; border:0; border-radius:8px; background:#2563eb; color:#fff; font-weight:900; cursor:pointer; }}
+    p {{ color:#475569; line-height:1.5; }}
+    a {{ color:#2563eb; font-weight:800; }}
+    .error {{ color:#b91c1c; background:#fee2e2; border:1px solid #fecaca; padding:10px; border-radius:8px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>대시보드 로그인</h1>
+    <p>내 계정으로 로그인하면 어떤 기기에서 접속해도 같은 전용 컨테이너로 이동합니다.</p>
+    {f'<div class="error">{escaped_message}</div>' if escaped_message else ''}
+    <form method="post" action="/__login">
+      <input type="hidden" name="csrf_token" value="{escaped_csrf}">
+      <label>로그인 아이디
+        <input name="login_id" autocomplete="username" required>
+      </label>
+      <label>비밀번호
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">로그인</button>
+    </form>
+    <p><a href="/__setup">처음이면 계정 만들기</a></p>
   </main>
 </body>
 </html>"""
@@ -673,7 +873,22 @@ def make_handler(gateway: UserGateway):
                 body,
                 {
                     "Set-Cookie": (
-                        f"{SETUP_CSRF_COOKIE}={token}; Path=/__setup; "
+                        f"{SETUP_CSRF_COOKIE}={token}; Path=/; "
+                        "HttpOnly; SameSite=Lax"
+                    ),
+                    "Cache-Control": "no-store",
+                },
+            )
+
+        def send_login_page(self, status: int = 200, message: str = "") -> None:
+            token = make_csrf_token()
+            body = login_page(message, csrf_token=token)
+            self.send_html(
+                status,
+                body,
+                {
+                    "Set-Cookie": (
+                        f"{SETUP_CSRF_COOKIE}={token}; Path=/; "
                         "HttpOnly; SameSite=Lax"
                     ),
                     "Cache-Control": "no-store",
@@ -681,16 +896,69 @@ def make_handler(gateway: UserGateway):
             )
 
         def do_GET(self) -> None:
+            if self.path.startswith("/__login"):
+                self.send_login_page()
+                return
             if self.path.startswith("/__setup"):
                 self.send_setup_page()
+                return
+            if self.path.startswith("/__logout"):
+                self.send_response(303)
+                self.send_header("Location", "/__login")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
+                )
+                self.send_header("Content-Length", "0")
+                self.end_headers()
                 return
             self.route_or_setup()
 
         def do_POST(self) -> None:
+            if self.path == "/__login":
+                self.handle_login()
+                return
             if self.path == "/__setup":
                 self.handle_setup()
                 return
             self.route_or_setup()
+
+        def handle_login(self) -> None:
+            try:
+                length = parse_content_length(
+                    self.headers.get("Content-Length"),
+                    max_bytes=MAX_SETUP_BODY_BYTES,
+                )
+            except ValueError as exc:
+                self.send_login_page(413, str(exc))
+                return
+            form = parse.parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+            login_id = form.get("login_id", [""])[0].strip()
+            password = form.get("password", [""])[0]
+            csrf_token = form.get("csrf_token", [""])[0].strip()
+
+            try:
+                if not csrf_is_valid(self.headers.get("Cookie"), csrf_token):
+                    raise ValueError("로그인 페이지를 새로고침한 뒤 다시 시도해 주세요.")
+                user = gateway.authenticate(login_id, password)
+                if user is None:
+                    gateway.audit("login_failed", client_ip=self.client_ip(), login_id=normalize_login_id(login_id))
+                    raise ValueError("아이디 또는 비밀번호가 맞지 않습니다.")
+                gateway.record_user_client_ip(str(user["slug"]), self.client_ip())
+                gateway.audit("login_succeeded", client_ip=self.client_ip(), slug=str(user["slug"]))
+            except Exception as exc:
+                self.send_login_page(400, str(exc))
+                return
+
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.send_header(
+                "Set-Cookie",
+                f"{SESSION_COOKIE}={gateway.make_session_cookie(str(user['slug']))}; Path=/; "
+                "HttpOnly; SameSite=Lax",
+            )
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def handle_setup(self) -> None:
             if not gateway.registration_allowed(self.client_ip()):
@@ -712,6 +980,8 @@ def make_handler(gateway: UserGateway):
                 return
             form = parse.parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
             display_name = form.get("display_name", [""])[0].strip()
+            login_id = form.get("login_id", [""])[0].strip()
+            password = form.get("password", [""])[0]
             client_id = form.get("client_id", [""])[0].strip()
             client_secret = form.get("client_secret", [""])[0].strip()
             account_seq = form.get("account_seq", [""])[0].strip()
@@ -721,13 +991,15 @@ def make_handler(gateway: UserGateway):
             try:
                 if not csrf_is_valid(self.headers.get("Cookie"), csrf_token):
                     raise ValueError("설정 페이지를 새로고침한 뒤 다시 제출해 주세요.")
-                if not all([display_name, client_id, client_secret, account_seq]):
+                if not all([display_name, login_id, password, client_id, client_secret, account_seq]):
                     raise ValueError("모든 값을 입력해 주세요.")
                 if confirmation != SETUP_CONFIRMATION:
                     raise ValueError(f"본인 확인 칸에 '{SETUP_CONFIRMATION}'을 그대로 입력해 주세요.")
-                gateway.create_user(
+                user = gateway.create_user(
                     client_ip=self.client_ip(),
                     display_name=display_name,
+                    login_id=login_id,
+                    password=password,
                     account_seq=account_seq,
                     client_id=client_id,
                     client_secret=client_secret,
@@ -738,20 +1010,18 @@ def make_handler(gateway: UserGateway):
 
             self.send_response(303)
             self.send_header("Location", "/")
+            self.send_header(
+                "Set-Cookie",
+                f"{SESSION_COOKIE}={gateway.make_session_cookie(str(user['slug']))}; Path=/; "
+                "HttpOnly; SameSite=Lax",
+            )
             self.send_header("Content-Length", "0")
             self.end_headers()
 
         def route_or_setup(self) -> None:
-            user = gateway.user_for_ip(self.client_ip())
+            user = gateway.user_for_session_cookie(self.headers.get("Cookie"))
             if user is None:
-                if not gateway.registration_allowed(self.client_ip()):
-                    gateway.audit("setup_registration_denied", client_ip=self.client_ip(), path=self.path)
-                    self.send_setup_page(
-                        403,
-                        "이 기기는 아직 등록할 수 없습니다. 관리자에게 Tailscale IP 등록을 요청하세요.",
-                    )
-                    return
-                self.send_setup_page()
+                self.send_login_page()
                 return
             try:
                 gateway.ensure_container(user)
@@ -813,6 +1083,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--registry", type=Path, default=Path(DEFAULT_REGISTRY))
     parser.add_argument("--users-root", type=Path, default=Path(DEFAULT_USER_ROOT))
     parser.add_argument("--audit-log", type=Path, default=Path(DEFAULT_AUDIT_LOG))
+    parser.add_argument("--session-secret", type=Path, default=Path(DEFAULT_SESSION_SECRET))
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument(
         "--setup-rate-limit",
@@ -863,6 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
     registry_path = args.registry if args.registry.is_absolute() else repo_root / args.registry
     users_root = args.users_root if args.users_root.is_absolute() else repo_root / args.users_root
     audit_log_path = args.audit_log if args.audit_log.is_absolute() else repo_root / args.audit_log
+    session_secret_path = args.session_secret if args.session_secret.is_absolute() else repo_root / args.session_secret
 
     if args.list_users:
         print(json.dumps(registry_public_view(load_registry(registry_path)), ensure_ascii=False, indent=2))
@@ -886,6 +1158,7 @@ def main(argv: list[str] | None = None) -> int:
             registry_path=registry_path,
             users_root=users_root,
             audit_log_path=audit_log_path,
+            session_secret_path=session_secret_path,
             image_name=args.image,
             container_port=DEFAULT_CONTAINER_PORT,
             setup_rate_limit=args.setup_rate_limit,
@@ -920,7 +1193,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Multi-user dashboard gateway: http://{host}:{args.port}/", flush=True)
     print(f"Registry: {registry_path}", flush=True)
     print(f"Audit log: {audit_log_path}", flush=True)
-    print("First-time allowed Tailscale IPs will see the setup form.", flush=True)
+    print(f"Session secret: {session_secret_path}", flush=True)
+    print("Visitors without a valid session will see the login form.", flush=True)
+    print("First-time signup can be restricted with the registration allowlist.", flush=True)
     if args.registration_allowlist:
         print(f"Registration allowlist: {args.registration_allowlist}", flush=True)
     print(

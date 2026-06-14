@@ -69,9 +69,10 @@ DASHBOARD_HOST=127.0.0.1 ops/run-dashboard-macos.command
 ### Per-User Docker Containers
 
 If more than one person will use the dashboard, prefer the multi-user gateway.
-It identifies users by their Tailscale client IP. A first-time IP sees a setup
-page for name, Toss app ID, Toss app secret, and account sequence. After setup,
-that IP is automatically routed to its own Docker container.
+It identifies users by a local gateway login session. A first-time user creates
+an account with name, login ID, password, Toss app ID, Toss app secret, and
+account sequence. After login, that user is routed to their own Docker
+container from any device that can reach the Tailscale gateway.
 
 Start the gateway:
 
@@ -87,14 +88,14 @@ http://<mac-tailscale-ip>:8765/
 ```
 
 By default, any first-time Tailscale IP that can reach the gateway may open the
-setup form. For a smaller private beta, restrict first-time setup to known
+signup form. For a smaller private beta, restrict first-time signup to known
 Tailscale IPs or CIDR ranges:
 
 ```bash
 REGISTRATION_ALLOWLIST="100.64.0.10,100.64.0.0/24" open ops/run-multi-user-gateway.command
 ```
 
-Setup submissions are rate-limited per client IP. The defaults are 5 setup
+Signup submissions are rate-limited per client IP. The defaults are 5 setup
 submissions per 900 seconds. Override them only when onboarding many known
 devices at once:
 
@@ -121,11 +122,10 @@ It writes audit events for setup attempts and container lifecycle commands to:
 .local/users/audit.log
 ```
 
-The routing key is the Tailscale client IP. This is convenient for a private
-Tailnet, but it is device-based rather than identity-provider based: two people
-sharing the same device will share one dashboard, and a changed Tailscale IP
-must be registered again. To reset a mapping, stop the gateway and edit or
-remove the relevant entry in `.local/users/registry.json`.
+The routing key is the signed gateway session cookie. Tailscale still controls
+network reachability, but the dashboard user is now the login account, not the
+device IP. The registry keeps `last_client_ip` for auditing and optional signup
+allowlists.
 
 Registry admin helpers:
 
@@ -159,6 +159,10 @@ Each user gets separate local files:
 .local/users/<user>/logs/
 .local/users/<user>/.env
 ```
+
+The `.env` file is still plaintext local storage in the current implementation.
+The migration plan for macOS Keychain or another encrypted backend is in
+`docs/secret-storage-plan.md`.
 
 User containers are bound to `127.0.0.1:<internal-port>` on the Mac. Only the
 gateway is exposed on the Tailscale address.
