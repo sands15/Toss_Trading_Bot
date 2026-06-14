@@ -1,93 +1,71 @@
 # Toss Trading Bot
 
-Toss Securities Open API trading research and validation bot.
+토스증권 Open API 기반의 매매 전략 연구·검증 봇입니다.
 
-The project started with original Turtle Trading rules and now also includes a
-US relative-strength momentum strategy, survivorship-bias controls, Toss
-read-only account/market integration, paper trading, and shadow validation.
-Shadow mode uses real Toss read-only data and virtual fills, but still has no
-live order submission path.
+처음에는 오리지널 터틀 트레이딩 규칙을 구현하는 프로젝트로 시작했고,
+현재는 미국주식 상대강도 모멘텀 전략, 생존편향 방지용 point-in-time
+유니버스, 토스 계좌·시세 read-only 연동, paper trading, shadow 검증까지
+포함합니다.
 
-The codebase is designed for 24/7 macOS operation, while keeping the strategy,
-backtest, API client, setup scripts, and tests runnable on Windows.
+`shadow` 모드는 실제 토스 read-only 계좌·시세 데이터를 사용하지만, 체결은
+가상으로만 기록합니다. 현재 코드는 **실제 주문 생성·정정·취소 기능을 일부러
+넣지 않은 상태**입니다.
 
-## Non-Negotiable Principle
+운영 목표는 macOS에서 24시간 구동하는 것이지만, 전략·백테스트·API 클라이언트·
+초기 세팅 스크립트·테스트는 Windows에서도 실행되도록 유지합니다.
 
-Turtle Trading rules come first. API convenience must not change the trading
-rules silently. If an implementation cannot preserve a rule, it must mark the
-behavior as an explicit deviation and block live trading until approved.
+## 핵심 원칙
 
-## Current Direction
+전략 규칙이 API 편의성보다 우선입니다. 구현상 규칙을 그대로 보존할 수 없으면
+반드시 명시적인 예외로 표시하고, 승인 전까지 live 주문으로 넘어가지 않습니다.
 
-- Primary runtime: macOS daemon managed by `launchd`
-- Sleep prevention: Amphetamine or equivalent macOS power policy
-- Development and tests: macOS and Windows
-- Strategy scope: original Turtle rules plus saved US relative-strength
-  momentum strategy
-- Broker: Toss Securities Open API behind adapter interfaces
-- Safe modes: backtest, read-only sync, paper trading, and shadow validation
-- Live broker order submission is intentionally not implemented yet
-- AI is explanation-only and cannot select symbols, change sizing, or submit
-  orders
+## 현재 방향
 
-## Current Implementation
+- 기본 운영 환경: `launchd`로 관리되는 macOS 데몬
+- 절전 방지: Amphetamine 또는 동등한 macOS 전원 정책 사용
+- 개발·테스트 환경: macOS와 Windows 모두 지원
+- 전략 범위: 오리지널 터틀 규칙 + 저장된 미국주식 상대강도 모멘텀 전략
+- 브로커 연동: 토스증권 Open API를 어댑터 뒤에 둠
+- 안전 모드: 백테스트, read-only 계좌 동기화, paper trading, shadow 검증
+- 실제 브로커 주문 제출은 아직 의도적으로 미구현
+- AI는 설명 전용이며 종목 선택, 포지션 크기 변경, 주문 제출에 개입할 수 없음
 
-- Turtle strategy core with Decimal-safe candles, Donchian channels, Turtle N,
-  System 1/System 2 entries, exits, stops, skip state, and 0.5N pyramiding.
-- API-free operational primitives: rate-limit queue, market data cache,
-  watchlist builder, notifier, read-only health payload/server, runtime shell,
-  and SQLite state store.
-- Daily-bar backtest engine with CSV loading, single-symbol and portfolio
-  loops, Turtle risk-based unit sizing, simulated fills, fees/slippage/tax
-  hooks, trade output, equity curve, JSON report export, and audit log.
-- Toss OpenAPI read-only client for token issuance, market data, market info,
-  accounts, holdings, order lookup, buying power, sellable quantity, and
-  commissions. Order create/modify/cancel is intentionally absent.
-- Position reconciliation that compares local Turtle position state with
-  broker holdings/open orders and reports blockers before paper/live decisions.
-- Paper runtime loop that runs reconcile first, evaluates Turtle signals, and
-  records would-be order intents through runtime events and notifications.
-- Paper-only guard, fill/state simulator, repeated-iteration scheduler, and
-  JSON report export.
-- Shadow validation mode for the step after paper trading. It uses real
-  read-only Toss account/market data, records shadow order intents and virtual
-  fills, tolerates unrelated broker holdings as warnings, and still has no live
-  order submission path.
-- macOS paper-service shell with launchd plist rendering, runtime directory
-  setup, operations checks, and a read-only blocked health payload until market
-  data wiring is present.
-- Toss read-only market-data provider for paper mode. When env credentials,
-  `toss.account_seq`, and `runtime.symbols` are configured, the paper service
-  fetches candles/prices through read-only endpoints, reconciles account state,
-  and then runs the paper Turtle loop.
-- Market-calendar gate for the paper service. The service checks the read-only
-  Toss calendar before evaluating paper intents and blocks when the session is
-  closed or unknown.
-- Premarket watchlist generation inside the paper service. OPEN/PREOPEN
-  sessions build and persist a Turtle breakout-distance watchlist, but the
-  watchlist remains an operational polling/status artifact, not a trade signal.
-- Automatic universe selection through rule-based liquidity, market,
-  warning-status, and Turtle-data-readiness filters. AI is reserved for news
-  summaries, reports, and situation explanations, not order decisions.
-- Postmarket daily report export with runtime event summary, blockers,
-  watchlist, paper positions, and latest read-only broker snapshots.
-- Model-agnostic AI explanation boundary with `NullAiClient` and
-  `OpenAICompatibleAiClient`. It can summarize news, daily reports, runtime
-  events, and situations through `/v1/chat/completions`. AI output remains
-  explanation-only and cannot affect Turtle decisions. On macOS, a local MLX
-  int4 server can sit behind the same API boundary later.
+## 현재 구현 상태
 
-## Documentation
+- `Decimal` 기반 캔들, 돈치안 채널, Turtle N, System 1/System 2 진입·청산·손절,
+  skip state, 0.5N 피라미딩을 포함한 터틀 전략 코어
+- rate-limit queue, 시장 데이터 캐시, 관심종목 빌더, 알림, read-only 상태 서버,
+  런타임 셸, SQLite 상태 저장소
+- CSV 기반 일봉 백테스트 엔진: 단일 종목·포트폴리오 루프, 터틀 리스크 기반
+  수량 산정, 가상 체결, 수수료·슬리피지·세금 훅, 거래 내역, 자산 곡선,
+  JSON 리포트, 감사 로그
+- 미국주식 상대강도 모멘텀 백테스트: `SPY` 200일선 시장 필터, 252일 모멘텀
+  점수, 최근 21일 제외, 100일선 이탈 청산, 토스 미국주식 비용 모델
+- 생존편향을 줄이기 위한 point-in-time 유니버스 CSV 지원
+- 토스 OpenAPI read-only 클라이언트: 토큰 발급, 시세, 시장 정보, 계좌, 보유
+  종목, 주문 조회, 매수 가능 금액, 매도 가능 수량, 수수료 조회
+- 토스 공식 OpenAPI 응답 구조인 `result` 래퍼와 배열형 응답 처리
+- 로컬 포지션과 브로커 보유·미체결 주문을 비교하는 reconciliation
+- paper runtime: 먼저 계좌 상태를 대조한 뒤 전략 신호를 평가하고, 실제 주문
+  대신 주문 의도와 가상 체결을 기록
+- shadow runtime: 실제 토스 read-only 데이터를 사용해 주문 의도와 가상 체결을
+  기록하되, 계좌의 기존 보유 종목은 경고로 남기고 검증을 계속할 수 있음
+- macOS 운영용 `launchd` plist 렌더링, 런타임 디렉터리 생성, 운영 점검 명령
+- 프리마켓 관심종목 생성과 postmarket 일일 리포트
+- AI 요약 경계: 뉴스, 일일 리포트, 런타임 이벤트 설명만 가능하며 매매 의사결정에는
+  관여하지 않음
 
-- [Setup](docs/setup.md)
-- [Turtle Rules](docs/turtle-rules.md)
-- [System Architecture](docs/architecture.md)
-- [Toss API Contract](docs/toss-api-contract.md)
-- [macOS Operations](docs/macos-operations.md)
-- [Implementation Plan](docs/implementation-plan.md)
-- [Reference Project Notes](docs/reference-project-notes.md)
+## 문서
 
-## Quick Setup
+- [초기 세팅](docs/setup.md)
+- [터틀 규칙](docs/turtle-rules.md)
+- [시스템 아키텍처](docs/architecture.md)
+- [토스 API 계약](docs/toss-api-contract.md)
+- [macOS 운영](docs/macos-operations.md)
+- [구현 계획](docs/implementation-plan.md)
+- [참고 프로젝트 노트](docs/reference-project-notes.md)
+
+## 빠른 시작
 
 Windows:
 
@@ -95,31 +73,30 @@ Windows:
 .\ops\setup-local.ps1
 ```
 
-macOS or Linux:
+macOS 또는 Linux:
 
 ```bash
 bash ops/setup-local.sh
 ```
 
-Then fill `config/local.yaml`, set `TOSS_CLIENT_ID` and
-`TOSS_CLIENT_SECRET`, and run `--ops-check`. See [Setup](docs/setup.md) for the
-full first-run flow.
+그 다음 `config/local.yaml`의 `toss.account_seq`를 채우고,
+`TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET` 환경변수를 설정한 뒤 `--ops-check`를
+실행하면 됩니다. 전체 첫 실행 흐름은 [초기 세팅](docs/setup.md)을 보면 됩니다.
 
-## Latest Test Result
+## 최신 테스트 결과
 
-Last verified locally on 2026-06-14:
+2026-06-14 로컬에서 마지막으로 확인한 결과:
 
 ```text
 python -m pytest -q
 148 passed
 ```
 
-This test run covers the strategy core, long/short backtests, point-in-time
-universe filtering, scan and momentum backtests, Toss OpenAPI request/response
-compatibility, market-calendar parsing, paper runtime, shadow validation,
-setup/config parsing, reports, and state storage.
+이 테스트는 전략 코어, 롱·숏 백테스트, point-in-time 유니버스 필터링,
+스캔·모멘텀 백테스트, 토스 OpenAPI 요청·응답 호환성, 시장 캘린더 파싱,
+paper runtime, shadow 검증, 초기 설정 파싱, 리포트, 상태 저장소를 포함합니다.
 
-## Official References
+## 공식 참고 링크
 
 - Toss Open API LLM guide: <https://developers.tossinvest.com/llms.txt>
 - Toss OpenAPI JSON: <https://openapi.tossinvest.com/openapi-docs/latest/openapi.json>
