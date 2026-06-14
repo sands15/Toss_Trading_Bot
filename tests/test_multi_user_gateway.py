@@ -44,14 +44,25 @@ def test_registry_port_and_ip_mapping_are_stable(tmp_path: Path) -> None:
 
 def test_setup_page_contains_required_first_user_fields() -> None:
     gateway = _load_gateway_module()
-    html = gateway.setup_page("100.64.0.10").decode("utf-8")
+    html = gateway.setup_page("100.64.0.10", csrf_token="token-123").decode("utf-8")
 
     assert "처음 접속한 사용자 설정" in html
+    assert 'name="csrf_token"' in html
+    assert 'value="token-123"' in html
     assert 'name="display_name"' in html
     assert 'name="client_id"' in html
     assert 'name="client_secret"' in html
     assert 'name="account_seq"' in html
     assert gateway.SETUP_CONFIRMATION in html
+
+
+def test_setup_csrf_token_must_match_cookie() -> None:
+    gateway = _load_gateway_module()
+
+    assert gateway.csrf_is_valid("toss_gateway_setup=abc; other=1", "abc")
+    assert not gateway.csrf_is_valid("toss_gateway_setup=abc", "wrong")
+    assert not gateway.csrf_is_valid("", "abc")
+    assert gateway.cookie_value("a=1; toss_gateway_setup=xyz", "toss_gateway_setup") == "xyz"
 
 
 def test_create_user_rolls_back_registry_when_container_creation_fails(
@@ -144,3 +155,36 @@ def test_create_user_rejects_non_numeric_account_sequence(tmp_path: Path) -> Non
         assert "digits only" in str(exc)
     else:
         raise AssertionError("invalid account sequence unexpectedly succeeded")
+
+
+def test_create_user_rolls_back_when_credential_file_write_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gateway = _load_gateway_module()
+    monkeypatch.setattr(gateway.UserGateway, "ensure_container", lambda _self, _user: None)
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+
+    try:
+        manager.create_user(
+            client_ip="100.64.0.10",
+            display_name="Alice",
+            account_seq="7",
+            client_id="client-id",
+            client_secret="bad\nsecret",
+        )
+    except ValueError as exc:
+        assert "new lines" in str(exc)
+    else:
+        raise AssertionError("invalid credential unexpectedly succeeded")
+
+    registry = gateway.load_registry(config.registry_path)
+    assert registry["ip_map"] == {}
+    assert registry["users"] == {}

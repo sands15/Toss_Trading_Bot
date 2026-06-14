@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import html
 import json
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -23,6 +25,7 @@ DEFAULT_USER_ROOT = ".local/users"
 DEFAULT_CONTAINER_PORT = 8765
 DEFAULT_FIRST_PORT = 19000
 SETUP_CONFIRMATION = "토스 연결 승인"
+SETUP_CSRF_COOKIE = "toss_gateway_setup"
 
 
 def slugify(value: str) -> str:
@@ -36,6 +39,25 @@ def clean_env_value(value: str) -> str:
     if "\n" in cleaned or "\r" in cleaned:
         raise ValueError("credential values cannot contain new lines")
     return cleaned
+
+
+def make_csrf_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def cookie_value(cookie_header: str | None, name: str) -> str:
+    if not cookie_header:
+        return ""
+    for part in cookie_header.split(";"):
+        key, sep, value = part.strip().partition("=")
+        if sep and key == name:
+            return value.strip()
+    return ""
+
+
+def csrf_is_valid(cookie_header: str | None, form_token: str) -> bool:
+    cookie_token = cookie_value(cookie_header, SETUP_CSRF_COOKIE)
+    return bool(cookie_token and form_token and hmac.compare_digest(cookie_token, form_token))
 
 
 def load_registry(path: Path) -> dict[str, Any]:
@@ -254,13 +276,12 @@ class UserGateway:
         log_dir = user_root / "logs"
         env_file = user_root / ".env"
 
-        config_dir.mkdir(parents=True, exist_ok=True)
-        state_dir.mkdir(parents=True, exist_ok=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        write_config_file(config_dir / "local.yaml", account_seq)
-        write_env_file(env_file, client_id, client_secret)
-
         try:
+            config_dir.mkdir(parents=True, exist_ok=True)
+            state_dir.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            write_config_file(config_dir / "local.yaml", account_seq)
+            write_env_file(env_file, client_id, client_secret)
             self.ensure_container(user)
         except Exception:
             with self._registry_lock:
@@ -363,9 +384,10 @@ class UserGateway:
         self.wait_for_user_http(user)
 
 
-def setup_page(client_ip: str, message: str = "") -> bytes:
+def setup_page(client_ip: str, message: str = "", csrf_token: str = "") -> bytes:
     escaped_message = html.escape(message)
     escaped_ip = html.escape(client_ip)
+    escaped_csrf = html.escape(csrf_token)
     body = f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -390,6 +412,7 @@ def setup_page(client_ip: str, message: str = "") -> bytes:
     <p>이 Tailscale IP(<span class="ip">{escaped_ip}</span>)에 연결할 전용 컨테이너를 만듭니다. 다음 접속부터는 자동으로 같은 대시보드로 이동합니다.</p>
     {f'<div class="error">{escaped_message}</div>' if escaped_message else ''}
     <form method="post" action="/__setup">
+      <input type="hidden" name="csrf_token" value="{escaped_csrf}">
       <label>이름
         <input name="display_name" autocomplete="name" required placeholder="예: Alice">
       </label>
@@ -423,16 +446,38 @@ def make_handler(gateway: UserGateway):
         def client_ip(self) -> str:
             return self.client_address[0]
 
-        def send_html(self, status: int, body: bytes) -> None:
+        def send_html(
+            self,
+            status: int,
+            body: bytes,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             self.wfile.write(body)
 
+        def send_setup_page(self, status: int = 200, message: str = "") -> None:
+            token = make_csrf_token()
+            body = setup_page(self.client_ip(), message, csrf_token=token)
+            self.send_html(
+                status,
+                body,
+                {
+                    "Set-Cookie": (
+                        f"{SETUP_CSRF_COOKIE}={token}; Path=/__setup; "
+                        "HttpOnly; SameSite=Lax"
+                    ),
+                    "Cache-Control": "no-store",
+                },
+            )
+
         def do_GET(self) -> None:
             if self.path.startswith("/__setup"):
-                self.send_html(200, setup_page(self.client_ip()))
+                self.send_setup_page()
                 return
             self.route_or_setup()
 
@@ -450,8 +495,11 @@ def make_handler(gateway: UserGateway):
             client_secret = form.get("client_secret", [""])[0].strip()
             account_seq = form.get("account_seq", [""])[0].strip()
             confirmation = form.get("confirmation", [""])[0].strip()
+            csrf_token = form.get("csrf_token", [""])[0].strip()
 
             try:
+                if not csrf_is_valid(self.headers.get("Cookie"), csrf_token):
+                    raise ValueError("설정 페이지를 새로고침한 뒤 다시 제출해 주세요.")
                 if not all([display_name, client_id, client_secret, account_seq]):
                     raise ValueError("모든 값을 입력해 주세요.")
                 if confirmation != SETUP_CONFIRMATION:
@@ -464,7 +512,7 @@ def make_handler(gateway: UserGateway):
                     client_secret=client_secret,
                 )
             except Exception as exc:
-                self.send_html(400, setup_page(self.client_ip(), str(exc)))
+                self.send_setup_page(400, str(exc))
                 return
 
             self.send_response(303)
@@ -475,13 +523,13 @@ def make_handler(gateway: UserGateway):
         def route_or_setup(self) -> None:
             user = gateway.user_for_ip(self.client_ip())
             if user is None:
-                self.send_html(200, setup_page(self.client_ip()))
+                self.send_setup_page()
                 return
             try:
                 gateway.ensure_container(user)
                 self.proxy_to_user(user)
             except Exception as exc:
-                self.send_html(502, setup_page(self.client_ip(), f"컨테이너 연결 실패: {exc}"))
+                self.send_setup_page(502, f"컨테이너 연결 실패: {exc}")
 
         def proxy_to_user(self, user: dict[str, Any]) -> None:
             upstream = f"http://127.0.0.1:{int(user['port'])}{self.path}"
