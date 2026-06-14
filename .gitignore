@@ -13,3 +13,4 @@ state/
 logs/
 data/
 reports/backtest/
+.local/

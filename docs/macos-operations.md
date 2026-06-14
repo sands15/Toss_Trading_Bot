@@ -26,7 +26,9 @@ python -m pip install -e ".[dev]"
 
 ## Dashboard Over Tailscale
 
-For a Mac desktop/session launcher, run:
+### Single Local Operator
+
+For a single Mac desktop/session launcher, run:
 
 ```bash
 chmod +x ops/run-dashboard-macos.command
@@ -63,6 +65,55 @@ To force local-only access:
 ```bash
 DASHBOARD_HOST=127.0.0.1 ops/run-dashboard-macos.command
 ```
+
+### Per-User Docker Containers
+
+If more than one person will use the dashboard, prefer one Docker container per
+user. Each container gets separate local files:
+
+```text
+.local/users/<user>/config/local.yaml
+.local/users/<user>/state/turtle.sqlite3
+.local/users/<user>/logs/
+.local/users/<user>/.env
+```
+
+Start a user instance:
+
+```bash
+chmod +x ops/run-user-dashboard-container.command
+ops/run-user-dashboard-container.command alice
+```
+
+The launcher builds the local Docker image, creates the user's private
+directory, binds the container to the Mac's Tailscale IPv4 address by default,
+and prints the URL for that user.
+
+Use a different port for each user:
+
+```bash
+DASHBOARD_PORT=8766 ops/run-user-dashboard-container.command bob
+DASHBOARD_PORT=8767 ops/run-user-dashboard-container.command charlie
+```
+
+Store that user's Toss credentials in:
+
+```text
+.local/users/<user>/.env
+```
+
+Manage a user container:
+
+```bash
+docker logs -f toss-dashboard-alice
+docker stop toss-dashboard-alice
+docker start toss-dashboard-alice
+```
+
+This is still a local Tailnet deployment pattern, not a public SaaS model. A
+public multi-tenant service still needs authentication, account ownership,
+encrypted secret storage, admin controls, and audit logs before real users are
+invited.
 
 Windows development should use the same package:
 
