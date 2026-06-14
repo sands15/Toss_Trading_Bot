@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import html
+import ipaddress
 import json
 import re
 import secrets
@@ -22,11 +23,18 @@ from urllib import error, parse, request
 DEFAULT_IMAGE = "toss-trading-bot:local"
 DEFAULT_REGISTRY = ".local/users/registry.json"
 DEFAULT_USER_ROOT = ".local/users"
+DEFAULT_AUDIT_LOG = ".local/users/audit.log"
 DEFAULT_CONTAINER_PORT = 8765
 DEFAULT_FIRST_PORT = 19000
 SETUP_CONFIRMATION = "토스 연결 승인"
 SETUP_CSRF_COOKIE = "toss_gateway_setup"
 MAX_SETUP_BODY_BYTES = 32 * 1024
+DEFAULT_SETUP_RATE_LIMIT = 5
+DEFAULT_SETUP_RATE_WINDOW_SECONDS = 15 * 60
+DEFAULT_CONTAINER_MEMORY = "512m"
+DEFAULT_CONTAINER_CPUS = "1.0"
+DEFAULT_CONTAINER_LOG_MAX_SIZE = "10m"
+DEFAULT_CONTAINER_LOG_MAX_FILES = "3"
 
 
 def slugify(value: str) -> str:
@@ -73,6 +81,31 @@ def parse_content_length(value: str | None, *, max_bytes: int) -> int:
     return length
 
 
+def parse_allowlist(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def client_ip_is_allowed(client_ip: str, allowlist: tuple[str, ...]) -> bool:
+    if not allowlist:
+        return True
+    try:
+        address = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    for entry in allowlist:
+        try:
+            if "/" in entry:
+                if address in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif address == ipaddress.ip_address(entry):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def load_registry(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"version": 1, "next_port": DEFAULT_FIRST_PORT, "ip_map": {}, "users": {}}
@@ -94,6 +127,18 @@ def save_registry(path: Path, registry: dict[str, Any]) -> None:
         json.dump(registry, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     tmp.replace(path)
+
+
+def append_audit_event(path: Path, event: str, **fields: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "time": int(time.time()),
+        "event": event,
+        **fields,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        handle.write("\n")
 
 
 def registry_public_view(registry: dict[str, Any]) -> dict[str, Any]:
@@ -266,12 +311,23 @@ class GatewayConfig:
     users_root: Path
     image_name: str
     container_port: int
+    audit_log_path: Path | None = None
+    setup_rate_limit: int = DEFAULT_SETUP_RATE_LIMIT
+    setup_rate_window_seconds: int = DEFAULT_SETUP_RATE_WINDOW_SECONDS
+    registration_allowlist: tuple[str, ...] = ()
+    container_memory: str = DEFAULT_CONTAINER_MEMORY
+    container_cpus: str = DEFAULT_CONTAINER_CPUS
+    container_log_max_size: str = DEFAULT_CONTAINER_LOG_MAX_SIZE
+    container_log_max_files: str = DEFAULT_CONTAINER_LOG_MAX_FILES
 
 
 class UserGateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
+        self.audit_log_path = config.audit_log_path or config.registry_path.parent / "audit.log"
         self._registry_lock = threading.Lock()
+        self._setup_attempts_lock = threading.Lock()
+        self._setup_attempts: dict[str, list[float]] = {}
 
     def ensure_image(self) -> None:
         run_command(["docker", "build", "-t", self.config.image_name, "."], cwd=self.config.repo_root)
@@ -285,6 +341,30 @@ class UserGateway:
             stderr=subprocess.DEVNULL,
         )
 
+    def audit(self, event: str, **fields: Any) -> None:
+        append_audit_event(self.audit_log_path, event, **fields)
+
+    def registration_allowed(self, client_ip: str) -> bool:
+        return client_ip_is_allowed(client_ip, self.config.registration_allowlist)
+
+    def consume_setup_attempt(self, client_ip: str, *, now: float | None = None) -> tuple[bool, int]:
+        limit = int(self.config.setup_rate_limit)
+        window = int(self.config.setup_rate_window_seconds)
+        if limit <= 0 or window <= 0:
+            return True, 0
+
+        timestamp = time.time() if now is None else now
+        cutoff = timestamp - window
+        with self._setup_attempts_lock:
+            attempts = [item for item in self._setup_attempts.get(client_ip, []) if item >= cutoff]
+            if len(attempts) >= limit:
+                retry_after = max(1, int(window - (timestamp - attempts[0])))
+                self._setup_attempts[client_ip] = attempts
+                return False, retry_after
+            attempts.append(timestamp)
+            self._setup_attempts[client_ip] = attempts
+        return True, 0
+
     def user_for_ip(self, client_ip: str) -> dict[str, Any] | None:
         with self._registry_lock:
             registry = load_registry(self.config.registry_path)
@@ -293,6 +373,54 @@ class UserGateway:
             return None
         user = registry.get("users", {}).get(slug)
         return dict(user) if isinstance(user, dict) else None
+
+    def user_by_slug(self, slug: str) -> dict[str, Any]:
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+        user = registry.get("users", {}).get(slug)
+        if not isinstance(user, dict):
+            raise ValueError(f"unknown user: {slug}")
+        return dict(user)
+
+    def update_user_status(self, slug: str, status: str) -> dict[str, Any]:
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+            user = registry.get("users", {}).get(slug)
+            if not isinstance(user, dict):
+                raise ValueError(f"unknown user: {slug}")
+            user["status"] = status
+            registry["users"][slug] = user
+            save_registry(self.config.registry_path, registry)
+            return dict(user)
+
+    def stop_user(self, slug: str) -> dict[str, Any]:
+        user = self.user_by_slug(slug)
+        run_command(["docker", "stop", str(user["container_name"])], cwd=self.config.repo_root)
+        updated = self.update_user_status(slug, "stopped")
+        self.audit("container_stopped", slug=slug, container_name=str(user["container_name"]))
+        return updated
+
+    def start_user(self, slug: str) -> dict[str, Any]:
+        user = self.user_by_slug(slug)
+        self.ensure_container(user)
+        updated = self.update_user_status(slug, "running")
+        self.audit("container_started", slug=slug, container_name=str(user["container_name"]))
+        return updated
+
+    def restart_user(self, slug: str) -> dict[str, Any]:
+        user = self.user_by_slug(slug)
+        run_command(["docker", "restart", str(user["container_name"])], cwd=self.config.repo_root)
+        self.wait_for_user_http(user)
+        updated = self.update_user_status(slug, "running")
+        self.audit("container_restarted", slug=slug, container_name=str(user["container_name"]))
+        return updated
+
+    def remove_user_container(self, slug: str) -> dict[str, Any]:
+        user = self.user_by_slug(slug)
+        self.remove_container(str(user["container_name"]))
+        updated = self.update_user_status(slug, "container_removed")
+        self.audit("container_removed", slug=slug, container_name=str(user["container_name"]))
+        return updated
 
     def create_user(
         self,
@@ -331,6 +459,7 @@ class UserGateway:
             registry["users"][slug] = user
             registry["ip_map"][client_ip] = slug
             save_registry(self.config.registry_path, registry)
+            self.audit("setup_provisioning", client_ip=client_ip, slug=slug, display_name=display_name.strip())
 
         container_name = f"toss-dashboard-{slug}"
         user_root = self.config.users_root / slug
@@ -348,6 +477,7 @@ class UserGateway:
             self.ensure_container(user)
         except Exception:
             self.remove_container(container_name)
+            self.audit("setup_failed", client_ip=client_ip, slug=slug)
             with self._registry_lock:
                 registry = load_registry(self.config.registry_path)
                 if registry.get("ip_map", {}).get(client_ip) == slug:
@@ -364,6 +494,7 @@ class UserGateway:
                 saved_user["status"] = "running"
                 registry["users"][slug] = saved_user
                 save_registry(self.config.registry_path, registry)
+                self.audit("setup_succeeded", client_ip=client_ip, slug=slug)
                 return dict(saved_user)
         return user
 
@@ -422,6 +553,14 @@ class UserGateway:
                 container_name,
                 "--restart",
                 "unless-stopped",
+                "--memory",
+                self.config.container_memory,
+                "--cpus",
+                self.config.container_cpus,
+                "--log-opt",
+                f"max-size={self.config.container_log_max_size}",
+                "--log-opt",
+                f"max-file={self.config.container_log_max_files}",
                 "--env-file",
                 str(env_file),
                 "-p",
@@ -554,6 +693,15 @@ def make_handler(gateway: UserGateway):
             self.route_or_setup()
 
         def handle_setup(self) -> None:
+            if not gateway.registration_allowed(self.client_ip()):
+                gateway.audit("setup_registration_denied", client_ip=self.client_ip(), path=self.path)
+                self.send_setup_page(403, "이 기기는 등록 허용 목록에 없습니다. 관리자에게 Tailscale IP 등록을 요청하세요.")
+                return
+            allowed, retry_after = gateway.consume_setup_attempt(self.client_ip())
+            if not allowed:
+                gateway.audit("setup_rate_limited", client_ip=self.client_ip(), retry_after=retry_after)
+                self.send_setup_page(429, f"설정 요청이 너무 많습니다. {retry_after}초 뒤에 다시 시도하세요.")
+                return
             try:
                 length = parse_content_length(
                     self.headers.get("Content-Length"),
@@ -596,6 +744,13 @@ def make_handler(gateway: UserGateway):
         def route_or_setup(self) -> None:
             user = gateway.user_for_ip(self.client_ip())
             if user is None:
+                if not gateway.registration_allowed(self.client_ip()):
+                    gateway.audit("setup_registration_denied", client_ip=self.client_ip(), path=self.path)
+                    self.send_setup_page(
+                        403,
+                        "이 기기는 아직 등록할 수 없습니다. 관리자에게 Tailscale IP 등록을 요청하세요.",
+                    )
+                    return
                 self.send_setup_page()
                 return
             try:
@@ -657,10 +812,48 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--registry", type=Path, default=Path(DEFAULT_REGISTRY))
     parser.add_argument("--users-root", type=Path, default=Path(DEFAULT_USER_ROOT))
+    parser.add_argument("--audit-log", type=Path, default=Path(DEFAULT_AUDIT_LOG))
     parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument(
+        "--setup-rate-limit",
+        type=int,
+        default=DEFAULT_SETUP_RATE_LIMIT,
+        help="Maximum setup submissions per client IP within the rate window; 0 disables the limit",
+    )
+    parser.add_argument(
+        "--setup-rate-window-seconds",
+        type=int,
+        default=DEFAULT_SETUP_RATE_WINDOW_SECONDS,
+        help="Rate-limit window for setup submissions",
+    )
+    parser.add_argument(
+        "--registration-allowlist",
+        default="",
+        help="Comma-separated Tailscale IPs or CIDRs allowed to self-register; empty allows all",
+    )
+    parser.add_argument("--container-memory", default=DEFAULT_CONTAINER_MEMORY, help="Docker memory limit per user container")
+    parser.add_argument("--container-cpus", default=DEFAULT_CONTAINER_CPUS, help="Docker CPU limit per user container")
+    parser.add_argument(
+        "--container-log-max-size",
+        default=DEFAULT_CONTAINER_LOG_MAX_SIZE,
+        help="Docker log max-size per user container",
+    )
+    parser.add_argument(
+        "--container-log-max-files",
+        default=DEFAULT_CONTAINER_LOG_MAX_FILES,
+        help="Docker log max-file per user container",
+    )
     parser.add_argument("--list-users", action="store_true", help="Print registry users as JSON and exit")
     parser.add_argument("--unmap-ip", metavar="IP", help="Remove one IP-to-user mapping and exit")
     parser.add_argument("--delete-user", metavar="SLUG", help="Remove one user from the registry and exit")
+    parser.add_argument("--stop-user", metavar="SLUG", help="Stop one user's Docker container and exit")
+    parser.add_argument("--start-user", metavar="SLUG", help="Start one user's Docker container and exit")
+    parser.add_argument("--restart-user", metavar="SLUG", help="Restart one user's Docker container and exit")
+    parser.add_argument(
+        "--remove-user-container",
+        metavar="SLUG",
+        help="Remove one user's Docker container without deleting registry or files and exit",
+    )
     return parser.parse_args(argv)
 
 
@@ -669,6 +862,7 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = args.repo_root.resolve()
     registry_path = args.registry if args.registry.is_absolute() else repo_root / args.registry
     users_root = args.users_root if args.users_root.is_absolute() else repo_root / args.users_root
+    audit_log_path = args.audit_log if args.audit_log.is_absolute() else repo_root / args.audit_log
 
     if args.list_users:
         print(json.dumps(registry_public_view(load_registry(registry_path)), ensure_ascii=False, indent=2))
@@ -686,21 +880,60 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"deleted_user": args.delete_user, "user": removed_user}, ensure_ascii=False))
         return 0
 
-    host = args.host or detect_tailscale_ip() or "127.0.0.1"
-
     gateway = UserGateway(
         GatewayConfig(
             repo_root=repo_root,
             registry_path=registry_path,
             users_root=users_root,
+            audit_log_path=audit_log_path,
             image_name=args.image,
             container_port=DEFAULT_CONTAINER_PORT,
+            setup_rate_limit=args.setup_rate_limit,
+            setup_rate_window_seconds=args.setup_rate_window_seconds,
+            registration_allowlist=parse_allowlist(args.registration_allowlist),
+            container_memory=args.container_memory,
+            container_cpus=args.container_cpus,
+            container_log_max_size=args.container_log_max_size,
+            container_log_max_files=args.container_log_max_files,
         )
     )
+
+    if args.stop_user:
+        user = gateway.stop_user(args.stop_user)
+        print(json.dumps({"stopped_user": args.stop_user, "user": user}, ensure_ascii=False))
+        return 0
+    if args.start_user:
+        user = gateway.start_user(args.start_user)
+        print(json.dumps({"started_user": args.start_user, "user": user}, ensure_ascii=False))
+        return 0
+    if args.restart_user:
+        user = gateway.restart_user(args.restart_user)
+        print(json.dumps({"restarted_user": args.restart_user, "user": user}, ensure_ascii=False))
+        return 0
+    if args.remove_user_container:
+        user = gateway.remove_user_container(args.remove_user_container)
+        print(json.dumps({"removed_user_container": args.remove_user_container, "user": user}, ensure_ascii=False))
+        return 0
+
+    host = args.host or detect_tailscale_ip() or "127.0.0.1"
     server = ThreadingHTTPServer((host, args.port), make_handler(gateway))
     print(f"Multi-user dashboard gateway: http://{host}:{args.port}/", flush=True)
     print(f"Registry: {registry_path}", flush=True)
-    print("First-time Tailscale IPs will see the setup form.", flush=True)
+    print(f"Audit log: {audit_log_path}", flush=True)
+    print("First-time allowed Tailscale IPs will see the setup form.", flush=True)
+    if args.registration_allowlist:
+        print(f"Registration allowlist: {args.registration_allowlist}", flush=True)
+    print(
+        "Setup rate limit: "
+        f"{args.setup_rate_limit} submissions / {args.setup_rate_window_seconds} seconds / IP",
+        flush=True,
+    )
+    print(
+        "Container limits: "
+        f"memory={args.container_memory}, cpus={args.container_cpus}, "
+        f"log={args.container_log_max_size} x {args.container_log_max_files}",
+        flush=True,
+    )
     server.serve_forever()
     return 0
 

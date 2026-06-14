@@ -48,6 +48,10 @@ fi
 
 dashboard_host="${DASHBOARD_HOST:-${tailscale_ip:-127.0.0.1}}"
 image_name="${TOSS_DASHBOARD_IMAGE:-toss-trading-bot:local}"
+container_memory="${CONTAINER_MEMORY:-512m}"
+container_cpus="${CONTAINER_CPUS:-1.0}"
+container_log_max_size="${CONTAINER_LOG_MAX_SIZE:-10m}"
+container_log_max_files="${CONTAINER_LOG_MAX_FILES:-3}"
 container_name="toss-dashboard-${user_slug}"
 user_root=".local/users/${user_slug}"
 config_dir="${user_root}/config"
@@ -81,6 +85,10 @@ fi
 docker run -d \
   --name "$container_name" \
   --restart unless-stopped \
+  --memory "$container_memory" \
+  --cpus "$container_cpus" \
+  --log-opt "max-size=${container_log_max_size}" \
+  --log-opt "max-file=${container_log_max_files}" \
   --env-file "$env_file" \
   -p "${dashboard_host}:${dashboard_port}:8765" \
   -v "${repo_root}/${config_dir}:/app/config" \

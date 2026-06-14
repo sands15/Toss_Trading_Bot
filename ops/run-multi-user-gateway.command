@@ -16,6 +16,13 @@ fi
 python_bin="${PYTHON:-python3}"
 gateway_port="${GATEWAY_PORT:-8765}"
 gateway_host="${GATEWAY_HOST:-}"
+registration_allowlist="${REGISTRATION_ALLOWLIST:-}"
+setup_rate_limit="${SETUP_RATE_LIMIT:-5}"
+setup_rate_window_seconds="${SETUP_RATE_WINDOW_SECONDS:-900}"
+container_memory="${CONTAINER_MEMORY:-512m}"
+container_cpus="${CONTAINER_CPUS:-1.0}"
+container_log_max_size="${CONTAINER_LOG_MAX_SIZE:-10m}"
+container_log_max_files="${CONTAINER_LOG_MAX_FILES:-3}"
 
 if [ -z "$gateway_host" ] && command -v tailscale >/dev/null 2>&1; then
   gateway_host="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
@@ -30,6 +37,7 @@ Gateway URL:
 
 Unknown Tailscale client IPs will see a setup page.
 Known client IPs will be routed to their own Docker container.
+Set REGISTRATION_ALLOWLIST to restrict first-time setup by IP/CIDR.
 
 Press Ctrl+C in this window to stop the gateway.
 User containers keep running until stopped with Docker.
@@ -38,4 +46,11 @@ EOF
 
 exec "$python_bin" ops/multi_user_gateway.py \
   --host "$gateway_host" \
-  --port "$gateway_port"
+  --port "$gateway_port" \
+  --registration-allowlist "$registration_allowlist" \
+  --setup-rate-limit "$setup_rate_limit" \
+  --setup-rate-window-seconds "$setup_rate_window_seconds" \
+  --container-memory "$container_memory" \
+  --container-cpus "$container_cpus" \
+  --container-log-max-size "$container_log_max_size" \
+  --container-log-max-files "$container_log_max_files"

@@ -107,6 +107,149 @@ def test_setup_content_length_is_limited() -> None:
             raise AssertionError(f"invalid content length unexpectedly passed: {value}")
 
 
+def test_registration_allowlist_accepts_exact_ips_and_cidr() -> None:
+    gateway = _load_gateway_module()
+
+    allowlist = gateway.parse_allowlist("100.64.0.10, 100.80.0.0/16")
+
+    assert gateway.client_ip_is_allowed("100.64.0.10", allowlist)
+    assert gateway.client_ip_is_allowed("100.80.1.5", allowlist)
+    assert not gateway.client_ip_is_allowed("100.81.1.5", allowlist)
+    assert not gateway.client_ip_is_allowed("not-an-ip", allowlist)
+    assert gateway.client_ip_is_allowed("203.0.113.10", ())
+
+
+def test_setup_attempts_are_rate_limited_per_client_ip(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+        setup_rate_limit=2,
+        setup_rate_window_seconds=60,
+    )
+    manager = gateway.UserGateway(config)
+
+    assert manager.consume_setup_attempt("100.64.0.10", now=100.0) == (True, 0)
+    assert manager.consume_setup_attempt("100.64.0.10", now=110.0) == (True, 0)
+    allowed, retry_after = manager.consume_setup_attempt("100.64.0.10", now=120.0)
+    assert not allowed
+    assert retry_after == 40
+    assert manager.consume_setup_attempt("100.64.0.10", now=161.0) == (True, 0)
+    assert manager.consume_setup_attempt("100.64.0.11", now=120.0) == (True, 0)
+
+
+def test_registration_allowed_uses_gateway_allowlist(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+        registration_allowlist=("100.64.0.0/24",),
+    )
+    manager = gateway.UserGateway(config)
+
+    assert manager.registration_allowed("100.64.0.10")
+    assert not manager.registration_allowed("100.64.1.10")
+
+
+def test_gateway_user_lifecycle_commands_update_registry(tmp_path: Path, monkeypatch) -> None:
+    gateway = _load_gateway_module()
+    registry_path = tmp_path / "registry.json"
+    registry = gateway.load_registry(registry_path)
+    registry["users"]["alice"] = {
+        "slug": "alice",
+        "display_name": "Alice",
+        "client_ip": "100.64.0.10",
+        "container_name": "toss-dashboard-alice",
+        "port": 19000,
+        "status": "running",
+    }
+    gateway.save_registry(registry_path, registry)
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=registry_path,
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+    commands = []
+    removed = []
+
+    monkeypatch.setattr(gateway, "run_command", lambda args, *, cwd: commands.append((args, cwd)))
+    monkeypatch.setattr(gateway.UserGateway, "wait_for_user_http", lambda _self, _user: None)
+    monkeypatch.setattr(gateway.UserGateway, "ensure_container", lambda _self, _user: commands.append((["ensure"], tmp_path)))
+    monkeypatch.setattr(
+        gateway.UserGateway,
+        "remove_container",
+        lambda _self, container_name: removed.append(container_name),
+    )
+
+    assert manager.stop_user("alice")["status"] == "stopped"
+    assert commands[-1][0] == ["docker", "stop", "toss-dashboard-alice"]
+    assert manager.start_user("alice")["status"] == "running"
+    assert commands[-1][0] == ["ensure"]
+    assert manager.restart_user("alice")["status"] == "running"
+    assert commands[-1][0] == ["docker", "restart", "toss-dashboard-alice"]
+    assert manager.remove_user_container("alice")["status"] == "container_removed"
+    assert removed == ["toss-dashboard-alice"]
+    audit_lines = (tmp_path / "audit.log").read_text(encoding="utf-8").splitlines()
+    assert any('"event": "container_stopped"' in line for line in audit_lines)
+    assert any('"event": "container_started"' in line for line in audit_lines)
+    assert any('"event": "container_restarted"' in line for line in audit_lines)
+    assert any('"event": "container_removed"' in line for line in audit_lines)
+
+
+def test_new_user_container_uses_resource_and_log_limits(tmp_path: Path, monkeypatch) -> None:
+    gateway = _load_gateway_module()
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+        container_memory="768m",
+        container_cpus="1.5",
+        container_log_max_size="5m",
+        container_log_max_files="2",
+    )
+    manager = gateway.UserGateway(config)
+    user_root = tmp_path / "users" / "alice"
+    (user_root / "config").mkdir(parents=True)
+    (user_root / "state").mkdir()
+    (user_root / "logs").mkdir()
+    (user_root / ".env").write_text("TOSS_CLIENT_ID=id\nTOSS_CLIENT_SECRET=secret\n", encoding="utf-8")
+    commands = []
+
+    def fake_subprocess_run(args, **_kwargs):
+        assert args[:3] == ["docker", "ps", "-a"]
+        return gateway.subprocess.CompletedProcess(args, 0, stdout="")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(gateway, "run_command", lambda args, *, cwd: commands.append(args))
+    monkeypatch.setattr(gateway.UserGateway, "wait_for_user_http", lambda _self, _user: None)
+
+    manager.ensure_container(
+        {
+            "slug": "alice",
+            "container_name": "toss-dashboard-alice",
+            "port": 19000,
+        }
+    )
+
+    docker_run = commands[-1]
+    assert docker_run[:3] == ["docker", "run", "-d"]
+    assert docker_run[docker_run.index("--memory") + 1] == "768m"
+    assert docker_run[docker_run.index("--cpus") + 1] == "1.5"
+    assert "max-size=5m" in docker_run
+    assert "max-file=2" in docker_run
+
+
 def test_create_user_rolls_back_registry_when_container_creation_fails(
     tmp_path: Path,
     monkeypatch,

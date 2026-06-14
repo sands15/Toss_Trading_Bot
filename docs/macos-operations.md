@@ -86,10 +86,39 @@ Open the gateway URL it prints:
 http://<mac-tailscale-ip>:8765/
 ```
 
+By default, any first-time Tailscale IP that can reach the gateway may open the
+setup form. For a smaller private beta, restrict first-time setup to known
+Tailscale IPs or CIDR ranges:
+
+```bash
+REGISTRATION_ALLOWLIST="100.64.0.10,100.64.0.0/24" open ops/run-multi-user-gateway.command
+```
+
+Setup submissions are rate-limited per client IP. The defaults are 5 setup
+submissions per 900 seconds. Override them only when onboarding many known
+devices at once:
+
+```bash
+SETUP_RATE_LIMIT=10 SETUP_RATE_WINDOW_SECONDS=900 open ops/run-multi-user-gateway.command
+```
+
+User containers default to conservative Docker limits: 512 MB memory, 1 CPU,
+and Docker logs capped at 10 MB x 3 files. Override these for a larger Mac:
+
+```bash
+CONTAINER_MEMORY=1g CONTAINER_CPUS=2.0 CONTAINER_LOG_MAX_SIZE=20m open ops/run-multi-user-gateway.command
+```
+
 The gateway stores its routing registry at:
 
 ```text
 .local/users/registry.json
+```
+
+It writes audit events for setup attempts and container lifecycle commands to:
+
+```text
+.local/users/audit.log
 ```
 
 The routing key is the Tailscale client IP. This is convenient for a private
@@ -108,6 +137,19 @@ python ops/multi_user_gateway.py --delete-user alice
 
 These commands change only the registry. User files and Docker containers remain
 until you remove or stop them explicitly.
+
+Container lifecycle helpers:
+
+```bash
+python ops/multi_user_gateway.py --stop-user alice
+python ops/multi_user_gateway.py --start-user alice
+python ops/multi_user_gateway.py --restart-user alice
+python ops/multi_user_gateway.py --remove-user-container alice
+```
+
+These commands use the registry to find `toss-dashboard-<user>` and update the
+stored user status. `--remove-user-container` removes the Docker container only;
+it does not delete `.local/users/<user>/` files or Toss credentials.
 
 Each user gets separate local files:
 
@@ -153,6 +195,9 @@ This is still a local Tailnet deployment pattern, not a public SaaS model. A
 public multi-tenant service still needs authentication, account ownership,
 encrypted secret storage, admin controls, and audit logs before real users are
 invited.
+
+Hardening status and remaining work are tracked in
+`docs/multi-user-hardening.md`.
 
 Windows development should use the same package:
 
