@@ -381,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--momentum-lookback-days",
         type=int,
-        default=252,
+        default=126,
         help="Momentum lookback window in trading days",
         metavar="N",
     )
@@ -402,21 +402,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--momentum-exit-ma-days",
         type=int,
-        default=100,
+        default=75,
         help="Moving-average window for momentum exits",
         metavar="N",
     )
     parser.add_argument(
         "--momentum-max-positions",
         type=int,
-        default=10,
+        default=5,
         help="Maximum simultaneous momentum positions",
         metavar="N",
     )
     parser.add_argument(
         "--momentum-accept-top-n",
         type=int,
-        default=3,
+        default=2,
         help="Number of top-ranked momentum symbols accepted per day",
         metavar="N",
     )

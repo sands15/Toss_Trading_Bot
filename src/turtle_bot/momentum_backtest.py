@@ -24,12 +24,12 @@ from .universe import average_traded_value
 class MomentumBacktestConfig:
     initial_equity: Decimal = Decimal("100000")
     market_symbol: str = "SPY"
-    momentum_lookback_days: int = 252
+    momentum_lookback_days: int = 126
     momentum_skip_days: int = 21
     trend_ma_days: int = 200
-    exit_ma_days: int = 100
-    max_positions: int = 10
-    accept_top_n: int = 3
+    exit_ma_days: int = 75
+    max_positions: int = 5
+    accept_top_n: int = 2
     target_position_pct: Decimal = Decimal("0.10")
     min_price: Decimal = Decimal("5")
     min_average_daily_value: Decimal = Decimal("50000000")

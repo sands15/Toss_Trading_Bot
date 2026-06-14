@@ -72,12 +72,12 @@ class TradingConfig:
     backtest_allowed_directions: tuple[PositionDirection, ...] = (PositionDirection.LONG,)
     n_method: str = "turtle"
     momentum_market_symbol: str = "SPY"
-    momentum_lookback_days: int = 252
+    momentum_lookback_days: int = 126
     momentum_skip_days: int = 21
     momentum_trend_ma_days: int = 200
-    momentum_exit_ma_days: int = 100
-    momentum_max_positions: int = 10
-    momentum_accept_top_n: int = 3
+    momentum_exit_ma_days: int = 75
+    momentum_max_positions: int = 5
+    momentum_accept_top_n: int = 2
     momentum_target_position_pct: Decimal = Decimal("0.10")
     momentum_min_price: Decimal = Decimal("5")
     momentum_min_average_daily_value: Decimal = Decimal("50000000")
@@ -234,7 +234,7 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             (strategy.get("momentum", {}) or {}).get("market_symbol", "SPY")
         ),
         momentum_lookback_days=int(
-            (strategy.get("momentum", {}) or {}).get("lookback_days", 252)
+            (strategy.get("momentum", {}) or {}).get("lookback_days", 126)
         ),
         momentum_skip_days=int(
             (strategy.get("momentum", {}) or {}).get("skip_days", 21)
@@ -243,13 +243,13 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             (strategy.get("momentum", {}) or {}).get("trend_ma_days", 200)
         ),
         momentum_exit_ma_days=int(
-            (strategy.get("momentum", {}) or {}).get("exit_ma_days", 100)
+            (strategy.get("momentum", {}) or {}).get("exit_ma_days", 75)
         ),
         momentum_max_positions=int(
-            (strategy.get("momentum", {}) or {}).get("max_positions", 10)
+            (strategy.get("momentum", {}) or {}).get("max_positions", 5)
         ),
         momentum_accept_top_n=int(
-            (strategy.get("momentum", {}) or {}).get("accept_top_n", 3)
+            (strategy.get("momentum", {}) or {}).get("accept_top_n", 2)
         ),
         momentum_target_position_pct=_to_decimal(
             (strategy.get("momentum", {}) or {}).get("target_position_pct"),

@@ -55,12 +55,12 @@ strategy:
   n_method: turtle
   momentum:
     market_symbol: SPY
-    lookback_days: 252
+    lookback_days: 126
     skip_days: 21
     trend_ma_days: 200
-    exit_ma_days: 100
-    max_positions: 10
-    accept_top_n: 3
+    exit_ma_days: 75
+    max_positions: 5
+    accept_top_n: 2
     target_position_pct: 0.10
     min_price: 5
     min_average_daily_value: 50000000

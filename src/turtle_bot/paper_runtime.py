@@ -81,12 +81,12 @@ class PaperRuntimeConfig:
     simulate_fills: bool = True
     require_clean_reconcile: bool = True
     momentum_market_symbol: str = "SPY"
-    momentum_lookback_days: int = 252
+    momentum_lookback_days: int = 126
     momentum_skip_days: int = 21
     momentum_trend_ma_days: int = 200
-    momentum_exit_ma_days: int = 100
-    momentum_max_positions: int = 10
-    momentum_accept_top_n: int = 3
+    momentum_exit_ma_days: int = 75
+    momentum_max_positions: int = 5
+    momentum_accept_top_n: int = 2
     momentum_target_position_pct: Decimal = Decimal("0.10")
     momentum_min_price: Decimal = Decimal("5")
     momentum_min_average_daily_value: Decimal = Decimal("50000000")
