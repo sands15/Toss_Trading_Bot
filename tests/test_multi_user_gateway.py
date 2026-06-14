@@ -42,6 +42,35 @@ def test_registry_port_and_ip_mapping_are_stable(tmp_path: Path) -> None:
     assert gateway.unique_slug(loaded, "Alice") == "alice-2"
 
 
+def test_registry_admin_helpers_remove_mappings_without_secrets() -> None:
+    gateway = _load_gateway_module()
+    registry = {
+        "version": 1,
+        "next_port": 19001,
+        "ip_map": {"100.64.0.10": "alice"},
+        "users": {
+            "alice": {
+                "slug": "alice",
+                "display_name": "Alice",
+                "client_ip": "100.64.0.10",
+                "container_name": "toss-dashboard-alice",
+                "port": 19000,
+                "client_secret": "should-not-appear",
+            }
+        },
+    }
+
+    view = gateway.registry_public_view(registry)
+    assert "client_secret" not in view["users"]["alice"]
+    assert gateway.unmap_ip(registry, "100.64.0.10") == "alice"
+    assert registry["ip_map"] == {}
+    registry["ip_map"]["100.64.0.10"] = "alice"
+    removed = gateway.delete_user(registry, "alice")
+    assert removed["slug"] == "alice"
+    assert registry["users"] == {}
+    assert registry["ip_map"] == {}
+
+
 def test_setup_page_contains_required_first_user_fields() -> None:
     gateway = _load_gateway_module()
     html = gateway.setup_page("100.64.0.10", csrf_token="token-123").decode("utf-8")

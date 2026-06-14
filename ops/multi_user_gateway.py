@@ -83,6 +83,47 @@ def save_registry(path: Path, registry: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def registry_public_view(registry: dict[str, Any]) -> dict[str, Any]:
+    users = registry.get("users", {})
+    return {
+        "version": registry.get("version", 1),
+        "next_port": registry.get("next_port", DEFAULT_FIRST_PORT),
+        "ip_map": dict(registry.get("ip_map", {})),
+        "users": {
+            slug: {
+                key: value
+                for key, value in dict(user).items()
+                if key
+                in {
+                    "slug",
+                    "display_name",
+                    "client_ip",
+                    "container_name",
+                    "port",
+                    "created_at",
+                    "status",
+                    "user_root",
+                }
+            }
+            for slug, user in users.items()
+            if isinstance(user, dict)
+        },
+    }
+
+
+def unmap_ip(registry: dict[str, Any], client_ip: str) -> str | None:
+    return registry.get("ip_map", {}).pop(client_ip, None)
+
+
+def delete_user(registry: dict[str, Any], slug: str) -> dict[str, Any] | None:
+    removed = registry.get("users", {}).pop(slug, None)
+    ip_map = registry.get("ip_map", {})
+    for ip, mapped_slug in list(ip_map.items()):
+        if mapped_slug == slug:
+            ip_map.pop(ip, None)
+    return dict(removed) if isinstance(removed, dict) else None
+
+
 def next_available_port(registry: dict[str, Any]) -> int:
     used = {int(user.get("port", 0)) for user in registry.get("users", {}).values()}
     port = int(registry.get("next_port") or DEFAULT_FIRST_PORT)
@@ -585,6 +626,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--registry", type=Path, default=Path(DEFAULT_REGISTRY))
     parser.add_argument("--users-root", type=Path, default=Path(DEFAULT_USER_ROOT))
     parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--list-users", action="store_true", help="Print registry users as JSON and exit")
+    parser.add_argument("--unmap-ip", metavar="IP", help="Remove one IP-to-user mapping and exit")
+    parser.add_argument("--delete-user", metavar="SLUG", help="Remove one user from the registry and exit")
     return parser.parse_args(argv)
 
 
@@ -593,6 +637,23 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = args.repo_root.resolve()
     registry_path = args.registry if args.registry.is_absolute() else repo_root / args.registry
     users_root = args.users_root if args.users_root.is_absolute() else repo_root / args.users_root
+
+    if args.list_users:
+        print(json.dumps(registry_public_view(load_registry(registry_path)), ensure_ascii=False, indent=2))
+        return 0
+    if args.unmap_ip:
+        registry = load_registry(registry_path)
+        removed_slug = unmap_ip(registry, args.unmap_ip)
+        save_registry(registry_path, registry)
+        print(json.dumps({"unmapped_ip": args.unmap_ip, "user": removed_slug}, ensure_ascii=False))
+        return 0
+    if args.delete_user:
+        registry = load_registry(registry_path)
+        removed_user = delete_user(registry, args.delete_user)
+        save_registry(registry_path, registry)
+        print(json.dumps({"deleted_user": args.delete_user, "user": removed_user}, ensure_ascii=False))
+        return 0
+
     host = args.host or detect_tailscale_ip() or "127.0.0.1"
 
     gateway = UserGateway(

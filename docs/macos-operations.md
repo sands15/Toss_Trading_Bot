@@ -98,6 +98,17 @@ sharing the same device will share one dashboard, and a changed Tailscale IP
 must be registered again. To reset a mapping, stop the gateway and edit or
 remove the relevant entry in `.local/users/registry.json`.
 
+Registry admin helpers:
+
+```bash
+python ops/multi_user_gateway.py --list-users
+python ops/multi_user_gateway.py --unmap-ip 100.64.0.10
+python ops/multi_user_gateway.py --delete-user alice
+```
+
+These commands change only the registry. User files and Docker containers remain
+until you remove or stop them explicitly.
+
 Each user gets separate local files:
 
 ```text
