@@ -94,6 +94,19 @@ def test_setup_csrf_token_must_match_cookie() -> None:
     assert gateway.cookie_value("a=1; toss_gateway_setup=xyz", "toss_gateway_setup") == "xyz"
 
 
+def test_setup_content_length_is_limited() -> None:
+    gateway = _load_gateway_module()
+
+    assert gateway.parse_content_length("10", max_bytes=20) == 10
+    for value in ("abc", "-1", "21"):
+        try:
+            gateway.parse_content_length(value, max_bytes=20)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid content length unexpectedly passed: {value}")
+
+
 def test_create_user_rolls_back_registry_when_container_creation_fails(
     tmp_path: Path,
     monkeypatch,

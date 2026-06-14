@@ -26,6 +26,7 @@ DEFAULT_CONTAINER_PORT = 8765
 DEFAULT_FIRST_PORT = 19000
 SETUP_CONFIRMATION = "토스 연결 승인"
 SETUP_CSRF_COOKIE = "toss_gateway_setup"
+MAX_SETUP_BODY_BYTES = 32 * 1024
 
 
 def slugify(value: str) -> str:
@@ -58,6 +59,18 @@ def cookie_value(cookie_header: str | None, name: str) -> str:
 def csrf_is_valid(cookie_header: str | None, form_token: str) -> bool:
     cookie_token = cookie_value(cookie_header, SETUP_CSRF_COOKIE)
     return bool(cookie_token and form_token and hmac.compare_digest(cookie_token, form_token))
+
+
+def parse_content_length(value: str | None, *, max_bytes: int) -> int:
+    try:
+        length = int(value or "0")
+    except ValueError as exc:
+        raise ValueError("invalid content length") from exc
+    if length < 0:
+        raise ValueError("invalid content length")
+    if length > max_bytes:
+        raise ValueError("setup request is too large")
+    return length
 
 
 def load_registry(path: Path) -> dict[str, Any]:
@@ -506,6 +519,8 @@ def make_handler(gateway: UserGateway):
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
             for key, value in (extra_headers or {}).items():
                 self.send_header(key, value)
             self.end_headers()
@@ -539,7 +554,14 @@ def make_handler(gateway: UserGateway):
             self.route_or_setup()
 
         def handle_setup(self) -> None:
-            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                length = parse_content_length(
+                    self.headers.get("Content-Length"),
+                    max_bytes=MAX_SETUP_BODY_BYTES,
+                )
+            except ValueError as exc:
+                self.send_setup_page(413, str(exc))
+                return
             form = parse.parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
             display_name = form.get("display_name", [""])[0].strip()
             client_id = form.get("client_id", [""])[0].strip()
