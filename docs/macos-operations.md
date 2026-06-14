@@ -68,8 +68,31 @@ DASHBOARD_HOST=127.0.0.1 ops/run-dashboard-macos.command
 
 ### Per-User Docker Containers
 
-If more than one person will use the dashboard, prefer one Docker container per
-user. Each container gets separate local files:
+If more than one person will use the dashboard, prefer the multi-user gateway.
+It identifies users by their Tailscale client IP. A first-time IP sees a setup
+page for name, Toss app ID, Toss app secret, and account sequence. After setup,
+that IP is automatically routed to its own Docker container.
+
+Start the gateway:
+
+```bash
+chmod +x ops/run-multi-user-gateway.command
+open ops/run-multi-user-gateway.command
+```
+
+Open the gateway URL it prints:
+
+```text
+http://<mac-tailscale-ip>:8765/
+```
+
+The gateway stores its routing registry at:
+
+```text
+.local/users/registry.json
+```
+
+Each user gets separate local files:
 
 ```text
 .local/users/<user>/config/local.yaml
@@ -78,16 +101,15 @@ user. Each container gets separate local files:
 .local/users/<user>/.env
 ```
 
-Start a user instance:
+User containers are bound to `127.0.0.1:<internal-port>` on the Mac. Only the
+gateway is exposed on the Tailscale address.
+
+For manual user container management without the gateway:
 
 ```bash
 chmod +x ops/run-user-dashboard-container.command
 ops/run-user-dashboard-container.command alice
 ```
-
-The launcher builds the local Docker image, creates the user's private
-directory, binds the container to the Mac's Tailscale IPv4 address by default,
-and prints the URL for that user.
 
 Use a different port for each user:
 
