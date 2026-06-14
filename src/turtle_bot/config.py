@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
 
@@ -89,12 +89,26 @@ class TradingConfig:
     def live_enabled(self) -> bool:
         return self.toss.live_enabled
 
+    @property
+    def momentum_cash_reserve_pct(self) -> Decimal:
+        return Decimal("1") - self.momentum_max_exposure_pct
+
 
 def _to_decimal(value: Any, default: Decimal) -> Decimal:
     try:
         return Decimal(str(value))
     except Exception:
         return default
+
+
+def _momentum_max_exposure_pct(momentum: Mapping[str, Any]) -> Decimal:
+    if "cash_reserve_pct" in momentum and momentum.get("cash_reserve_pct") is not None:
+        cash_reserve_pct = _to_decimal(
+            momentum.get("cash_reserve_pct"),
+            Decimal("0.50"),
+        )
+        return Decimal("1") - cash_reserve_pct
+    return _to_decimal(momentum.get("max_exposure_pct"), Decimal("0.50"))
 
 
 def _to_symbols(value: Any) -> tuple[str, ...]:
@@ -151,6 +165,7 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
         raw = yaml.safe_load(file) or {}
 
     strategy = raw.get("strategy", {}) or {}
+    momentum = strategy.get("momentum", {}) or {}
     risk = strategy.get("risk", {}) or {}
     toss = raw.get("toss", {}) or {}
     runtime = raw.get("runtime", {}) or {}
@@ -232,46 +247,43 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
         ),
         n_method=strategy.get("n_method", "turtle"),
         momentum_market_symbol=str(
-            (strategy.get("momentum", {}) or {}).get("market_symbol", "SPY")
+            momentum.get("market_symbol", "SPY")
         ),
         momentum_lookback_days=int(
-            (strategy.get("momentum", {}) or {}).get("lookback_days", 126)
+            momentum.get("lookback_days", 126)
         ),
         momentum_skip_days=int(
-            (strategy.get("momentum", {}) or {}).get("skip_days", 21)
+            momentum.get("skip_days", 21)
         ),
         momentum_trend_ma_days=int(
-            (strategy.get("momentum", {}) or {}).get("trend_ma_days", 200)
+            momentum.get("trend_ma_days", 200)
         ),
         momentum_exit_ma_days=int(
-            (strategy.get("momentum", {}) or {}).get("exit_ma_days", 75)
+            momentum.get("exit_ma_days", 75)
         ),
         momentum_max_positions=int(
-            (strategy.get("momentum", {}) or {}).get("max_positions", 5)
+            momentum.get("max_positions", 5)
         ),
-        momentum_max_exposure_pct=_to_decimal(
-            (strategy.get("momentum", {}) or {}).get("max_exposure_pct"),
-            Decimal("0.50"),
-        ),
+        momentum_max_exposure_pct=_momentum_max_exposure_pct(momentum),
         momentum_accept_top_n=int(
-            (strategy.get("momentum", {}) or {}).get("accept_top_n", 2)
+            momentum.get("accept_top_n", 2)
         ),
         momentum_target_position_pct=_to_decimal(
-            (strategy.get("momentum", {}) or {}).get("target_position_pct"),
+            momentum.get("target_position_pct"),
             Decimal("0.10"),
         ),
         momentum_min_price=_to_decimal(
-            (strategy.get("momentum", {}) or {}).get("min_price"),
+            momentum.get("min_price"),
             Decimal("5"),
         ),
         momentum_min_average_daily_value=_to_decimal(
-            (strategy.get("momentum", {}) or {}).get("min_average_daily_value"),
+            momentum.get("min_average_daily_value"),
             Decimal("50000000"),
         ),
         momentum_average_daily_value_days=int(
-            (strategy.get("momentum", {}) or {}).get("average_daily_value_days", 20)
+            momentum.get("average_daily_value_days", 20)
         ),
         momentum_use_market_filter=bool(
-            (strategy.get("momentum", {}) or {}).get("use_market_filter", True)
+            momentum.get("use_market_filter", True)
         ),
     )

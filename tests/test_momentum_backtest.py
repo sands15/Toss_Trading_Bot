@@ -235,6 +235,8 @@ def test_cli_momentum_backtest_writes_report(tmp_path, capsys):
             "0",
             "--momentum-min-average-daily-value",
             "0",
+            "--momentum-cash-reserve-pct",
+            "0.40",
             "--momentum-target-position-pct",
             "0.5",
             "--backtest-report",
@@ -248,6 +250,8 @@ def test_cli_momentum_backtest_writes_report(tmp_path, capsys):
     assert printed == saved
     assert saved["momentum"]["symbol_count"] == 1
     assert saved["momentum"]["accepted_days"] > 0
+    assert saved["momentum"]["config"]["cash_reserve_pct"] == "0.40"
+    assert saved["momentum"]["config"]["max_exposure_pct"] == "0.60"
 
 
 def test_cli_momentum_backtest_reads_pit_universe_csv(tmp_path, capsys):

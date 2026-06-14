@@ -221,6 +221,7 @@ def build_dashboard_server(
 ) -> HealthServer:
     watchlist_name = "premarket"
     default_blockers: Sequence[str] = DEFAULT_DASHBOARD_BLOCKERS
+    settings_payload: Mapping[str, Any] = {}
     if config_path is not None:
         config = load_config(config_path)
         watchlist_name = config.runtime.watchlist_name
@@ -228,6 +229,7 @@ def build_dashboard_server(
             config,
             env if env is not None else environ,
         )
+        settings_payload = _dashboard_settings_payload(config)
 
     def snapshot_provider() -> HealthSnapshot:
         with SQLiteStateStore(state_db) as store:
@@ -256,7 +258,27 @@ def build_dashboard_server(
         host=host,
         port=port,
         start_server=start_server,
+        settings=settings_payload,
     )
+
+
+def _dashboard_settings_payload(config) -> dict[str, Any]:
+    return {
+        "strategy_kind": config.strategy_kind,
+        "runtime": {
+            "mode": config.runtime.mode,
+            "market": config.runtime.market,
+            "timezone": config.runtime.timezone_name,
+        },
+        "momentum": {
+            "target_position_pct": str(config.momentum_target_position_pct),
+            "cash_reserve_pct": str(config.momentum_cash_reserve_pct),
+            "max_exposure_pct": str(config.momentum_max_exposure_pct),
+            "max_positions": config.momentum_max_positions,
+            "accept_top_n": config.momentum_accept_top_n,
+            "exit_ma_days": config.momentum_exit_ma_days,
+        },
+    }
 
 
 def run_dashboard_server(

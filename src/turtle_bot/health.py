@@ -1811,6 +1811,11 @@ def dashboard_html() -> str:
               <p class="panel-copy">영문 환경변수 이름은 개발자 탭의 원본 데이터에서만 확인합니다.</p>
               <pre id="settings-raw-links" class="view-json hidden-json"></pre>
             </article>
+            <article class="card data-panel">
+              <h2>현금 보유 비중</h2>
+              <p class="panel-copy"><code>strategy.momentum.cash_reserve_pct</code>로 최소 현금 비중을 설정합니다. 예: <code>0.50</code>은 현금 50%, 주식 최대 50%입니다.</p>
+              <pre id="settings-strategy-json" class="view-json"></pre>
+            </article>
           </div>
         </section>
 
@@ -2419,7 +2424,7 @@ def dashboard_html() -> str:
       });
     }
 
-    function renderOnboarding(blockers, rawLinks, events) {
+    function renderOnboarding(blockers, rawLinks, events, settings) {
       const list = document.getElementById("settings-onboarding-list");
       const rawBlockers = Array.isArray(blockers) ? blockers : [];
       const recentEvents = Array.isArray(events) ? events : [];
@@ -2455,6 +2460,16 @@ def dashboard_html() -> str:
         : "현재 표시할 차단 항목이 없습니다.";
       const rawBox = document.getElementById("settings-raw-links");
       if (rawBox) rawBox.textContent = JSON.stringify(rawLinks || {}, null, 2);
+      const strategyBox = document.getElementById("settings-strategy-json");
+      if (strategyBox) {
+        strategyBox.textContent = JSON.stringify(settings || {
+          momentum: {
+            cash_reserve_pct: "0.50",
+            max_exposure_pct: "0.50",
+            target_position_pct: "0.10"
+          }
+        }, null, 2);
+      }
     }
 
     async function refresh() {
@@ -2502,7 +2517,7 @@ def dashboard_html() -> str:
       document.getElementById("events-json").textContent = JSON.stringify({ summary, events }, null, 2);
       document.getElementById("raw-aggregate-json").textContent = JSON.stringify(dashboard, null, 2);
       renderEndpointList(dashboard.raw_links || {});
-      renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows);
+      renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows, dashboard.settings || {});
     }
 
     function bindNavigation() {
@@ -3440,6 +3455,15 @@ def _legacy_dashboard_html() -> str:
             </div>
           </section>
           <section class="card">
+            <h2 class="panel-title">Cash Reserve</h2>
+            <div class="status-copy">
+              <strong>Use <code>strategy.momentum.cash_reserve_pct</code>.</strong>
+              <p><code>0.50</code> keeps at least 50% cash and limits momentum stock exposure to 50%.</p>
+              <p><code>target_position_pct</code> still controls one new position size.</p>
+            </div>
+            <pre id="settings-strategy-json" class="view-json"></pre>
+          </section>
+          <section class="card">
             <h2 class="panel-title">Checklist Signals</h2>
             <div id="settings-blockers-list" class="blocker-list"></div>
             <div class="status-copy">
@@ -3672,7 +3696,7 @@ def _legacy_dashboard_html() -> str:
       return ["Check", "warn"];
     }
 
-    function renderOnboarding(blockers, rawLinks) {
+    function renderOnboarding(blockers, rawLinks, settings) {
       const list = document.getElementById('settings-onboarding-list');
       if (!list) {
         return;
@@ -3696,6 +3720,16 @@ def _legacy_dashboard_html() -> str:
       const rawPanel = document.getElementById('settings-raw-links');
       if (rawPanel) {
         rawPanel.textContent = JSON.stringify(rawLinks || {}, null, 2);
+      }
+      const strategyPanel = document.getElementById('settings-strategy-json');
+      if (strategyPanel) {
+        strategyPanel.textContent = JSON.stringify(settings || {
+          momentum: {
+            cash_reserve_pct: "0.50",
+            max_exposure_pct: "0.50",
+            target_position_pct: "0.10"
+          }
+        }, null, 2);
       }
       const headline = document.getElementById('settings-headline');
       if (headline) {
@@ -3756,7 +3790,7 @@ def _legacy_dashboard_html() -> str:
 
         if (dashboard.raw_links) {
           renderEndpointList(dashboard.raw_links);
-          renderOnboarding(status.blockers || [], dashboard.raw_links);
+          renderOnboarding(status.blockers || [], dashboard.raw_links, dashboard.settings || {});
         }
       } catch (error) {
         console.error(error);
@@ -3802,6 +3836,7 @@ class HealthServer:
         snapshot_provider: PayloadProvider | HealthSnapshot,
         *,
         events_provider: EventsProvider | None = None,
+        settings: Mapping[str, Any] | None = None,
         host: str = "127.0.0.1",
         port: int = 8765,
         start_server: bool = False,
@@ -3812,6 +3847,7 @@ class HealthServer:
             else lambda: snapshot_provider
         )
         self._events_provider = events_provider if events_provider is not None else (lambda *_: [])
+        self._settings = dict(settings or {})
         self.host = host
         self.port = port
         self._server: HTTPServer | None = None
@@ -3889,6 +3925,7 @@ class HealthServer:
                 "items": _coerce_events_payload(events),
             },
             "runtime_summary": _summarize_events(events),
+            "settings": self._settings,
             "raw_links": {
                 "health": "/health",
                 "positions": "/positions",

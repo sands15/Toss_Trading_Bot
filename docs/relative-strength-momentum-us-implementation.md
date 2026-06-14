@@ -17,8 +17,9 @@ below trend.
   days.
 - Entries: buy up to 2 top-ranked candidates per day until 5 positions are
   open.
-- Position size: target 10% of current equity per new position, with total
-  momentum exposure capped at 50% of current equity by default.
+- Position size: target 10% of current equity per new position, with 50%
+  minimum cash reserve by default. This caps total momentum exposure at 50% of
+  current equity.
 - Exit: close the position when symbol close falls below its 75-day moving
   average.
 
@@ -49,8 +50,8 @@ conditions:
 - Score: 126-trading-day return excluding the most recent 21 trading days.
 - Entry: accept up to 2 top-ranked candidates per day until 5 positions are
   open.
-- Sizing: target 10% of current equity per new position, capped at 50% total
-  momentum exposure by default.
+- Sizing: target 10% of current equity per new position, with 50% minimum cash
+  reserve by default.
 - Exit: close the position when the candidate closes below its 75-day moving
   average.
 - Research capital: `$100,000`.
@@ -84,7 +85,7 @@ strategy:
     trend_ma_days: 200
     exit_ma_days: 75
     max_positions: 5
-    max_exposure_pct: 0.50
+    cash_reserve_pct: 0.50
     accept_top_n: 2
     target_position_pct: 0.10
     min_price: 5
@@ -92,6 +93,10 @@ strategy:
     average_daily_value_days: 20
     use_market_filter: true
 ```
+
+`cash_reserve_pct` is the operator-facing setting. The older inverse setting
+`max_exposure_pct` is still accepted for compatibility, but `cash_reserve_pct`
+takes precedence when both are present.
 
 Runtime behavior remains paper-only: it records order intents and simulated
 paper fills, but does not submit live broker orders. The runtime ranks all

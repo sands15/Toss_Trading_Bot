@@ -62,7 +62,8 @@ strategy:
     trend_ma_days: 200
     exit_ma_days: 75
     max_positions: 5
-    max_exposure_pct: 0.50
+    # Minimum cash reserve. 0.50 means keep at least 50% cash.
+    cash_reserve_pct: 0.50
     accept_top_n: 2
     target_position_pct: 0.10
     min_price: 5

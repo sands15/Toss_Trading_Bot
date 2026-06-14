@@ -47,4 +47,27 @@ def test_load_config_uses_selected_momentum_defaults(tmp_path):
     assert config.momentum_exit_ma_days == 75
     assert config.momentum_max_positions == 5
     assert config.momentum_max_exposure_pct == Decimal("0.50")
+    assert config.momentum_cash_reserve_pct == Decimal("0.50")
     assert config.momentum_accept_top_n == 2
+
+
+def test_load_config_accepts_momentum_cash_reserve_pct(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "strategy:",
+                "  kind: momentum",
+                "  momentum:",
+                "    cash_reserve_pct: 0.30",
+                "    max_exposure_pct: 0.50",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.momentum_cash_reserve_pct == Decimal("0.30")
+    assert config.momentum_max_exposure_pct == Decimal("0.70")

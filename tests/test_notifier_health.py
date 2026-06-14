@@ -80,6 +80,12 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     server = HealthServer(
         snapshot,
         events_provider=lambda limit: events[:limit] if limit is not None else events,
+        settings={
+            "momentum": {
+                "cash_reserve_pct": "0.50",
+                "max_exposure_pct": "0.50",
+            }
+        },
     )
 
     events_payload = server.payload_for_path("/events", {"limit": ["1"]})
@@ -97,6 +103,7 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     assert dashboard["positions"]["count"] == 1
     assert dashboard["paper_intents"]["count"] == 1
     assert dashboard["runtime_events"]["count"] == 2
+    assert dashboard["settings"]["momentum"]["cash_reserve_pct"] == "0.50"
     assert dashboard["raw_links"]["events"] == "/events"
 
 
@@ -134,7 +141,9 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "history.replaceState" not in html
     assert "width: auto;" in html
     assert "repeat(5, minmax(0, 1fr))" in html
-    assert "renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows)" in html
+    assert "renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows, dashboard.settings || {})" in html
+    assert "cash_reserve_pct" in html
+    assert "settings-strategy-json" in html
     assert 'id="dashboard-operator-brief"' in html
     assert "function renderOperatorBrief" in html
     assert "function primaryAction" in html

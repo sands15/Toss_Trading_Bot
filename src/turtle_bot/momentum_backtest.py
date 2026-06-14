@@ -42,6 +42,10 @@ class MomentumBacktestConfig:
     min_sec_fee: Decimal = Decimal("0.01")
     pit_universe: PitUniverse | None = None
 
+    @property
+    def cash_reserve_pct(self) -> Decimal:
+        return Decimal("1") - self.max_exposure_pct
+
 
 @dataclass(frozen=True)
 class MomentumCandidate:
@@ -100,6 +104,7 @@ class MomentumBacktestResult:
                     "max_positions": self.config.max_positions,
                     "accept_top_n": self.config.accept_top_n,
                     "max_exposure_pct": str(self.config.max_exposure_pct),
+                    "cash_reserve_pct": str(self.config.cash_reserve_pct),
                     "target_position_pct": str(self.config.target_position_pct),
                     "min_price": str(self.config.min_price),
                     "min_average_daily_value": str(self.config.min_average_daily_value),
