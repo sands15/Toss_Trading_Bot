@@ -154,6 +154,19 @@ These commands use the registry to find `toss-dashboard-<user>` and update the
 stored user status. `--remove-user-container` removes the Docker container only;
 it does not delete `.local/users/<user>/` files or Toss credentials.
 
+Secret and cleanup helpers:
+
+```bash
+python ops/multi_user_gateway.py --delete-user-secrets alice --confirm DELETE_USER_SECRETS
+python ops/multi_user_gateway.py --list-orphans
+python ops/multi_user_gateway.py --cleanup-orphans --confirm CLEANUP_ORPHANS
+```
+
+`--delete-user-secrets` removes the user's stored Toss app ID and app secret
+from the configured backend. `--list-orphans` reports gateway containers or user
+folders that are no longer present in the registry. `--cleanup-orphans` removes
+orphan containers and moves stale user folders into `.local/users/_trash/`.
+
 Each user gets separate local files:
 
 ```text

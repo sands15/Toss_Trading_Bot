@@ -23,6 +23,11 @@ use the Tailscale Docker gateway.
 - Self-registration can be restricted to an explicit Tailscale IP/CIDR allowlist.
 - Admin helper commands can stop, start, restart, and remove a user's Docker
   container without editing the registry by hand.
+- Admin helper commands can delete a user's stored Toss credentials after an
+  explicit confirmation phrase.
+- Admin helper commands can list orphaned gateway containers and stale user
+  folders, then clean them up after an explicit confirmation phrase. Stale user
+  folders are moved into `_trash` instead of being deleted immediately.
 - User containers have default Docker memory, CPU, and log-size limits.
 - Identity-missing, setup, registration denial, rate-limit, and container
   lifecycle events are written as JSON lines to `.local/users/audit.log`.
@@ -30,11 +35,12 @@ use the Tailscale Docker gateway.
 
 ## Next Hardening Passes
 
-1. Add cleanup commands for orphaned containers and stale user folders.
-2. Verify the full Docker build/run path on the target Mac with Docker Desktop
+1. Verify the full Docker build/run path on the target Mac with Docker Desktop
    running.
-3. Add an admin command that deletes a user's Keychain items after explicit
-   confirmation.
+2. Add a one-command user offboarding flow that combines container stop/removal,
+   secret deletion, registry removal, and user-folder trashing.
+3. Add an admin-only status page or CLI summary for registration attempts,
+   container health, and recent audit events.
 
 ## Current Risk Notes
 

@@ -92,6 +92,9 @@ def test_setup_page_contains_required_first_user_fields() -> None:
     assert 'name="client_id"' in html
     assert 'name="client_secret"' in html
     assert 'name="account_seq"' in html
+    assert "계좌번호 전체를 입력하는 칸이 아닙니다" in html
+    assert "API 값은 화면에 다시 보여주지 않고" in html
+    assert "환경변수" not in html
     assert gateway.SETUP_CONFIRMATION in html
 
 
@@ -302,6 +305,143 @@ def test_gateway_user_lifecycle_commands_update_registry(tmp_path: Path, monkeyp
     assert any('"event": "container_started"' in line for line in audit_lines)
     assert any('"event": "container_restarted"' in line for line in audit_lines)
     assert any('"event": "container_removed"' in line for line in audit_lines)
+
+
+def test_admin_delete_user_secrets_requires_confirmation(tmp_path: Path, capsys) -> None:
+    gateway = _load_gateway_module()
+    result = gateway.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--registry",
+            str(tmp_path / "registry.json"),
+            "--users-root",
+            str(tmp_path / "users"),
+            "--audit-log",
+            str(tmp_path / "audit.log"),
+            "--delete-user-secrets",
+            "alice",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert "confirmation_required" in captured.err
+    assert gateway.DELETE_SECRETS_CONFIRMATION in captured.err
+
+
+def test_admin_cleanup_orphans_requires_confirmation_before_gateway_init(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    gateway = _load_gateway_module()
+    monkeypatch.setattr(
+        gateway,
+        "make_secret_store",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("secret store should not initialize")),
+    )
+
+    result = gateway.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--registry",
+            str(tmp_path / "registry.json"),
+            "--users-root",
+            str(tmp_path / "users"),
+            "--audit-log",
+            str(tmp_path / "audit.log"),
+            "--cleanup-orphans",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert "confirmation_required" in captured.err
+    assert gateway.CLEANUP_ORPHANS_CONFIRMATION in captured.err
+
+
+def test_admin_delete_user_secrets_removes_file_backend_secret_and_audits(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    users_root = tmp_path / "users"
+    env_file = users_root / "alice" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("TOSS_CLIENT_ID=id\nTOSS_CLIENT_SECRET=secret\n", encoding="utf-8")
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=users_root,
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+
+    result = manager.delete_user_secrets("alice")
+
+    assert result == {"slug": "alice", "secret_backend": "file"}
+    assert not env_file.exists()
+    audit_lines = (tmp_path / "audit.log").read_text(encoding="utf-8").splitlines()
+    assert any('"event": "user_secrets_deleted"' in line for line in audit_lines)
+
+
+def test_orphan_cleanup_removes_containers_and_trashes_stale_user_dirs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gateway = _load_gateway_module()
+    registry_path = tmp_path / "registry.json"
+    users_root = tmp_path / "users"
+    registry = gateway.load_registry(registry_path)
+    registry["users"]["alice"] = {
+        "slug": "alice",
+        "container_name": "toss-dashboard-alice",
+        "port": 19000,
+    }
+    gateway.save_registry(registry_path, registry)
+    (users_root / "alice").mkdir(parents=True)
+    (users_root / "bob").mkdir()
+
+    def fake_subprocess_run(args, **_kwargs):
+        assert args[:3] == ["docker", "ps", "-a"]
+        return gateway.subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="toss-dashboard-alice\ntoss-dashboard-bob\nother-service\n",
+        )
+
+    removed_containers = []
+    monkeypatch.setattr(gateway.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        gateway.UserGateway,
+        "remove_container",
+        lambda _self, container_name: removed_containers.append(container_name),
+    )
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=registry_path,
+        users_root=users_root,
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+
+    assert manager.list_orphans() == {
+        "orphan_containers": ["toss-dashboard-bob"],
+        "stale_user_dirs": ["bob"],
+    }
+    result = manager.cleanup_orphans()
+
+    assert removed_containers == ["toss-dashboard-bob"]
+    assert result["removed_orphan_containers"] == ["toss-dashboard-bob"]
+    assert result["trashed_stale_user_dirs"][0]["slug"] == "bob"
+    assert not (users_root / "bob").exists()
+    assert any(item.name.startswith("bob-") for item in (users_root / "_trash").iterdir())
+    audit_lines = (tmp_path / "audit.log").read_text(encoding="utf-8").splitlines()
+    assert any('"event": "orphan_container_removed"' in line for line in audit_lines)
+    assert any('"event": "stale_user_dir_trashed"' in line for line in audit_lines)
 
 
 def test_new_user_container_uses_resource_and_log_limits(tmp_path: Path, monkeypatch) -> None:

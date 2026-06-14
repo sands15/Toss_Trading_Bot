@@ -61,6 +61,17 @@ python ops/multi_user_gateway.py --secret-backend keychain
 python ops/multi_user_gateway.py --secret-backend file
 ```
 
+Secret deletion requires an explicit confirmation phrase:
+
+```bash
+python ops/multi_user_gateway.py --delete-user-secrets alice --confirm DELETE_USER_SECRETS
+```
+
+This removes the user's Toss app ID and app secret from the configured backend
+and writes a `user_secrets_deleted` audit event. With the file backend, it
+removes the user's `.env` file. With the Keychain backend, it deletes the two
+Keychain items under the configured service namespace.
+
 macOS launcher:
 
 ```bash
@@ -70,8 +81,6 @@ KEYCHAIN_SERVICE=toss-trading-bot open ops/run-multi-user-gateway.command
 
 ## Remaining Work
 
-- Add an admin command that deletes a user's Keychain items only after explicit
-  confirmation.
 - Verify the `security` command path on the target Mac with Docker Desktop
   running.
 - Consider Docker secrets or an encrypted age/sops backend if the deployment

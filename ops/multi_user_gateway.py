@@ -42,6 +42,9 @@ SECRET_CLIENT_ID = "toss_client_id"
 SECRET_CLIENT_SECRET = "toss_client_secret"
 TAILSCALE_USER_LOGIN_HEADER = "Tailscale-User-Login"
 TAILSCALE_USER_NAME_HEADER = "Tailscale-User-Name"
+DELETE_SECRETS_CONFIRMATION = "DELETE_USER_SECRETS"
+CLEANUP_ORPHANS_CONFIRMATION = "CLEANUP_ORPHANS"
+USER_CONTAINER_PREFIX = "toss-dashboard-"
 
 
 def slugify(value: str) -> str:
@@ -230,6 +233,66 @@ def delete_user(registry: dict[str, Any], slug: str) -> dict[str, Any] | None:
         if mapped_slug == slug:
             identity_map.pop(identity, None)
     return dict(removed) if isinstance(removed, dict) else None
+
+
+def registered_user_slugs(registry: dict[str, Any]) -> set[str]:
+    return {str(slug) for slug in registry.get("users", {})}
+
+
+def registered_container_names(registry: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for user in registry.get("users", {}).values():
+        if isinstance(user, dict) and user.get("container_name"):
+            names.add(str(user["container_name"]))
+    return names
+
+
+def list_gateway_containers(repo_root: Path, *, prefix: str = USER_CONTAINER_PREFIX) -> list[str]:
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--format", "{{.Names}}"],
+        cwd=str(repo_root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return sorted(name for name in result.stdout.splitlines() if name.startswith(prefix))
+
+
+def list_user_dirs(users_root: Path) -> list[str]:
+    if not users_root.exists():
+        return []
+    return sorted(
+        item.name
+        for item in users_root.iterdir()
+        if item.is_dir() and not item.name.startswith(".") and item.name != "_trash"
+    )
+
+
+def find_orphan_resources(registry: dict[str, Any], users_root: Path, repo_root: Path) -> dict[str, list[str]]:
+    user_slugs = registered_user_slugs(registry)
+    container_names = registered_container_names(registry)
+    containers = list_gateway_containers(repo_root)
+    user_dirs = list_user_dirs(users_root)
+    return {
+        "orphan_containers": [name for name in containers if name not in container_names],
+        "stale_user_dirs": [name for name in user_dirs if name not in user_slugs],
+    }
+
+
+def trash_user_dir(users_root: Path, slug: str) -> Path:
+    source = users_root / slug
+    if not source.exists():
+        return source
+    trash_root = users_root / "_trash"
+    trash_root.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    target = trash_root / f"{slug}-{timestamp}"
+    suffix = 2
+    while target.exists():
+        target = trash_root / f"{slug}-{timestamp}-{suffix}"
+        suffix += 1
+    shutil.move(str(source), str(target))
+    return target
 
 
 def next_available_port(registry: dict[str, Any]) -> int:
@@ -689,6 +752,32 @@ class UserGateway:
         self.audit("container_removed", slug=slug, container_name=str(user["container_name"]))
         return updated
 
+    def delete_user_secrets(self, slug: str) -> dict[str, Any]:
+        self.secret_store.delete_user_credentials(slug)
+        self.audit("user_secrets_deleted", slug=slug, backend=self.secret_store.backend_name)
+        return {"slug": slug, "secret_backend": self.secret_store.backend_name}
+
+    def list_orphans(self) -> dict[str, list[str]]:
+        registry = load_registry(self.config.registry_path)
+        return find_orphan_resources(registry, self.config.users_root, self.config.repo_root)
+
+    def cleanup_orphans(self) -> dict[str, Any]:
+        orphans = self.list_orphans()
+        removed_containers: list[str] = []
+        trashed_user_dirs: list[dict[str, str]] = []
+        for container_name in orphans["orphan_containers"]:
+            self.remove_container(container_name)
+            removed_containers.append(container_name)
+            self.audit("orphan_container_removed", container_name=container_name)
+        for slug in orphans["stale_user_dirs"]:
+            target = trash_user_dir(self.config.users_root, slug)
+            trashed_user_dirs.append({"slug": slug, "trash_path": str(target)})
+            self.audit("stale_user_dir_trashed", slug=slug, trash_path=str(target))
+        return {
+            "removed_orphan_containers": removed_containers,
+            "trashed_stale_user_dirs": trashed_user_dirs,
+        }
+
     def create_user(
         self,
         *,
@@ -920,36 +1009,43 @@ def setup_page(
     input {{ height:42px; border:1px solid #cbd5e1; border-radius:8px; padding:0 12px; font-size:15px; }}
     button {{ height:44px; border:0; border-radius:8px; background:#2563eb; color:#fff; font-weight:900; cursor:pointer; }}
     p {{ color:#475569; line-height:1.5; }}
+    small {{ color:#64748b; font-weight:600; line-height:1.45; }}
     .error {{ color:#b91c1c; background:#fee2e2; border:1px solid #fecaca; padding:10px; border-radius:8px; }}
     .ip {{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
     .identity {{ background:#f1f5f9; border:1px solid #dbe2ea; border-radius:8px; padding:12px; }}
+    .hint {{ background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:12px; color:#1e3a8a; }}
   </style>
 </head>
 <body>
   <main>
     <h1>처음 접속한 사용자 설정</h1>
-    <p>Tailscale 계정 기준으로 전용 컨테이너를 만듭니다. 같은 Tailscale 계정이면 다른 기기에서도 같은 대시보드로 이동합니다.</p>
+    <p>Tailscale 계정 기준으로 개인 대시보드를 만듭니다. 같은 Tailscale 계정이면 다른 기기에서도 같은 대시보드로 이동합니다.</p>
     <div class="identity">
       <div><strong>{escaped_display_name}</strong></div>
       <div class="ip">{escaped_identity}</div>
       <div class="ip">접속 IP: {escaped_ip}</div>
     </div>
+    <p class="hint">아래 값은 토스증권 Open API에서 발급받은 앱 정보와 연결할 계좌 식별번호입니다. API 값은 화면에 다시 보여주지 않고 이 서버의 보안 저장소에만 저장합니다.</p>
     {f'<div class="error">{escaped_message}</div>' if escaped_message else ''}
     <form method="post" action="/__setup">
       <input type="hidden" name="csrf_token" value="{escaped_csrf}">
       <label>토스 앱 ID
-        <input name="client_id" autocomplete="off" required placeholder="토스 개발자센터에서 발급받은 앱 ID">
+        <input name="client_id" autocomplete="off" required placeholder="토스증권 Open API 앱의 Client ID">
+        <small>토스증권 Open API에서 만든 앱의 공개 식별값입니다.</small>
       </label>
       <label>토스 앱 비밀키
-        <input name="client_secret" type="password" autocomplete="off" required placeholder="토스 개발자센터에서 발급받은 비밀키">
+        <input name="client_secret" type="password" autocomplete="off" required placeholder="토스증권 Open API 앱의 Client Secret">
+        <small>토큰 발급에 쓰는 비밀값입니다. 저장 후에는 다시 표시하지 않습니다.</small>
       </label>
-      <label>연결할 토스 계좌 번호
+      <label>연결할 토스 계좌 식별번호
         <input name="account_seq" inputmode="numeric" autocomplete="off" required placeholder="예: 7">
+        <small>토스 API가 계좌를 구분할 때 쓰는 숫자입니다. 계좌번호 전체를 입력하는 칸이 아닙니다.</small>
       </label>
       <label>본인 확인
         <input name="confirmation" autocomplete="off" required placeholder="{SETUP_CONFIRMATION}">
+        <small>실수로 다른 사람 계정을 연결하지 않도록 안내 문구를 그대로 입력합니다.</small>
       </label>
-      <button type="submit">내 컨테이너 만들기</button>
+      <button type="submit">내 대시보드 만들기</button>
     </form>
   </main>
 </body>
@@ -1242,6 +1338,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="SLUG",
         help="Remove one user's Docker container without deleting registry or files and exit",
     )
+    parser.add_argument(
+        "--delete-user-secrets",
+        metavar="SLUG",
+        help="Delete one user's Toss credentials from the configured secret backend and exit",
+    )
+    parser.add_argument("--list-orphans", action="store_true", help="Print orphan containers and stale user folders as JSON and exit")
+    parser.add_argument(
+        "--cleanup-orphans",
+        action="store_true",
+        help="Remove orphan containers and move stale user folders into users-root/_trash",
+    )
+    parser.add_argument(
+        "--confirm",
+        default="",
+        help=(
+            "Required confirmation phrase for destructive admin commands. "
+            f"Use {DELETE_SECRETS_CONFIRMATION} or {CLEANUP_ORPHANS_CONFIRMATION}."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -1267,6 +1382,30 @@ def main(argv: list[str] | None = None) -> int:
         save_registry(registry_path, registry)
         print(json.dumps({"deleted_user": args.delete_user, "user": removed_user}, ensure_ascii=False))
         return 0
+    if args.delete_user_secrets and args.confirm != DELETE_SECRETS_CONFIRMATION:
+        print(
+            json.dumps(
+                {
+                    "error": "confirmation_required",
+                    "confirm": DELETE_SECRETS_CONFIRMATION,
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    if args.cleanup_orphans and args.confirm != CLEANUP_ORPHANS_CONFIRMATION:
+        print(
+            json.dumps(
+                {
+                    "error": "confirmation_required",
+                    "confirm": CLEANUP_ORPHANS_CONFIRMATION,
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 2
 
     gateway = UserGateway(
         GatewayConfig(
@@ -1303,6 +1442,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.remove_user_container:
         user = gateway.remove_user_container(args.remove_user_container)
         print(json.dumps({"removed_user_container": args.remove_user_container, "user": user}, ensure_ascii=False))
+        return 0
+    if args.delete_user_secrets:
+        result = gateway.delete_user_secrets(args.delete_user_secrets)
+        print(json.dumps({"deleted_user_secrets": args.delete_user_secrets, "result": result}, ensure_ascii=False))
+        return 0
+    if args.list_orphans:
+        print(json.dumps(gateway.list_orphans(), ensure_ascii=False, indent=2))
+        return 0
+    if args.cleanup_orphans:
+        print(json.dumps(gateway.cleanup_orphans(), ensure_ascii=False, indent=2))
         return 0
 
     host = args.host or "127.0.0.1"
