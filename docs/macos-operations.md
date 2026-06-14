@@ -84,6 +84,29 @@ open Start-Toss-Gateway.command
 This prepares `.venv`, installs the local package, checks Docker Desktop and
 Tailscale, starts `tailscale serve`, and then runs the multi-user gateway.
 
+For unattended operation, install the gateway as a per-user `launchd` service:
+
+```bash
+chmod +x Install-Toss-Gateway-Service.command
+open Install-Toss-Gateway-Service.command
+```
+
+This creates `~/Library/LaunchAgents/com.sands15.toss-gateway.plist`, starts the
+gateway on login, restarts it after crashes, and keeps Tailscale Serve pointed
+at the gateway port.
+
+After the service is installed, use the update launcher when pulling new code:
+
+```bash
+chmod +x Update-Toss-Gateway.command
+open Update-Toss-Gateway.command
+```
+
+The updater fetches `origin/main`, updates the local package, starts a standby
+gateway on port `8766`, checks `/health`, temporarily points Tailscale Serve to
+the standby gateway, restarts the managed launchd gateway, then switches Serve
+back to port `8765`. Existing user Docker containers are left running.
+
 The lower-level gateway launcher is:
 
 ```bash
