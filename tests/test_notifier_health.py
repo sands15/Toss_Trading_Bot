@@ -155,6 +155,12 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "dashboard.live_readiness" in html
     assert "can_submit_live_orders" in html
     assert "cash_reserve_pct" in html
+    assert 'id="toss-client-id"' in html
+    assert 'id="toss-client-secret"' in html
+    assert 'id="toss-account-seq"' in html
+    assert 'id="toss-client-id-status"' in html
+    assert "function setTossSettings" in html
+    assert ".bottom-nav a.active svg" in html
     assert "현금 보유 비중" in html
     assert "설정 저장" in html
     assert 'type="range"' in html

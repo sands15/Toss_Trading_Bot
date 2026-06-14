@@ -226,14 +226,23 @@ def build_dashboard_server(
     settings_payload: Mapping[str, Any] = {}
     settings_updater: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
     if config_path is not None:
+        env_values = env if env is not None else environ
         config = load_config(config_path)
         watchlist_name = config.runtime.watchlist_name
         default_blockers = _paper_service_config_blockers(
             config,
-            env if env is not None else environ,
+            env_values,
         )
-        settings_payload = _dashboard_settings_payload(config)
-        settings_updater = lambda payload: update_momentum_settings(config_path, payload)
+        settings_payload = _dashboard_settings_payload(config, env_values)
+
+        def settings_updater(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+            nonlocal config, default_blockers, settings_payload, watchlist_name
+            result = update_dashboard_settings(config_path, payload, env=env_values)
+            config = load_config(config_path)
+            watchlist_name = config.runtime.watchlist_name
+            default_blockers = _paper_service_config_blockers(config, env_values)
+            settings_payload = _dashboard_settings_payload(config, env_values)
+            return {"config": result, "settings": settings_payload}
 
     def snapshot_provider() -> HealthSnapshot:
         with SQLiteStateStore(state_db) as store:
@@ -267,7 +276,13 @@ def build_dashboard_server(
     )
 
 
-def _dashboard_settings_payload(config) -> dict[str, Any]:
+def _dashboard_settings_payload(
+    config,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    env_values = env if env is not None else environ
+    client_id_env = str(config.toss.client_id_env or "").strip()
+    client_secret_env = str(config.toss.client_secret_env or "").strip()
     return {
         "strategy_kind": config.strategy_kind,
         "runtime": {
@@ -278,6 +293,13 @@ def _dashboard_settings_payload(config) -> dict[str, Any]:
         "toss": {
             "live_enabled": config.live_enabled,
             "account_seq_configured": bool(config.toss.account_seq),
+            "account_seq": config.toss.account_seq or "",
+            "client_id_env": client_id_env,
+            "client_secret_env": client_secret_env,
+            "client_id_configured": bool(client_id_env and env_values.get(client_id_env)),
+            "client_secret_configured": bool(
+                client_secret_env and env_values.get(client_secret_env)
+            ),
             "required_env": [
                 config.toss.client_id_env,
                 config.toss.client_secret_env,
@@ -427,6 +449,65 @@ def update_momentum_settings(
         encoding="utf-8",
     )
 
+    return dict(raw)
+
+
+def update_dashboard_settings(
+    config_path: str | Path,
+    payload: Mapping[str, Any],
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Update operator-editable local settings without echoing secrets."""
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"config file not found: {config_file}")
+    if not isinstance(payload, Mapping):
+        raise ValueError("settings payload missing")
+
+    raw = update_momentum_settings(config_file, payload) if "momentum" in payload else _read_yaml(config_file)
+    toss_payload = payload.get("toss", {})
+    if toss_payload is None:
+        toss_payload = {}
+    if not isinstance(toss_payload, Mapping):
+        raise ValueError("toss settings must be an object")
+
+    toss = raw.get("toss", {})
+    if not isinstance(toss, Mapping):
+        toss = {}
+    toss_data = dict(toss)
+    client_id_env = str(toss_data.get("client_id_env") or "TOSS_CLIENT_ID").strip()
+    client_secret_env = str(toss_data.get("client_secret_env") or "TOSS_CLIENT_SECRET").strip()
+
+    if "client_id_env" in toss_payload:
+        client_id_env = str(toss_payload.get("client_id_env") or "").strip()
+        if not client_id_env:
+            raise ValueError("client_id_env is required")
+        toss_data["client_id_env"] = client_id_env
+    if "client_secret_env" in toss_payload:
+        client_secret_env = str(toss_payload.get("client_secret_env") or "").strip()
+        if not client_secret_env:
+            raise ValueError("client_secret_env is required")
+        toss_data["client_secret_env"] = client_secret_env
+    if "account_seq" in toss_payload:
+        account_seq = str(toss_payload.get("account_seq") or "").strip()
+        if not account_seq:
+            raise ValueError("account_seq is required")
+        toss_data["account_seq"] = account_seq
+
+    env_values = env if env is not None else environ
+    client_id = str(toss_payload.get("client_id") or "").strip()
+    client_secret = str(toss_payload.get("client_secret") or "").strip()
+    if client_id:
+        env_values[client_id_env] = client_id
+    if client_secret:
+        env_values[client_secret_env] = client_secret
+
+    raw["toss"] = toss_data
+    config_file.write_text(
+        yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
     return dict(raw)
 
 

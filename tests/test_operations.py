@@ -18,6 +18,7 @@ from turtle_bot.operations import (
     operations_checks_payload,
     render_launchd_plist,
     run_paper_service,
+    update_dashboard_settings,
     update_momentum_settings,
 )
 from turtle_bot.state_store import SQLiteStateStore
@@ -419,6 +420,39 @@ def test_update_momentum_settings_rejects_invalid_skip_window(tmp_path: Path) ->
         assert "skip_days" in str(exc)
     else:
         raise AssertionError("invalid momentum settings unexpectedly saved")
+
+
+def test_update_dashboard_settings_saves_toss_connection_without_secret_echo(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    _write_config(config_path, strategy_kind="momentum")
+    env: dict[str, str] = {}
+
+    saved = update_dashboard_settings(
+        config_path,
+        {
+            "toss": {
+                "account_seq": "7",
+                "client_id_env": "MY_TOSS_CLIENT_ID",
+                "client_secret_env": "MY_TOSS_CLIENT_SECRET",
+                "client_id": "client-id-value",
+                "client_secret": "client-secret-value",
+            }
+        },
+        env=env,
+    )
+
+    assert saved["toss"]["account_seq"] == "7"
+    assert saved["toss"]["client_id_env"] == "MY_TOSS_CLIENT_ID"
+    assert saved["toss"]["client_secret_env"] == "MY_TOSS_CLIENT_SECRET"
+    assert env == {
+        "MY_TOSS_CLIENT_ID": "client-id-value",
+        "MY_TOSS_CLIENT_SECRET": "client-secret-value",
+    }
+    loaded = config_path.read_text(encoding="utf-8")
+    assert "client-id-value" not in loaded
+    assert "client-secret-value" not in loaded
 
 
 def test_paper_service_with_toss_read_only_data_runs_paper_iteration(

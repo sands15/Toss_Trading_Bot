@@ -1401,7 +1401,9 @@ def dashboard_html() -> str:
     }
 
     .settings-field input[type="number"],
-    .settings-field input[type="range"] {
+    .settings-field input[type="password"],
+    .settings-field input[type="range"],
+    .settings-field input[type="text"] {
       width: 100%;
       border-radius: 6px;
       border: 1px solid #d2deec;
@@ -1412,8 +1414,18 @@ def dashboard_html() -> str:
       min-width: 0;
     }
 
-    .settings-field input[type="number"] {
+    .settings-field input[type="number"],
+    .settings-field input[type="password"],
+    .settings-field input[type="text"] {
       height: 36px;
+    }
+
+    .credential-status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 2px;
     }
 
     .settings-slider-box {
@@ -1947,7 +1959,21 @@ def dashboard_html() -> str:
 
       .bottom-nav a.active {
         color: var(--blue);
+        background: transparent;
+      }
+
+      .bottom-nav a svg {
+        width: 26px;
+        height: 26px;
+        padding: 5px;
+        border-radius: 999px;
+        box-sizing: border-box;
+        transition: background 160ms ease, box-shadow 160ms ease, color 160ms ease;
+      }
+
+      .bottom-nav a.active svg {
         background: #edf4ff;
+        box-shadow: 0 8px 18px rgba(37, 99, 235, 0.14);
       }
     }
   </style>
@@ -2253,6 +2279,44 @@ def dashboard_html() -> str:
               <h2>설정 안내</h2>
               <p id="settings-headline" class="status-copy">실행 전 점검 항목을 확인하고 모멘텀 값을 바로 입력해 보세요.</p>
               <ul id="settings-onboarding-list" class="action-list"></ul>
+            </article>
+            <article class="card data-panel">
+              <h2>토스 API / 계좌 연결</h2>
+              <p class="panel-copy">토스 API 키와 거래 계좌 시퀀스를 입력합니다. 키 값은 저장 후 화면에 남기지 않습니다.</p>
+              <section class="settings-form">
+                <div class="settings-grid">
+                  <div class="settings-field">
+                    <label for="toss-client-id" class="settings-label">Toss Client ID</label>
+                    <input id="toss-client-id" type="password" autocomplete="off" placeholder="새 값 입력 시 현재 프로세스에 반영" />
+                    <p class="settings-helper">환경변수 <span id="toss-client-id-env-label">TOSS_CLIENT_ID</span> 값으로 사용합니다.</p>
+                    <div class="credential-status">
+                      <span id="toss-client-id-status" class="status-pill todo">미설정</span>
+                    </div>
+                  </div>
+                  <div class="settings-field">
+                    <label for="toss-client-secret" class="settings-label">Toss Client Secret</label>
+                    <input id="toss-client-secret" type="password" autocomplete="off" placeholder="새 값 입력 시 현재 프로세스에 반영" />
+                    <p class="settings-helper">환경변수 <span id="toss-client-secret-env-label">TOSS_CLIENT_SECRET</span> 값으로 사용합니다.</p>
+                    <div class="credential-status">
+                      <span id="toss-client-secret-status" class="status-pill todo">미설정</span>
+                    </div>
+                  </div>
+                  <div class="settings-field">
+                    <label for="toss-account-seq" class="settings-label">계좌 연결 <span class="settings-helper">toss.account_seq</span></label>
+                    <input id="toss-account-seq" type="text" inputmode="numeric" autocomplete="off" placeholder="예: 7" />
+                    <p class="settings-helper">토스 Open API의 X-Tossinvest-Account 헤더에 들어갈 계좌 시퀀스입니다.</p>
+                    <div class="credential-status">
+                      <span id="toss-account-status" class="status-pill todo">미연결</span>
+                    </div>
+                  </div>
+                  <div class="settings-field">
+                    <label for="toss-client-id-env" class="settings-label">환경변수 이름</label>
+                    <input id="toss-client-id-env" type="text" autocomplete="off" value="TOSS_CLIENT_ID" />
+                    <input id="toss-client-secret-env" type="text" autocomplete="off" value="TOSS_CLIENT_SECRET" />
+                    <p class="settings-helper">대부분 기본값 그대로 쓰면 됩니다.</p>
+                  </div>
+                </div>
+              </section>
             </article>
             <article class="card data-panel">
               <h2>모멘텀 전략 설정</h2>
@@ -3101,6 +3165,36 @@ def dashboard_html() -> str:
 
     }
 
+    function setPillState(elementId, okText, todoText, isOk) {
+      const element = document.getElementById(elementId);
+      if (!element) return;
+      element.textContent = isOk ? okText : todoText;
+      element.className = `status-pill ${isOk ? "done" : "todo"}`;
+    }
+
+    function setTossSettings(settings) {
+      const toss = (settings && settings.toss) || {};
+      const accountSeq = document.getElementById("toss-account-seq");
+      const clientIdEnv = document.getElementById("toss-client-id-env");
+      const clientSecretEnv = document.getElementById("toss-client-secret-env");
+      const clientIdEnvLabel = document.getElementById("toss-client-id-env-label");
+      const clientSecretEnvLabel = document.getElementById("toss-client-secret-env-label");
+      const clientId = document.getElementById("toss-client-id");
+      const clientSecret = document.getElementById("toss-client-secret");
+
+      if (accountSeq) accountSeq.value = toss.account_seq || "";
+      if (clientIdEnv) clientIdEnv.value = toss.client_id_env || "TOSS_CLIENT_ID";
+      if (clientSecretEnv) clientSecretEnv.value = toss.client_secret_env || "TOSS_CLIENT_SECRET";
+      if (clientIdEnvLabel) clientIdEnvLabel.textContent = toss.client_id_env || "TOSS_CLIENT_ID";
+      if (clientSecretEnvLabel) clientSecretEnvLabel.textContent = toss.client_secret_env || "TOSS_CLIENT_SECRET";
+      if (clientId) clientId.value = "";
+      if (clientSecret) clientSecret.value = "";
+
+      setPillState("toss-client-id-status", "설정됨", "미설정", Boolean(toss.client_id_configured));
+      setPillState("toss-client-secret-status", "설정됨", "미설정", Boolean(toss.client_secret_configured));
+      setPillState("toss-account-status", "연결값 있음", "미연결", Boolean(toss.account_seq_configured || toss.account_seq));
+    }
+
     function setSettingsWritable(enabled) {
       settingsWritable = Boolean(enabled);
       const saveButton = document.getElementById("settings-save-button");
@@ -3128,6 +3222,11 @@ def dashboard_html() -> str:
       const lookbackDays = document.getElementById("momentum-lookback-days");
       const skipDays = document.getElementById("momentum-skip-days");
       const trendMaDays = document.getElementById("momentum-trend-ma-days");
+      const tossClientId = document.getElementById("toss-client-id");
+      const tossClientSecret = document.getElementById("toss-client-secret");
+      const tossAccountSeq = document.getElementById("toss-account-seq");
+      const tossClientIdEnv = document.getElementById("toss-client-id-env");
+      const tossClientSecretEnv = document.getElementById("toss-client-secret-env");
       const saveButton = document.getElementById("settings-save-button");
       const status = document.getElementById("settings-save-status");
 
@@ -3153,7 +3252,18 @@ def dashboard_html() -> str:
           skip_days: safeInteger(skipDays?.value, SETTINGS_DEFAULT.skip_days, 0, 10000),
           trend_ma_days: safeInteger(trendMaDays?.value, SETTINGS_DEFAULT.trend_ma_days, 1, 10000),
         },
+        toss: {},
       };
+      const accountSeq = String(tossAccountSeq?.value || "").trim();
+      const clientId = String(tossClientId?.value || "").trim();
+      const clientSecret = String(tossClientSecret?.value || "").trim();
+      const clientIdEnv = String(tossClientIdEnv?.value || "").trim();
+      const clientSecretEnv = String(tossClientSecretEnv?.value || "").trim();
+      if (accountSeq) payload.toss.account_seq = accountSeq;
+      if (clientId) payload.toss.client_id = clientId;
+      if (clientSecret) payload.toss.client_secret = clientSecret;
+      if (clientIdEnv) payload.toss.client_id_env = clientIdEnv;
+      if (clientSecretEnv) payload.toss.client_secret_env = clientSecretEnv;
 
       saveButton.disabled = true;
       status.textContent = "저장 중입니다...";
@@ -3172,8 +3282,11 @@ def dashboard_html() -> str:
         }
         status.textContent = "저장 완료";
         status.className = "settings-status ok";
-        if (body.settings && body.settings.momentum) {
-          setMomentumSettings(body.settings.momentum);
+        if (body.settings) {
+          if (body.settings.momentum) {
+            setMomentumSettings(body.settings.momentum);
+          }
+          setTossSettings(body.settings);
         }
       } catch (error) {
         status.textContent = `저장 실패: ${error.message}`;
@@ -3242,6 +3355,7 @@ def dashboard_html() -> str:
         : "현재 표시할 차단 항목이 없습니다.";
       if (!settingsFormInitialized) {
         setMomentumSettings(settings || SETTINGS_DEFAULT);
+        setTossSettings(settings || {});
         settingsFormInitialized = true;
       }
       bindSettingsInteractions();
@@ -4841,20 +4955,25 @@ class HealthServer:
                     self._send_json(self, 500, {"error": "failed to save settings", "message": str(exc)})
                     return
 
-                momentum = result.get("strategy", {})
-                momentum_data = momentum.get("momentum", {}) if isinstance(momentum, Mapping) else {}
-                if isinstance(momentum_data, Mapping):
-                    server_ref._settings["momentum"] = {
-                        "cash_reserve_pct": str(momentum_data.get("cash_reserve_pct", "")),
-                        "max_exposure_pct": str(momentum_data.get("max_exposure_pct", "")),
-                        "target_position_pct": str(momentum_data.get("target_position_pct", "")),
-                        "max_positions": momentum_data.get("max_positions", ""),
-                        "accept_top_n": momentum_data.get("accept_top_n", ""),
-                        "exit_ma_days": momentum_data.get("exit_ma_days", ""),
-                        "lookback_days": momentum_data.get("lookback_days", ""),
-                        "skip_days": momentum_data.get("skip_days", ""),
-                        "trend_ma_days": momentum_data.get("trend_ma_days", ""),
-                    }
+                next_settings = result.get("settings") if isinstance(result, Mapping) else None
+                if isinstance(next_settings, Mapping):
+                    server_ref._settings = dict(next_settings)
+                else:
+                    config_result = result.get("config", result) if isinstance(result, Mapping) else {}
+                    momentum = config_result.get("strategy", {}) if isinstance(config_result, Mapping) else {}
+                    momentum_data = momentum.get("momentum", {}) if isinstance(momentum, Mapping) else {}
+                    if isinstance(momentum_data, Mapping):
+                        server_ref._settings["momentum"] = {
+                            "cash_reserve_pct": str(momentum_data.get("cash_reserve_pct", "")),
+                            "max_exposure_pct": str(momentum_data.get("max_exposure_pct", "")),
+                            "target_position_pct": str(momentum_data.get("target_position_pct", "")),
+                            "max_positions": momentum_data.get("max_positions", ""),
+                            "accept_top_n": momentum_data.get("accept_top_n", ""),
+                            "exit_ma_days": momentum_data.get("exit_ma_days", ""),
+                            "lookback_days": momentum_data.get("lookback_days", ""),
+                            "skip_days": momentum_data.get("skip_days", ""),
+                            "trend_ma_days": momentum_data.get("trend_ma_days", ""),
+                        }
                 self._send_json(self, 200, {"status": "saved", "settings": server_ref._settings})
 
             def log_message(
