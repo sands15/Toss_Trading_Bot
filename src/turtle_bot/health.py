@@ -299,7 +299,7 @@ def _build_live_readiness_payload(
             "전략/런타임 모드",
             "done" if strategy_kind == "momentum" and runtime_mode in {"paper", "shadow"} else "warn",
             f"{strategy_kind} 전략, {runtime_mode} 모드로 표시됩니다.",
-            "실거래 전에는 shadow 모드로 실제 계좌 read-only 검증을 먼저 돌리세요."
+            "실거래 전에는 shadow 모드로 실제 계좌 조회 검증을 먼저 돌리세요."
             if runtime_mode != "shadow"
             else "shadow 검증 결과와 이벤트를 확인하세요.",
         ),
@@ -490,7 +490,7 @@ def dashboard_html() -> str:
       white-space: nowrap;
     }
 
-    .read-only {
+    .execution-badge {
       display: inline-flex;
       align-items: center;
       gap: 8px;
@@ -500,7 +500,7 @@ def dashboard_html() -> str:
       white-space: nowrap;
     }
 
-    .read-only::before {
+    .execution-badge::before {
       content: "";
       width: 8px;
       height: 8px;
@@ -2022,7 +2022,7 @@ def dashboard_html() -> str:
         <img class="logo" src="/assets/toss-symbol.png" alt="Toss logo" loading="eager" decoding="async">
         <div class="brand-title">
           <strong>Toss Turtle Bot</strong>
-          <span class="read-only">읽기 전용</span>
+          <span class="execution-badge">실주문 비활성</span>
         </div>
       </div>
       <div class="top-actions">
@@ -2243,7 +2243,7 @@ def dashboard_html() -> str:
             <article class="card data-panel primary-panel">
               <div class="panel-heading">
                 <div>
-                  <p class="eyebrow">읽기 전용</p>
+                  <p class="eyebrow">실주문 비활성</p>
                   <h2>주문</h2>
                 </div>
                 <span id="orders-count-badge" class="status-pill">0개</span>
@@ -2441,7 +2441,7 @@ def dashboard_html() -> str:
             </article>
           </div>
         </section>
-        <p class="sr-data">Local dashboard only. This interface reads bot state and never submits orders. Data is loaded from read-only endpoints.</p>
+        <p class="sr-data">Local dashboard only. Settings can be saved locally, but this interface never submits orders.</p>
       </main>
     </div>
   </div>
@@ -2941,7 +2941,7 @@ def dashboard_html() -> str:
         </article>
         <article class="card stat-card compact">
           <div class="icon-tile small"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 4h8v16H8z"></path><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg></div>
-          <div><p class="stat-label">미체결 주문</p><span class="metric-value">${orderRows.length}</span><span class="metric-note">read-only</span></div>
+          <div><p class="stat-label">미체결 주문</p><span class="metric-value">${orderRows.length}</span><span class="metric-note">주문 미제출</span></div>
         </article>
         <article class="card stat-card compact">
           <div class="icon-tile small"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 22a2.5 2.5 0 0 0 2.4-1.8H9.6A2.5 2.5 0 0 0 12 22ZM18 16v-5a6 6 0 1 0-12 0v5l-2 2v1h16v-1l-2-2Z"></path></svg></div>
@@ -3088,7 +3088,7 @@ def dashboard_html() -> str:
       const tiles = [
         ["준비 상태", status && status.ready ? "운영 가능" : `${blockers}개 확인 필요`],
         ["관심 종목", `${watchRows.length}개`],
-        ["주문 상태", `${orderRows.length}개 read-only`],
+        ["주문 상태", `${orderRows.length}개 확인 · 실주문 비활성`],
         ["이벤트", `${eventTotal}개 기록`]
       ];
       container.innerHTML = tiles.map(([label, value]) => `

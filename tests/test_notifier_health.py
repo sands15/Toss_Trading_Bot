@@ -130,6 +130,9 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "COLUMN_LABELS" in html
     assert '<img class="logo" src="/assets/toss-symbol.png" alt="Toss logo"' in html
     assert TOSS_LOGO_ASSET.exists()
+    assert "Read-only" not in html
+    assert "read-only" not in html
+    assert "실주문 비활성" in html
     assert "페이퍼 서비스 점검 완료" in html
     assert "Toss API 인증 정보가 아직 없습니다." in html
     assert "원본 데이터" not in html
