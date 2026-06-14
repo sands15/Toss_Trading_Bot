@@ -24,6 +24,46 @@ python -m pip install -U pip
 python -m pip install -e ".[dev]"
 ```
 
+## Dashboard Over Tailscale
+
+For a Mac desktop/session launcher, run:
+
+```bash
+chmod +x ops/run-dashboard-macos.command
+open ops/run-dashboard-macos.command
+```
+
+The launcher prepares `.venv`, creates `config/local.yaml` from the example if
+needed, detects the Mac's Tailscale IPv4 address, and binds the dashboard to
+that Tailscale address on port `8765`. This keeps the dashboard off the normal
+LAN interface by default.
+
+It prints both local and Tailscale URLs. From another Tailscale device, open:
+
+```text
+http://<mac-tailscale-ip>:8765/
+```
+
+To use a different port:
+
+```bash
+DASHBOARD_PORT=8766 ops/run-dashboard-macos.command
+```
+
+If macOS asks whether Python may accept incoming connections, allow it. If the
+Tailscale URL does not open, confirm Tailscale is logged in on the Mac with:
+
+```bash
+tailscale status
+tailscale ip -4
+```
+
+To force local-only access:
+
+```bash
+DASHBOARD_HOST=127.0.0.1 ops/run-dashboard-macos.command
+```
+
 Windows development should use the same package:
 
 ```powershell
