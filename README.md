@@ -89,7 +89,7 @@ bash ops/setup-local.sh
 
 ```text
 python -m pytest -q
-155 passed
+157 passed
 ```
 
 이 테스트는 전략 코어, 롱·숏 백테스트, point-in-time 유니버스 필터링,

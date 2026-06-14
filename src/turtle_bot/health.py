@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from collections import Counter
@@ -1035,6 +1035,126 @@ def dashboard_html() -> str:
       display: none;
     }
 
+    .settings-form {
+      margin-top: 12px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .settings-field {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+      background: #fbfcff;
+    }
+
+    .settings-label {
+      margin: 0;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
+    .settings-helper {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .settings-row {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .settings-row.inline-input {
+      align-items: end;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+
+    .settings-inline {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .settings-inline input {
+      min-width: 0;
+      width: min(9rem, 100%);
+    }
+
+    .settings-inline .unit {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .settings-field input[type="number"],
+    .settings-field input[type="range"] {
+      width: 100%;
+      border-radius: 6px;
+      border: 1px solid #d2deec;
+      background: #ffffff;
+      color: var(--text);
+      padding: 9px 10px;
+      font-size: 14px;
+      min-width: 0;
+    }
+
+    .settings-field input[type="number"] {
+      height: 36px;
+    }
+
+    .settings-slider-box {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .settings-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .settings-status {
+      margin: 0;
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .settings-status.ok {
+      color: #166534;
+    }
+
+    .settings-status.error {
+      color: #b91c1c;
+    }
+
+    .developer-hint {
+      margin: 4px 0 0;
+      color: #6b7280;
+      font-size: 11px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
     .empty-state {
       min-height: 154px;
       border: 1px solid var(--line);
@@ -1365,6 +1485,10 @@ def dashboard_html() -> str:
 
       .dashboard-grid,
       .empty-view {
+        grid-template-columns: 1fr;
+      }
+
+      .settings-grid {
         grid-template-columns: 1fr;
       }
 
@@ -1791,7 +1915,7 @@ def dashboard_html() -> str:
         </section>
 
         <section id="view-raw" class="view" data-view="raw">
-          <div class="empty-view">
+          <div class="empty-view legacy-settings-view">
             <article class="card data-panel"><h2>개발자 엔드포인트</h2><p class="panel-copy">문제 확인이 필요할 때만 원본 응답을 확인하세요.</p><div id="endpoint-list" class="endpoint-list"></div></article>
             <article class="card data-panel"><h2>선택한 원본 데이터</h2><pre id="raw-endpoint-json" class="view-json"></pre></article>
           </div>
@@ -1801,24 +1925,91 @@ def dashboard_html() -> str:
         <section id="view-settings" class="view" data-view="settings">
           <div class="empty-view">
             <article class="card data-panel">
-              <h2>먼저 확인할 설정</h2>
-              <p id="settings-headline" class="status-copy">신규 사용자는 필요한 항목부터 순서대로 설정하세요.</p>
+              <h2>설정 안내</h2>
+              <p id="settings-headline" class="status-copy">실행 전 점검 항목을 확인하고 모멘텀 값을 바로 입력해 보세요.</p>
               <ul id="settings-onboarding-list" class="action-list"></ul>
             </article>
             <article class="card data-panel">
-              <h2>현재 막힌 이유</h2>
-              <div id="settings-blockers-list" class="blocker-list"></div>
-              <p class="panel-copy">영문 환경변수 이름은 개발자 탭의 원본 데이터에서만 확인합니다.</p>
-              <pre id="settings-raw-links" class="view-json hidden-json"></pre>
+              <h2>모멘텀 전략 설정</h2>
+              <p class="panel-copy">옵션을 직접 입력하면 즉시 미리보기에 반영됩니다.</p>
+              <section class="settings-form">
+                <div class="settings-grid">
+                  <div class="settings-field">
+                    <label for="momentum-cash-reserve-percent-slider" class="settings-label">
+                      현금 보유 비중 <span class="settings-helper">cash_reserve_pct</span>
+                    </label>
+                    <div class="settings-slider-box">
+                      <input
+                        id="momentum-cash-reserve-percent-slider"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                      />
+                      <div class="settings-inline">
+                        <input
+                          id="momentum-cash-reserve-percent"
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.1"
+                        />
+                        <span class="unit">%</span>
+                      </div>
+                    </div>
+                    <p id="momentum-max-exposure-preview" class="settings-helper"></p>
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-target-position-pct" class="settings-label">
+                      종목당 매수 비중 <span class="settings-helper">target_position_pct</span>
+                    </label>
+                    <input id="momentum-target-position-pct" type="number" step="0.01" min="0" max="1" />
+                    <p class="settings-helper">예: 0.10(10%)</p>
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-max-positions" class="settings-label">최대 보유 종목 수 <span class="settings-helper">max_positions</span></label>
+                    <input id="momentum-max-positions" type="number" min="1" max="200" step="1" />
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-accept-top-n" class="settings-label">하루 신규 진입 수 <span class="settings-helper">accept_top_n</span></label>
+                    <input id="momentum-accept-top-n" type="number" min="1" max="200" step="1" />
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-exit-ma-days" class="settings-label">청산 이동평균 <span class="settings-helper">exit_ma_days</span></label>
+                    <input id="momentum-exit-ma-days" type="number" min="1" max="10000" step="1" />
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-lookback-days" class="settings-label">모멘텀 기간 <span class="settings-helper">lookback_days</span></label>
+                    <input id="momentum-lookback-days" type="number" min="1" max="10000" step="1" />
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-skip-days" class="settings-label">최근 제외 기간 <span class="settings-helper">skip_days</span></label>
+                    <input id="momentum-skip-days" type="number" min="0" max="10000" step="1" />
+                  </div>
+                  <div class="settings-field">
+                    <label for="momentum-trend-ma-days" class="settings-label">시장 추세선 <span class="settings-helper">trend_ma_days</span></label>
+                    <input id="momentum-trend-ma-days" type="number" min="1" max="10000" step="1" />
+                  </div>
+                </div>
+                <div class="settings-actions">
+                  <button id="settings-save-button" type="button" class="btn primary" disabled>설정 저장</button>
+                  <p id="settings-save-status" class="settings-status" role="status" aria-live="polite"></p>
+                </div>
+                <p id="settings-save-hint" class="developer-hint"></p>
+              </section>
             </article>
             <article class="card data-panel">
-              <h2>현금 보유 비중</h2>
-              <p class="panel-copy"><code>strategy.momentum.cash_reserve_pct</code>로 최소 현금 비중을 설정합니다. 예: <code>0.50</code>은 현금 50%, 주식 최대 50%입니다.</p>
+              <h2>개발자용 값 확인</h2>
+              <p class="panel-copy">실행 시 내부 설정(JSON)과 읽기 전용 링크를 함께 확인하세요.</p>
+              <p class="settings-helper">현재 값</p>
               <pre id="settings-strategy-json" class="view-json"></pre>
+              <p class="settings-helper">설정 링크</p>
+              <pre id="settings-raw-links" class="view-json hidden-json"></pre>
+              <p class="settings-helper">차단 항목</p>
+              <div id="settings-blockers-list" class="blocker-list"></div>
             </article>
           </div>
         </section>
-
         <p class="sr-data">Local dashboard only. This interface reads bot state and never submits orders. Data is loaded from read-only endpoints.</p>
       </main>
     </div>
@@ -2424,7 +2615,227 @@ def dashboard_html() -> str:
       });
     }
 
-    function renderOnboarding(blockers, rawLinks, events, settings) {
+    const SETTINGS_DEFAULT = {
+      cash_reserve_pct: 0.50,
+      target_position_pct: 0.10,
+      max_positions: 5,
+      accept_top_n: 2,
+      exit_ma_days: 75,
+      lookback_days: 126,
+      skip_days: 21,
+      trend_ma_days: 200,
+    };
+    let settingsFormInitialized = false;
+    let settingsInputsBound = false;
+    let settingsWritable = false;
+
+    function toFiniteNumber(value, fallback) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function clamp(value, minValue, maxValue) {
+      return Math.max(minValue, Math.min(maxValue, value));
+    }
+
+    function safeInteger(value, fallback, minValue, maxValue) {
+      const parsed = toFiniteNumber(value, NaN);
+      if (!Number.isFinite(parsed)) {
+        return fallback;
+      }
+      const intValue = parseInt(String(parsed), 10);
+      return clamp(intValue, minValue, maxValue);
+    }
+
+    function momentumFromSettings(settings) {
+      const source = (settings && settings.momentum) || settings || {};
+      return {
+        cash_reserve_pct: toFiniteNumber(source.cash_reserve_pct, SETTINGS_DEFAULT.cash_reserve_pct),
+        target_position_pct: toFiniteNumber(source.target_position_pct, SETTINGS_DEFAULT.target_position_pct),
+        max_positions: safeInteger(source.max_positions, SETTINGS_DEFAULT.max_positions, 1, 200),
+        accept_top_n: safeInteger(source.accept_top_n, SETTINGS_DEFAULT.accept_top_n, 1, 200),
+        exit_ma_days: safeInteger(source.exit_ma_days, SETTINGS_DEFAULT.exit_ma_days, 1, 10000),
+        lookback_days: safeInteger(source.lookback_days, SETTINGS_DEFAULT.lookback_days, 1, 10000),
+        skip_days: safeInteger(source.skip_days, SETTINGS_DEFAULT.skip_days, 0, 10000),
+        trend_ma_days: safeInteger(source.trend_ma_days, SETTINGS_DEFAULT.trend_ma_days, 1, 10000),
+      };
+    }
+
+    function normalizeMomentumPayload(payload) {
+      const source = momentumFromSettings(payload);
+      const reserve = clamp(source.cash_reserve_pct, 0, 1);
+      return {
+        cash_reserve_pct: reserve,
+        max_exposure_pct: clamp(1 - reserve, 0, 1),
+        target_position_pct: clamp(source.target_position_pct, 0, 1),
+        max_positions: source.max_positions,
+        accept_top_n: source.accept_top_n,
+        exit_ma_days: source.exit_ma_days,
+        lookback_days: source.lookback_days,
+        skip_days: source.skip_days,
+        trend_ma_days: source.trend_ma_days,
+      };
+    }
+
+    function renderMomentumPreview(cashReservePercent) {
+      const preview = document.getElementById("momentum-max-exposure-preview");
+      if (!preview) return;
+      const reserve = clamp(toFiniteNumber(cashReservePercent, 0), 0, 100);
+      preview.textContent = `주식 최대 비중: ${clamp(100 - reserve, 0, 100).toFixed(1)}%`;
+    }
+
+    function setCashReserveValue(cashReservePercent) {
+      const slider = document.getElementById("momentum-cash-reserve-percent-slider");
+      const input = document.getElementById("momentum-cash-reserve-percent");
+      const normalized = clamp(toFiniteNumber(cashReservePercent, 0), 0, 100);
+      if (slider) slider.value = normalized.toFixed(1);
+      if (input) input.value = normalized.toFixed(1);
+      renderMomentumPreview(normalized);
+    }
+
+    function setMomentumSettings(payload) {
+      const settings = normalizeMomentumPayload(payload);
+      setCashReserveValue(settings.cash_reserve_pct * 100);
+      const targetPosition = document.getElementById("momentum-target-position-pct");
+      const maxPositions = document.getElementById("momentum-max-positions");
+      const acceptTopN = document.getElementById("momentum-accept-top-n");
+      const exitMaDays = document.getElementById("momentum-exit-ma-days");
+      const lookbackDays = document.getElementById("momentum-lookback-days");
+      const skipDays = document.getElementById("momentum-skip-days");
+      const trendMaDays = document.getElementById("momentum-trend-ma-days");
+
+      if (targetPosition) targetPosition.value = settings.target_position_pct;
+      if (maxPositions) maxPositions.value = String(settings.max_positions);
+      if (acceptTopN) acceptTopN.value = String(settings.accept_top_n);
+      if (exitMaDays) exitMaDays.value = String(settings.exit_ma_days);
+      if (lookbackDays) lookbackDays.value = String(settings.lookback_days);
+      if (skipDays) skipDays.value = String(settings.skip_days);
+      if (trendMaDays) trendMaDays.value = String(settings.trend_ma_days);
+
+      const strategyPanel = document.getElementById("settings-strategy-json");
+      if (strategyPanel) {
+        strategyPanel.textContent = JSON.stringify({
+          momentum: {
+            cash_reserve_pct: settings.cash_reserve_pct.toFixed(4),
+            max_exposure_pct: settings.max_exposure_pct.toFixed(4),
+            target_position_pct: settings.target_position_pct,
+            max_positions: settings.max_positions,
+            accept_top_n: settings.accept_top_n,
+            exit_ma_days: settings.exit_ma_days,
+            lookback_days: settings.lookback_days,
+            skip_days: settings.skip_days,
+            trend_ma_days: settings.trend_ma_days,
+          },
+        }, null, 2);
+      }
+    }
+
+    function setSettingsWritable(enabled) {
+      settingsWritable = Boolean(enabled);
+      const saveButton = document.getElementById("settings-save-button");
+      const status = document.getElementById("settings-save-status");
+      const hint = document.getElementById("settings-save-hint");
+      if (saveButton) saveButton.disabled = !settingsWritable;
+      if (hint) {
+        hint.textContent = settingsWritable
+          ? ""
+          : "현재는 --config 경로가 없어 저장이 비활성입니다. config 파일 경로로 대시보드를 실행해야 저장이 가능합니다.";
+      }
+      if (status && !settingsWritable) {
+        status.textContent = "저장 비활성 상태";
+        status.className = "settings-status";
+      }
+    }
+
+    async function saveMomentumSettings() {
+      const slider = document.getElementById("momentum-cash-reserve-percent-slider");
+      const cashReserveInput = document.getElementById("momentum-cash-reserve-percent");
+      const targetPosition = document.getElementById("momentum-target-position-pct");
+      const maxPositions = document.getElementById("momentum-max-positions");
+      const acceptTopN = document.getElementById("momentum-accept-top-n");
+      const exitMaDays = document.getElementById("momentum-exit-ma-days");
+      const lookbackDays = document.getElementById("momentum-lookback-days");
+      const skipDays = document.getElementById("momentum-skip-days");
+      const trendMaDays = document.getElementById("momentum-trend-ma-days");
+      const saveButton = document.getElementById("settings-save-button");
+      const status = document.getElementById("settings-save-status");
+
+      if (!settingsWritable) {
+        if (status) {
+          status.textContent = "저장할 수 없습니다. --config 경로를 확인하세요.";
+          status.className = "settings-status error";
+        }
+        return;
+      }
+      if (!saveButton || !status) {
+        return;
+      }
+
+      const payload = {
+        momentum: {
+          cash_reserve_pct: clamp(toFiniteNumber(cashReserveInput?.value, slider ? slider.value : 0) / 100, 0, 1),
+          target_position_pct: clamp(toFiniteNumber(targetPosition?.value, SETTINGS_DEFAULT.target_position_pct), 0, 1),
+          max_positions: safeInteger(maxPositions?.value, SETTINGS_DEFAULT.max_positions, 1, 200),
+          accept_top_n: safeInteger(acceptTopN?.value, SETTINGS_DEFAULT.accept_top_n, 1, 200),
+          exit_ma_days: safeInteger(exitMaDays?.value, SETTINGS_DEFAULT.exit_ma_days, 1, 10000),
+          lookback_days: safeInteger(lookbackDays?.value, SETTINGS_DEFAULT.lookback_days, 1, 10000),
+          skip_days: safeInteger(skipDays?.value, SETTINGS_DEFAULT.skip_days, 0, 10000),
+          trend_ma_days: safeInteger(trendMaDays?.value, SETTINGS_DEFAULT.trend_ma_days, 1, 10000),
+        },
+      };
+
+      saveButton.disabled = true;
+      status.textContent = "저장 중입니다...";
+      status.className = "settings-status";
+      try {
+        const response = await fetch("/dashboard/settings", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(body.error || `저장 실패 (${response.status})`);
+        }
+        status.textContent = "저장 완료";
+        status.className = "settings-status ok";
+        if (body.settings && body.settings.momentum) {
+          setMomentumSettings(body.settings.momentum);
+        }
+      } catch (error) {
+        status.textContent = `저장 실패: ${error.message}`;
+        status.className = "settings-status error";
+      } finally {
+        saveButton.disabled = !settingsWritable;
+      }
+    }
+
+    function bindSettingsInteractions() {
+      const slider = document.getElementById("momentum-cash-reserve-percent-slider");
+      const input = document.getElementById("momentum-cash-reserve-percent");
+      const saveButton = document.getElementById("settings-save-button");
+      if (slider && input) {
+        if (!settingsInputsBound) {
+          slider.addEventListener("input", () => {
+            const value = clamp(toFiniteNumber(slider.value, SETTINGS_DEFAULT.cash_reserve_pct * 100), 0, 100);
+            setCashReserveValue(value);
+          });
+          input.addEventListener("input", () => {
+            const value = clamp(toFiniteNumber(input.value, SETTINGS_DEFAULT.cash_reserve_pct * 100), 0, 100);
+            setCashReserveValue(value);
+          });
+          settingsInputsBound = true;
+        }
+      }
+      if (saveButton && !saveButton.dataset.bound) {
+        saveButton.dataset.bound = "true";
+        saveButton.addEventListener("click", saveMomentumSettings);
+      }
+    }
+
+    function renderOnboarding(blockers, rawLinks, events, settings, settingsWriteEnabled) {
       const list = document.getElementById("settings-onboarding-list");
       const rawBlockers = Array.isArray(blockers) ? blockers : [];
       const recentEvents = Array.isArray(events) ? events : [];
@@ -2460,16 +2871,12 @@ def dashboard_html() -> str:
         : "현재 표시할 차단 항목이 없습니다.";
       const rawBox = document.getElementById("settings-raw-links");
       if (rawBox) rawBox.textContent = JSON.stringify(rawLinks || {}, null, 2);
-      const strategyBox = document.getElementById("settings-strategy-json");
-      if (strategyBox) {
-        strategyBox.textContent = JSON.stringify(settings || {
-          momentum: {
-            cash_reserve_pct: "0.50",
-            max_exposure_pct: "0.50",
-            target_position_pct: "0.10"
-          }
-        }, null, 2);
+      if (!settingsFormInitialized) {
+        setMomentumSettings(settings || SETTINGS_DEFAULT);
+        settingsFormInitialized = true;
       }
+      bindSettingsInteractions();
+      setSettingsWritable(Boolean(settingsWriteEnabled));
     }
 
     async function refresh() {
@@ -2507,17 +2914,13 @@ def dashboard_html() -> str:
       setCountBadge("orders-count-badge", orderRows.length);
       setCountBadge("events-count-badge", eventRows.length);
 
-      renderTable("watchlist-table", watchRows, TABLE_COLUMNS.watchlist, "관심 종목이 없습니다", "감시할 종목 후보를 설정하면 매수 후보와 진입선 거리가 표시됩니다.");
-      renderTable("positions-table", positionRows, TABLE_COLUMNS.positions, "보유 포지션이 없습니다", "포지션이 열리면 수량, 평단, 손절가를 여기서 확인할 수 있습니다.", "#dashboard");
-      renderTable("orders-table", orderRows, TABLE_COLUMNS.orders, "미체결 주문이 없습니다", "현재 대기 중인 주문이 없습니다. 이 화면은 주문을 실행하지 않고 상태만 보여줍니다.", "#dashboard");
-      renderEventCards("events-table", eventRows);
-      document.getElementById("watchlist-json").textContent = JSON.stringify(watchlist, null, 2);
-      document.getElementById("positions-json").textContent = JSON.stringify(positions, null, 2);
-      document.getElementById("orders-json").textContent = JSON.stringify(openOrders, null, 2);
-      document.getElementById("events-json").textContent = JSON.stringify({ summary, events }, null, 2);
-      document.getElementById("raw-aggregate-json").textContent = JSON.stringify(dashboard, null, 2);
-      renderEndpointList(dashboard.raw_links || {});
-      renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows, dashboard.settings || {});
+      renderOnboarding(
+        status.blockers || [],
+        dashboard.raw_links || {},
+        eventRows,
+        dashboard.settings || {},
+        dashboard.settings_write_enabled
+      );
     }
 
     function bindNavigation() {
@@ -3837,6 +4240,7 @@ class HealthServer:
         *,
         events_provider: EventsProvider | None = None,
         settings: Mapping[str, Any] | None = None,
+        settings_updater: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         host: str = "127.0.0.1",
         port: int = 8765,
         start_server: bool = False,
@@ -3848,6 +4252,7 @@ class HealthServer:
         )
         self._events_provider = events_provider if events_provider is not None else (lambda *_: [])
         self._settings = dict(settings or {})
+        self._settings_updater = settings_updater
         self.host = host
         self.port = port
         self._server: HTTPServer | None = None
@@ -3926,6 +4331,7 @@ class HealthServer:
             },
             "runtime_summary": _summarize_events(events),
             "settings": self._settings,
+            "settings_write_enabled": self._settings_updater is not None,
             "raw_links": {
                 "health": "/health",
                 "positions": "/positions",
@@ -3934,6 +4340,7 @@ class HealthServer:
                 "events": "/events",
                 "events_summary": "/events/summary?limit=50",
                 "dashboard": "/dashboard",
+                "settings_update": "/dashboard/settings",
             },
         }
 
@@ -3971,6 +4378,15 @@ class HealthServer:
         server_ref = self
 
         class _Handler(BaseHTTPRequestHandler):
+            @staticmethod
+            def _send_json(handler: "_Handler", status: int, payload: Mapping[str, Any]) -> None:
+                body = json.dumps(payload).encode("utf-8")
+                handler.send_response(status)
+                handler.send_header("Content-Type", "application/json")
+                handler.send_header("Content-Length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
             def do_GET(self):
                 parsed = urlparse(self.path)
                 path = parsed.path or "/"
@@ -4028,11 +4444,52 @@ class HealthServer:
                 self.wfile.write(body)
 
             def do_POST(self):
-                self.send_response(405)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                body = json.dumps({"error": "method not allowed"}).encode("utf-8")
-                self.wfile.write(body)
+                parsed = urlparse(self.path)
+                path = parsed.path or "/"
+                if path != "/dashboard/settings":
+                    self.send_response(405)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    body = json.dumps({"error": "method not allowed"}).encode("utf-8")
+                    self.wfile.write(body)
+                    return
+                if server_ref._settings_updater is None:
+                    self._send_json(self, 409, {"error": "settings updates require --config"})
+                    return
+
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length <= 0:
+                        raise ValueError("request body missing")
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    self._send_json(self, 400, {"error": "invalid json", "message": str(exc)})
+                    return
+
+                try:
+                    result = server_ref._settings_updater(payload)
+                except ValueError as exc:
+                    self._send_json(self, 400, {"error": str(exc)})
+                    return
+                except Exception as exc:
+                    self._send_json(self, 500, {"error": "failed to save settings", "message": str(exc)})
+                    return
+
+                momentum = result.get("strategy", {})
+                momentum_data = momentum.get("momentum", {}) if isinstance(momentum, Mapping) else {}
+                if isinstance(momentum_data, Mapping):
+                    server_ref._settings["momentum"] = {
+                        "cash_reserve_pct": str(momentum_data.get("cash_reserve_pct", "")),
+                        "max_exposure_pct": str(momentum_data.get("max_exposure_pct", "")),
+                        "target_position_pct": str(momentum_data.get("target_position_pct", "")),
+                        "max_positions": momentum_data.get("max_positions", ""),
+                        "accept_top_n": momentum_data.get("accept_top_n", ""),
+                        "exit_ma_days": momentum_data.get("exit_ma_days", ""),
+                        "lookback_days": momentum_data.get("lookback_days", ""),
+                        "skip_days": momentum_data.get("skip_days", ""),
+                        "trend_ma_days": momentum_data.get("trend_ma_days", ""),
+                    }
+                self._send_json(self, 200, {"status": "saved", "settings": server_ref._settings})
 
             def log_message(
                 self,

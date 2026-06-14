@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from decimal import Decimal
 
+import yaml
 from .config import load_config
 from .health import HealthServer, HealthSnapshot
 from .market_calendar import MarketCalendarConfig, MarketCalendarGate
@@ -222,6 +224,7 @@ def build_dashboard_server(
     watchlist_name = "premarket"
     default_blockers: Sequence[str] = DEFAULT_DASHBOARD_BLOCKERS
     settings_payload: Mapping[str, Any] = {}
+    settings_updater: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
     if config_path is not None:
         config = load_config(config_path)
         watchlist_name = config.runtime.watchlist_name
@@ -230,6 +233,7 @@ def build_dashboard_server(
             env if env is not None else environ,
         )
         settings_payload = _dashboard_settings_payload(config)
+        settings_updater = lambda payload: update_momentum_settings(config_path, payload)
 
     def snapshot_provider() -> HealthSnapshot:
         with SQLiteStateStore(state_db) as store:
@@ -259,6 +263,7 @@ def build_dashboard_server(
         port=port,
         start_server=start_server,
         settings=settings_payload,
+        settings_updater=settings_updater,
     )
 
 
@@ -271,14 +276,150 @@ def _dashboard_settings_payload(config) -> dict[str, Any]:
             "timezone": config.runtime.timezone_name,
         },
         "momentum": {
-            "target_position_pct": str(config.momentum_target_position_pct),
             "cash_reserve_pct": str(config.momentum_cash_reserve_pct),
             "max_exposure_pct": str(config.momentum_max_exposure_pct),
+            "target_position_pct": str(config.momentum_target_position_pct),
             "max_positions": config.momentum_max_positions,
             "accept_top_n": config.momentum_accept_top_n,
             "exit_ma_days": config.momentum_exit_ma_days,
+            "lookback_days": config.momentum_lookback_days,
+            "skip_days": config.momentum_skip_days,
+            "trend_ma_days": config.momentum_trend_ma_days,
         },
     }
+
+
+def _to_decimal(value: Any, *, field: str, min_value: Decimal, max_value: Decimal) -> Decimal:
+    try:
+        value_decimal = Decimal(str(value))
+    except Exception as exc:  # pragma: no cover - defensive conversion failure
+        raise ValueError(f"invalid decimal for {field}") from exc
+    if value_decimal < min_value or value_decimal > max_value:
+        raise ValueError(f"{field} must be in [{min_value}, {max_value}]")
+    return value_decimal
+
+
+def _to_int(value: Any, *, field: str, min_value: int, max_value: int) -> int:
+    try:
+        value_int = int(value)
+    except Exception as exc:  # pragma: no cover - defensive conversion failure
+        raise ValueError(f"invalid integer for {field}") from exc
+    if value_int < min_value or value_int > max_value:
+        raise ValueError(f"{field} must be in [{min_value}, {max_value}]")
+    return value_int
+
+
+def _coerce_percentage(value: Any, *, field: str) -> Decimal:
+    if value is None:
+        raise ValueError(f"{field} is required")
+    value_decimal = _to_decimal(
+        value,
+        field=field,
+        min_value=Decimal("0"),
+        max_value=Decimal("100"),
+    )
+    if value_decimal > Decimal("1"):
+        value_decimal = value_decimal / Decimal("100")
+    if value_decimal > Decimal("1") or value_decimal < Decimal("0"):
+        raise ValueError(f"{field} must be in [0, 1]")
+    return value_decimal
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        content = yaml.safe_load(handle)
+    return content if isinstance(content, dict) else {}
+
+
+def update_momentum_settings(
+    config_path: str | Path,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"config file not found: {config_file}")
+
+    momentum_payload = payload.get("momentum", {})
+    if not isinstance(momentum_payload, Mapping):
+        raise ValueError("momentum settings missing")
+
+    momentum_cash_reserve_pct = _coerce_percentage(
+        momentum_payload.get("cash_reserve_pct"),
+        field="cash_reserve_pct",
+    )
+    momentum_target_position_pct = _coerce_percentage(
+        momentum_payload.get("target_position_pct"),
+        field="target_position_pct",
+    )
+    momentum_max_positions = _to_int(
+        momentum_payload.get("max_positions"),
+        field="max_positions",
+        min_value=1,
+        max_value=200,
+    )
+    momentum_accept_top_n = _to_int(
+        momentum_payload.get("accept_top_n"),
+        field="accept_top_n",
+        min_value=1,
+        max_value=200,
+    )
+    momentum_exit_ma_days = _to_int(
+        momentum_payload.get("exit_ma_days"),
+        field="exit_ma_days",
+        min_value=1,
+        max_value=10000,
+    )
+    momentum_lookback_days = _to_int(
+        momentum_payload.get("lookback_days"),
+        field="lookback_days",
+        min_value=1,
+        max_value=10000,
+    )
+    momentum_skip_days = _to_int(
+        momentum_payload.get("skip_days"),
+        field="skip_days",
+        min_value=0,
+        max_value=10000,
+    )
+    momentum_trend_ma_days = _to_int(
+        momentum_payload.get("trend_ma_days"),
+        field="trend_ma_days",
+        min_value=1,
+        max_value=10000,
+    )
+
+    if momentum_skip_days >= momentum_lookback_days:
+        raise ValueError("skip_days must be smaller than lookback_days")
+
+    raw = _read_yaml(config_file)
+    strategy = raw.get("strategy", {})
+    if not isinstance(strategy, Mapping):
+        strategy = {}
+    strategy_payload = dict(strategy)
+    momentum = strategy_payload.get("momentum", {})
+    if not isinstance(momentum, Mapping):
+        momentum = {}
+    momentum_data = dict(momentum)
+
+    momentum_data["cash_reserve_pct"] = float(momentum_cash_reserve_pct)
+    momentum_data["max_exposure_pct"] = float(Decimal("1") - momentum_cash_reserve_pct)
+    momentum_data["target_position_pct"] = float(momentum_target_position_pct)
+    momentum_data["max_positions"] = momentum_max_positions
+    momentum_data["accept_top_n"] = momentum_accept_top_n
+    momentum_data["exit_ma_days"] = momentum_exit_ma_days
+    momentum_data["lookback_days"] = momentum_lookback_days
+    momentum_data["skip_days"] = momentum_skip_days
+    momentum_data["trend_ma_days"] = momentum_trend_ma_days
+
+    strategy_payload["momentum"] = momentum_data
+    raw["strategy"] = strategy_payload
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    return dict(raw)
 
 
 def run_dashboard_server(

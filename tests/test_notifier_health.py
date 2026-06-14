@@ -141,8 +141,11 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "history.replaceState" not in html
     assert "width: auto;" in html
     assert "repeat(5, minmax(0, 1fr))" in html
-    assert "renderOnboarding(status.blockers || [], dashboard.raw_links || {}, eventRows, dashboard.settings || {})" in html
+    assert "dashboard.settings_write_enabled" in html
     assert "cash_reserve_pct" in html
+    assert "현금 보유 비중" in html
+    assert "설정 저장" in html
+    assert 'type="range"' in html
     assert "settings-strategy-json" in html
     assert 'id="dashboard-operator-brief"' in html
     assert "function renderOperatorBrief" in html

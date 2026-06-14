@@ -18,6 +18,7 @@ from turtle_bot.operations import (
     operations_checks_payload,
     render_launchd_plist,
     run_paper_service,
+    update_momentum_settings,
 )
 from turtle_bot.state_store import SQLiteStateStore
 from turtle_bot.toss_client import TossHttpResponse
@@ -357,6 +358,67 @@ def test_dashboard_server_reads_runtime_events_from_sqlite(tmp_path: Path) -> No
     assert dashboard["runtime_events"]["count"] == 1
     assert events["items"][0]["message"] == "paper_service_blocked"
     assert summary["blockers"] == ["TOSS_CLIENT_ID is not configured"]
+
+
+def test_update_momentum_settings_writes_user_friendly_cash_reserve(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    _write_config(config_path, strategy_kind="momentum")
+
+    saved = update_momentum_settings(
+        config_path,
+        {
+            "momentum": {
+                "cash_reserve_pct": 0.35,
+                "target_position_pct": 0.12,
+                "max_positions": 6,
+                "accept_top_n": 3,
+                "exit_ma_days": 80,
+                "lookback_days": 140,
+                "skip_days": 20,
+                "trend_ma_days": 210,
+            }
+        },
+    )
+
+    momentum = saved["strategy"]["momentum"]
+    assert momentum["cash_reserve_pct"] == 0.35
+    assert momentum["max_exposure_pct"] == 0.65
+    assert momentum["target_position_pct"] == 0.12
+    assert momentum["max_positions"] == 6
+    assert momentum["accept_top_n"] == 3
+    assert momentum["exit_ma_days"] == 80
+    assert momentum["lookback_days"] == 140
+    assert momentum["skip_days"] == 20
+    assert momentum["trend_ma_days"] == 210
+
+    loaded = config_path.read_text(encoding="utf-8")
+    assert "cash_reserve_pct: 0.35" in loaded
+
+
+def test_update_momentum_settings_rejects_invalid_skip_window(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    _write_config(config_path, strategy_kind="momentum")
+
+    try:
+        update_momentum_settings(
+            config_path,
+            {
+                "momentum": {
+                    "cash_reserve_pct": 0.5,
+                    "target_position_pct": 0.1,
+                    "max_positions": 5,
+                    "accept_top_n": 2,
+                    "exit_ma_days": 75,
+                    "lookback_days": 20,
+                    "skip_days": 20,
+                    "trend_ma_days": 200,
+                }
+            },
+        )
+    except ValueError as exc:
+        assert "skip_days" in str(exc)
+    else:
+        raise AssertionError("invalid momentum settings unexpectedly saved")
 
 
 def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
