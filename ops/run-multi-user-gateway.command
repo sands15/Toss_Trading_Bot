@@ -23,6 +23,8 @@ container_memory="${CONTAINER_MEMORY:-512m}"
 container_cpus="${CONTAINER_CPUS:-1.0}"
 container_log_max_size="${CONTAINER_LOG_MAX_SIZE:-10m}"
 container_log_max_files="${CONTAINER_LOG_MAX_FILES:-3}"
+secret_backend="${SECRET_BACKEND:-auto}"
+keychain_service="${KEYCHAIN_SERVICE:-toss-trading-bot}"
 
 if [ -z "$gateway_host" ] && command -v tailscale >/dev/null 2>&1; then
   gateway_host="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
@@ -38,6 +40,7 @@ Gateway URL:
 Visitors will see a login page.
 First-time users can create an account and get their own Docker container.
 Set REGISTRATION_ALLOWLIST to restrict first-time signup by IP/CIDR.
+On macOS, SECRET_BACKEND=auto stores Toss API credentials in Keychain.
 
 Press Ctrl+C in this window to stop the gateway.
 User containers keep running until stopped with Docker.
@@ -53,4 +56,6 @@ exec "$python_bin" ops/multi_user_gateway.py \
   --container-memory "$container_memory" \
   --container-cpus "$container_cpus" \
   --container-log-max-size "$container_log_max_size" \
-  --container-log-max-files "$container_log_max_files"
+  --container-log-max-files "$container_log_max_files" \
+  --secret-backend "$secret_backend" \
+  --keychain-service "$keychain_service"

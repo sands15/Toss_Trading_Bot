@@ -9,7 +9,8 @@ use the Tailscale Docker gateway.
 - Users are routed by a signed gateway login session instead of client IP.
 - First-time users see a signup form with login ID, password, Toss app ID, Toss
   app secret, and account sequence.
-- Toss credentials are written only to local ignored user files.
+- Toss credentials are stored through a secret-store backend. macOS gateway
+  deployments use Keychain by default; Windows/test runs use the file backend.
 - User containers bind to `127.0.0.1:<internal-port>`; only the gateway binds to
   the Tailscale address.
 - Setup forms use CSRF tokens and a maximum request body size.
@@ -23,20 +24,20 @@ use the Tailscale Docker gateway.
 - User containers have default Docker memory, CPU, and log-size limits.
 - Login, signup, registration denial, rate-limit, and container lifecycle events
   are written as JSON lines to `.local/users/audit.log`.
-- Encrypted Toss secret storage has a dedicated implementation plan in
-  `docs/secret-storage-plan.md`.
+- Secret storage behavior is documented in `docs/secret-storage-plan.md`.
 
 ## Next Hardening Passes
 
 1. Add cleanup commands for orphaned containers and stale user folders.
 2. Verify the full Docker build/run path on the target Mac with Docker Desktop
    running.
-3. Move Toss secrets from plaintext `.env` files to macOS Keychain or another
-   encrypted secret store.
+3. Add an admin command that deletes a user's Keychain items after explicit
+   confirmation.
 
 ## Current Risk Notes
 
 - Tailscale currently controls network reachability only; it is not yet an
   identity provider for the app login.
-- Local `.env` files are ignored by git, but they are still plaintext on disk.
+- Manual single-user Docker launches still use plaintext `.env` files; the
+  multi-user gateway is the preferred path for other users.
 - Live order submission remains intentionally disabled in the dashboard flow.

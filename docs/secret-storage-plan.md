@@ -1,84 +1,78 @@
-# Encrypted Toss Secret Storage Plan
+# Toss Secret Storage
 
-The current gateway writes each user's Toss app ID and app secret to
-`.local/users/<user>/.env`. That file is ignored by git, but it is still
-plaintext on disk. The target macOS deployment should move those values into an
-encrypted local secret store.
+The multi-user gateway no longer stores Toss API credentials directly in the
+registry. It uses a small secret-store layer and injects credentials into Docker
+containers only at container creation time.
 
-## Target Architecture
+## Implemented Backends
 
-Use macOS Keychain as the first production secret backend.
+- `keychain`: macOS Keychain through the `security` command.
+- `file`: plaintext `.local/users/<slug>/.env`, kept for Windows tests and local
+  development.
+- `auto`: `keychain` on macOS, `file` elsewhere.
+
+The macOS launcher uses `SECRET_BACKEND=auto` by default, so the production Mac
+path stores Toss values in Keychain.
+
+## Keychain Layout
 
 - Service namespace: `toss-trading-bot`
 - Account keys:
   - `<slug>:toss_client_id`
   - `<slug>:toss_client_secret`
-- Non-secret account sequence remains in
-  `.local/users/<slug>/config/local.yaml`.
-- Registry stores only metadata:
-  - `slug`
-  - `login_id`
-  - `display_name`
-  - `container_name`
-  - `port`
-  - secret backend name, for example `keychain`
-  - secret key references, never secret values
+
+The registry stores only metadata such as `secret_backend`, not secret values.
+`account_seq` remains in `.local/users/<slug>/config/local.yaml` because it is a
+configuration identifier, not an API secret.
 
 ## Runtime Flow
 
-1. User signs up or updates Toss credentials in the gateway.
-2. Gateway validates input and stores API values in Keychain.
-3. Gateway writes a container-local env file just before container start, or
-   injects values with Docker `--env` from Keychain reads.
-4. The generated env file, if used, is treated as a short-lived runtime artifact
-   and rewritten on every container start.
-5. The dashboard process still reads `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET`
-   from environment variables, so app code does not need to know about Keychain.
+1. User signs up in the gateway.
+2. Gateway validates input.
+3. Gateway stores Toss app ID and app secret in the configured secret backend.
+4. Gateway writes the user config without API values.
+5. When creating a Docker container, the gateway reads credentials from the
+   backend and passes them to Docker through the subprocess environment:
+   `--env TOSS_CLIENT_ID --env TOSS_CLIENT_SECRET`.
 
-## Backend Interface
+Secret values are not written into Docker command arguments, the registry,
+audit logs, or HTML. With `keychain`, the generated `.env` file is only a
+non-secret placeholder.
 
-Add a small Python abstraction in the gateway:
+## Existing User Migration
 
-```text
-SecretStore.put(user_slug, name, value)
-SecretStore.get(user_slug, name) -> str
-SecretStore.delete_user(user_slug)
-SecretStore.healthcheck() -> SecretStoreStatus
+When the gateway is running with `keychain` and sees an existing
+`.local/users/<slug>/.env` containing `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET`,
+it imports those values into Keychain before creating a new container. After a
+successful import, the `.env` file is rewritten as a non-secret placeholder and
+an audit event is written.
+
+This is intentionally conservative: if an existing container is already running,
+it can keep running; migration happens when the gateway needs to create or
+recreate that user's container.
+
+## Configuration
+
+Gateway CLI:
+
+```bash
+python ops/multi_user_gateway.py --secret-backend auto
+python ops/multi_user_gateway.py --secret-backend keychain
+python ops/multi_user_gateway.py --secret-backend file
 ```
 
-Implement backends:
+macOS launcher:
 
-- `keychain`: macOS `security add-generic-password` and
-  `security find-generic-password`.
-- `file`: current plaintext `.env` behavior for Windows tests and local
-  development only.
+```bash
+SECRET_BACKEND=keychain open ops/run-multi-user-gateway.command
+KEYCHAIN_SERVICE=toss-trading-bot open ops/run-multi-user-gateway.command
+```
 
-The gateway should default to `keychain` on macOS and `file` elsewhere unless
-explicitly configured.
+## Remaining Work
 
-## Migration
-
-1. Add `SECRET_BACKEND=keychain|file` and `--secret-backend`.
-2. On gateway start, scan registered users.
-3. If `.local/users/<slug>/.env` exists and Keychain values are missing, import
-   the values into Keychain.
-4. After a successful import, rewrite `.env` as a non-secret placeholder or move
-   it to a timestamped local backup path under `.local/users/<slug>/backups/`.
-5. Audit every import without logging secret values.
-
-## Safety Requirements
-
-- Never include secret values in registry JSON, audit logs, HTML, test failure
-  messages, or command output.
-- Do not pass secrets through command arguments when possible; use stdin for
-  Keychain writes.
-- Generated container env files must have `0600` permissions.
-- Removing a user should delete that user's Keychain items after explicit admin
+- Add an admin command that deletes a user's Keychain items only after explicit
   confirmation.
-- Tests must use the `file` backend and assert that public registry output never
-  contains secret values.
-
-## Follow-Up
-
-After Keychain support works on macOS, consider Docker secrets or an encrypted
-age/sops file backend if the deployment moves beyond one trusted Mac.
+- Verify the `security` command path on the target Mac with Docker Desktop
+  running.
+- Consider Docker secrets or an encrypted age/sops backend if the deployment
+  moves beyond one trusted Mac.

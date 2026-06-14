@@ -157,12 +157,13 @@ Each user gets separate local files:
 .local/users/<user>/config/local.yaml
 .local/users/<user>/state/turtle.sqlite3
 .local/users/<user>/logs/
-.local/users/<user>/.env
+.local/users/<user>/.env   # placeholder when the gateway uses Keychain
 ```
 
-The `.env` file is still plaintext local storage in the current implementation.
-The migration plan for macOS Keychain or another encrypted backend is in
-`docs/secret-storage-plan.md`.
+The multi-user gateway uses `SECRET_BACKEND=auto` by default. On macOS that
+stores Toss API values in Keychain and leaves `.env` as a non-secret placeholder.
+On Windows or when `SECRET_BACKEND=file` is selected, `.env` is plaintext local
+development storage. Secret storage details are in `docs/secret-storage-plan.md`.
 
 User containers are bound to `127.0.0.1:<internal-port>` on the Mac. Only the
 gateway is exposed on the Tailscale address.
@@ -186,6 +187,9 @@ Store that user's Toss credentials in:
 ```text
 .local/users/<user>/.env
 ```
+
+The manual launcher is still a local development path and uses the plaintext
+file backend. For other users, prefer the multi-user gateway with Keychain.
 
 Manage a user container:
 

@@ -8,6 +8,7 @@ import hmac
 import html
 import ipaddress
 import json
+import os
 import re
 import secrets
 import shutil
@@ -40,6 +41,9 @@ DEFAULT_CONTAINER_MEMORY = "512m"
 DEFAULT_CONTAINER_CPUS = "1.0"
 DEFAULT_CONTAINER_LOG_MAX_SIZE = "10m"
 DEFAULT_CONTAINER_LOG_MAX_FILES = "3"
+DEFAULT_KEYCHAIN_SERVICE = "toss-trading-bot"
+SECRET_CLIENT_ID = "toss_client_id"
+SECRET_CLIENT_SECRET = "toss_client_secret"
 
 
 def slugify(value: str) -> str:
@@ -251,6 +255,7 @@ def registry_public_view(registry: dict[str, Any]) -> dict[str, Any]:
                     "user_root",
                     "login_id",
                     "last_client_ip",
+                    "secret_backend",
                 }
             }
             for slug, user in users.items()
@@ -314,6 +319,188 @@ def write_env_file(path: Path, client_id: str, client_secret: str) -> None:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def write_placeholder_env_file(path: Path, backend: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "# Toss credentials are not stored in this file.",
+                f"# Secret backend: {backend}",
+                "# The gateway injects TOSS_CLIENT_ID and TOSS_CLIENT_SECRET at container start.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+class SecretStore:
+    backend_name = "base"
+
+    def put_user_credentials(self, user_slug: str, *, client_id: str, client_secret: str) -> None:
+        raise NotImplementedError
+
+    def get_user_credentials(self, user_slug: str) -> dict[str, str]:
+        raise NotImplementedError
+
+    def delete_user_credentials(self, user_slug: str) -> None:
+        raise NotImplementedError
+
+    def import_user_env_if_needed(self, user_slug: str, env_file: Path) -> bool:
+        if not env_file.exists():
+            return False
+        try:
+            existing = self.get_user_credentials(user_slug)
+        except Exception:
+            existing = {}
+        if existing.get("TOSS_CLIENT_ID") and existing.get("TOSS_CLIENT_SECRET"):
+            return False
+        values = read_env_file(env_file)
+        client_id = values.get("TOSS_CLIENT_ID", "")
+        client_secret = values.get("TOSS_CLIENT_SECRET", "")
+        if not client_id or not client_secret:
+            return False
+        self.put_user_credentials(user_slug, client_id=client_id, client_secret=client_secret)
+        write_placeholder_env_file(env_file, self.backend_name)
+        return True
+
+
+class FileSecretStore(SecretStore):
+    backend_name = "file"
+
+    def __init__(self, users_root: Path) -> None:
+        self.users_root = users_root
+
+    def env_file(self, user_slug: str) -> Path:
+        return self.users_root / user_slug / ".env"
+
+    def put_user_credentials(self, user_slug: str, *, client_id: str, client_secret: str) -> None:
+        write_env_file(self.env_file(user_slug), client_id, client_secret)
+
+    def get_user_credentials(self, user_slug: str) -> dict[str, str]:
+        values = read_env_file(self.env_file(user_slug))
+        return {
+            "TOSS_CLIENT_ID": values.get("TOSS_CLIENT_ID", ""),
+            "TOSS_CLIENT_SECRET": values.get("TOSS_CLIENT_SECRET", ""),
+        }
+
+    def delete_user_credentials(self, user_slug: str) -> None:
+        try:
+            self.env_file(user_slug).unlink()
+        except FileNotFoundError:
+            pass
+
+
+class KeychainSecretStore(SecretStore):
+    backend_name = "keychain"
+
+    def __init__(self, service: str = DEFAULT_KEYCHAIN_SERVICE) -> None:
+        self.service = service
+        if shutil.which("security") is None:
+            raise RuntimeError("macOS security command was not found")
+
+    def account_name(self, user_slug: str, name: str) -> str:
+        return f"{user_slug}:{name}"
+
+    def put(self, user_slug: str, name: str, value: str) -> None:
+        cleaned = clean_env_value(value)
+        subprocess.run(
+            [
+                "security",
+                "add-generic-password",
+                "-a",
+                self.account_name(user_slug, name),
+                "-s",
+                self.service,
+                "-w",
+                cleaned,
+                "-U",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def get(self, user_slug: str, name: str) -> str:
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-a",
+                self.account_name(user_slug, name),
+                "-s",
+                self.service,
+                "-w",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.rstrip("\r\n")
+
+    def delete(self, user_slug: str, name: str) -> None:
+        subprocess.run(
+            [
+                "security",
+                "delete-generic-password",
+                "-a",
+                self.account_name(user_slug, name),
+                "-s",
+                self.service,
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def put_user_credentials(self, user_slug: str, *, client_id: str, client_secret: str) -> None:
+        self.put(user_slug, SECRET_CLIENT_ID, client_id)
+        self.put(user_slug, SECRET_CLIENT_SECRET, client_secret)
+
+    def get_user_credentials(self, user_slug: str) -> dict[str, str]:
+        return {
+            "TOSS_CLIENT_ID": self.get(user_slug, SECRET_CLIENT_ID),
+            "TOSS_CLIENT_SECRET": self.get(user_slug, SECRET_CLIENT_SECRET),
+        }
+
+    def delete_user_credentials(self, user_slug: str) -> None:
+        self.delete(user_slug, SECRET_CLIENT_ID)
+        self.delete(user_slug, SECRET_CLIENT_SECRET)
+
+
+def resolve_secret_backend(requested: str) -> str:
+    backend = (requested or "auto").strip().lower()
+    if backend == "auto":
+        return "keychain" if sys.platform == "darwin" else "file"
+    if backend not in {"file", "keychain"}:
+        raise ValueError("secret backend must be auto, file, or keychain")
+    return backend
+
+
+def make_secret_store(backend: str, users_root: Path, *, keychain_service: str = DEFAULT_KEYCHAIN_SERVICE) -> SecretStore:
+    resolved = resolve_secret_backend(backend)
+    if resolved == "keychain":
+        return KeychainSecretStore(keychain_service)
+    return FileSecretStore(users_root)
 
 
 def write_config_file(path: Path, account_seq: str) -> None:
@@ -394,8 +581,8 @@ strategy:
     )
 
 
-def run_command(args: list[str], *, cwd: Path) -> None:
-    subprocess.run(args, cwd=str(cwd), check=True)
+def run_command(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+    subprocess.run(args, cwd=str(cwd), check=True, env=env)
 
 
 @dataclass(frozen=True)
@@ -407,6 +594,8 @@ class GatewayConfig:
     container_port: int
     audit_log_path: Path | None = None
     session_secret_path: Path | None = None
+    secret_backend: str = "auto"
+    keychain_service: str = DEFAULT_KEYCHAIN_SERVICE
     setup_rate_limit: int = DEFAULT_SETUP_RATE_LIMIT
     setup_rate_window_seconds: int = DEFAULT_SETUP_RATE_WINDOW_SECONDS
     registration_allowlist: tuple[str, ...] = ()
@@ -422,6 +611,11 @@ class UserGateway:
         self.audit_log_path = config.audit_log_path or config.registry_path.parent / "audit.log"
         self.session_secret_path = config.session_secret_path or config.registry_path.parent / "session_secret"
         self.session_secret = load_or_create_secret(self.session_secret_path)
+        self.secret_store = make_secret_store(
+            config.secret_backend,
+            config.users_root,
+            keychain_service=config.keychain_service,
+        )
         self._registry_lock = threading.Lock()
         self._setup_attempts_lock = threading.Lock()
         self._setup_attempts: dict[str, list[float]] = {}
@@ -522,6 +716,15 @@ class UserGateway:
             save_registry(self.config.registry_path, registry)
             return dict(user)
 
+    def update_user_secret_backend(self, slug: str) -> None:
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+            user = registry.get("users", {}).get(slug)
+            if isinstance(user, dict):
+                user["secret_backend"] = self.secret_store.backend_name
+                registry["users"][slug] = user
+                save_registry(self.config.registry_path, registry)
+
     def record_user_client_ip(self, slug: str, client_ip: str) -> None:
         with self._registry_lock:
             registry = load_registry(self.config.registry_path)
@@ -597,6 +800,7 @@ class UserGateway:
                 "last_client_ip": client_ip,
                 "login_id": normalized_login,
                 "password_hash": password_hash,
+                "secret_backend": self.secret_store.backend_name,
                 "container_name": container_name,
                 "port": port,
                 "created_at": int(time.time()),
@@ -621,10 +825,13 @@ class UserGateway:
             state_dir.mkdir(parents=True, exist_ok=True)
             log_dir.mkdir(parents=True, exist_ok=True)
             write_config_file(config_dir / "local.yaml", account_seq)
-            write_env_file(env_file, client_id, client_secret)
+            self.secret_store.put_user_credentials(slug, client_id=client_id, client_secret=client_secret)
+            if self.secret_store.backend_name != "file":
+                write_placeholder_env_file(env_file, self.secret_store.backend_name)
             self.ensure_container(user)
         except Exception:
             self.remove_container(container_name)
+            self.secret_store.delete_user_credentials(slug)
             self.audit("setup_failed", client_ip=client_ip, slug=slug)
             with self._registry_lock:
                 registry = load_registry(self.config.registry_path)
@@ -671,6 +878,14 @@ class UserGateway:
         state_dir = user_root / "state"
         log_dir = user_root / "logs"
         env_file = user_root / ".env"
+        if self.secret_store.import_user_env_if_needed(slug, env_file):
+            self.update_user_secret_backend(slug)
+            self.audit("secret_imported", slug=slug, backend=self.secret_store.backend_name)
+        credentials = self.secret_store.get_user_credentials(slug)
+        client_id = credentials.get("TOSS_CLIENT_ID", "")
+        client_secret = credentials.get("TOSS_CLIENT_SECRET", "")
+        if not client_id or not client_secret:
+            raise RuntimeError(f"Toss credentials are not available for user: {slug}")
 
         existing = subprocess.run(
             ["docker", "ps", "-a", "--format", "{{.Names}}"],
@@ -711,8 +926,10 @@ class UserGateway:
                 f"max-size={self.config.container_log_max_size}",
                 "--log-opt",
                 f"max-file={self.config.container_log_max_files}",
-                "--env-file",
-                str(env_file),
+                "--env",
+                "TOSS_CLIENT_ID",
+                "--env",
+                "TOSS_CLIENT_SECRET",
                 "-p",
                 f"127.0.0.1:{port}:{self.config.container_port}",
                 "-v",
@@ -733,6 +950,11 @@ class UserGateway:
                 str(self.config.container_port),
             ],
             cwd=self.config.repo_root,
+            env={
+                **os.environ,
+                "TOSS_CLIENT_ID": client_id,
+                "TOSS_CLIENT_SECRET": client_secret,
+            },
         )
         self.wait_for_user_http(user)
 
@@ -1084,6 +1306,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--users-root", type=Path, default=Path(DEFAULT_USER_ROOT))
     parser.add_argument("--audit-log", type=Path, default=Path(DEFAULT_AUDIT_LOG))
     parser.add_argument("--session-secret", type=Path, default=Path(DEFAULT_SESSION_SECRET))
+    parser.add_argument(
+        "--secret-backend",
+        default="auto",
+        help="Secret backend for Toss API credentials: auto, keychain, or file",
+    )
+    parser.add_argument("--keychain-service", default=DEFAULT_KEYCHAIN_SERVICE)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument(
         "--setup-rate-limit",
@@ -1159,6 +1387,8 @@ def main(argv: list[str] | None = None) -> int:
             users_root=users_root,
             audit_log_path=audit_log_path,
             session_secret_path=session_secret_path,
+            secret_backend=args.secret_backend,
+            keychain_service=args.keychain_service,
             image_name=args.image,
             container_port=DEFAULT_CONTAINER_PORT,
             setup_rate_limit=args.setup_rate_limit,
@@ -1194,6 +1424,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Registry: {registry_path}", flush=True)
     print(f"Audit log: {audit_log_path}", flush=True)
     print(f"Session secret: {session_secret_path}", flush=True)
+    print(f"Secret backend: {gateway.secret_store.backend_name}", flush=True)
     print("Visitors without a valid session will see the login form.", flush=True)
     print("First-time signup can be restricted with the registration allowlist.", flush=True)
     if args.registration_allowlist:

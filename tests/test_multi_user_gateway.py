@@ -117,6 +117,80 @@ def test_password_hash_and_session_cookie_are_verifiable(tmp_path: Path) -> None
     assert gateway.session_slug_from_cookie(cookie_header, secret, now=100 + gateway.SESSION_TTL_SECONDS + 1) is None
 
 
+def test_secret_backend_resolves_by_platform(monkeypatch) -> None:
+    gateway = _load_gateway_module()
+
+    monkeypatch.setattr(gateway.sys, "platform", "darwin")
+    assert gateway.resolve_secret_backend("auto") == "keychain"
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    assert gateway.resolve_secret_backend("auto") == "file"
+    assert gateway.resolve_secret_backend("file") == "file"
+    assert gateway.resolve_secret_backend("keychain") == "keychain"
+
+
+def test_keychain_secret_store_uses_security_without_public_secret_echo(monkeypatch) -> None:
+    gateway = _load_gateway_module()
+    calls = []
+
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "/usr/bin/security" if name == "security" else None)
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[1] == "find-generic-password":
+            account = args[args.index("-a") + 1]
+            value = "client-id" if account.endswith(gateway.SECRET_CLIENT_ID) else "client-secret"
+            return gateway.subprocess.CompletedProcess(args, 0, stdout=value + "\n")
+        return gateway.subprocess.CompletedProcess(args, 0, stdout="")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    store = gateway.KeychainSecretStore("test-service")
+
+    store.put_user_credentials("alice", client_id="client-id", client_secret="client-secret")
+    loaded = store.get_user_credentials("alice")
+    store.delete_user_credentials("alice")
+
+    assert loaded == {"TOSS_CLIENT_ID": "client-id", "TOSS_CLIENT_SECRET": "client-secret"}
+    assert calls[0][0][:2] == ["security", "add-generic-password"]
+    assert calls[0][1]["stdout"] == gateway.subprocess.DEVNULL
+    assert calls[0][1]["stderr"] == gateway.subprocess.DEVNULL
+    assert any(call[0][1] == "delete-generic-password" for call in calls)
+
+
+def test_secret_store_imports_existing_env_and_rewrites_placeholder(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+
+    class MemorySecretStore(gateway.SecretStore):
+        backend_name = "memory"
+
+        def __init__(self):
+            self.values = {}
+
+        def put_user_credentials(self, user_slug, *, client_id, client_secret):
+            self.values[user_slug] = {
+                "TOSS_CLIENT_ID": client_id,
+                "TOSS_CLIENT_SECRET": client_secret,
+            }
+
+        def get_user_credentials(self, user_slug):
+            return dict(self.values.get(user_slug, {}))
+
+        def delete_user_credentials(self, user_slug):
+            self.values.pop(user_slug, None)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("TOSS_CLIENT_ID=id\nTOSS_CLIENT_SECRET=secret\n", encoding="utf-8")
+    store = MemorySecretStore()
+
+    assert store.import_user_env_if_needed("alice", env_file)
+    assert store.get_user_credentials("alice") == {
+        "TOSS_CLIENT_ID": "id",
+        "TOSS_CLIENT_SECRET": "secret",
+    }
+    rewritten = env_file.read_text(encoding="utf-8")
+    assert "Secret backend: memory" in rewritten
+    assert "TOSS_CLIENT_SECRET=secret" not in rewritten
+
+
 def test_setup_content_length_is_limited() -> None:
     gateway = _load_gateway_module()
 
@@ -254,7 +328,13 @@ def test_new_user_container_uses_resource_and_log_limits(tmp_path: Path, monkeyp
         return gateway.subprocess.CompletedProcess(args, 0, stdout="")
 
     monkeypatch.setattr(gateway.subprocess, "run", fake_subprocess_run)
-    monkeypatch.setattr(gateway, "run_command", lambda args, *, cwd: commands.append(args))
+    command_envs = []
+
+    def fake_run_command(args, *, cwd, env=None):
+        commands.append(args)
+        command_envs.append(env or {})
+
+    monkeypatch.setattr(gateway, "run_command", fake_run_command)
     monkeypatch.setattr(gateway.UserGateway, "wait_for_user_http", lambda _self, _user: None)
 
     manager.ensure_container(
@@ -271,6 +351,11 @@ def test_new_user_container_uses_resource_and_log_limits(tmp_path: Path, monkeyp
     assert docker_run[docker_run.index("--cpus") + 1] == "1.5"
     assert "max-size=5m" in docker_run
     assert "max-file=2" in docker_run
+    assert "--env-file" not in docker_run
+    assert docker_run[docker_run.index("--env") + 1] == "TOSS_CLIENT_ID"
+    assert "TOSS_CLIENT_SECRET" in docker_run
+    assert command_envs[-1]["TOSS_CLIENT_ID"] == "id"
+    assert command_envs[-1]["TOSS_CLIENT_SECRET"] == "secret"
 
 
 def test_create_user_rolls_back_registry_when_container_creation_fails(
@@ -351,6 +436,9 @@ def test_create_user_maps_ip_only_after_container_creation_succeeds(
     assert registry["ip_map"]["100.64.0.10"] == user["slug"]
     assert registry["login_map"]["alice.login"] == user["slug"]
     assert registry["users"][user["slug"]]["status"] == "running"
+    assert registry["users"][user["slug"]]["secret_backend"] == "file"
+    assert "client-id" not in str(registry)
+    assert "client-secret" not in str(registry)
     assert "password_hash" in registry["users"][user["slug"]]
     assert manager.user_for_ip("100.64.0.10")["slug"] == user["slug"]
     assert manager.authenticate("alice.login", "correct horse")["slug"] == user["slug"]
