@@ -1971,10 +1971,6 @@ def dashboard_html() -> str:
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a9 9 0 0 1-9 9 8.7 8.7 0 0 1-6-2.3"></path><path d="M3 12a9 9 0 0 1 15-6.7"></path><path d="M3 19v-5h5"></path><path d="M21 5v5h-5"></path></svg>
           새로고침
         </button>
-        <a class="btn primary" href="#raw" data-view="raw">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h4"></path></svg>
-          원본 데이터
-        </a>
       </div>
     </header>
 
@@ -1987,7 +1983,6 @@ def dashboard_html() -> str:
           <a href="#orders" data-view="orders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>주문</a>
           <a href="#live" data-view="live"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z"></path><path d="m9 12 2 2 4-5"></path></svg>실거래</a>
           <a href="#events" data-view="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 8h4"></path><path d="M10 12h4"></path><path d="M10 16h2"></path></svg>이벤트</a>
-          <a href="#raw" data-view="raw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 16v-2H3v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM3 8h18v4H3z"></path><path d="M3 8l6 5 5-3 7 3"></path></svg>개발자</a>
           <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>설정</a>
         </nav>
         <section class="sidebar-status" aria-label="현재 운영 상태">
@@ -2161,7 +2156,6 @@ def dashboard_html() -> str:
                 <span id="watchlist-count-badge" class="status-pill">0개</span>
               </div>
               <div id="watchlist-table" class="data-table"></div>
-              <pre id="watchlist-json" class="view-json hidden-json"></pre>
             </article>
           </div>
         </section>
@@ -2177,7 +2171,6 @@ def dashboard_html() -> str:
                 <span id="positions-count-badge" class="status-pill">0개</span>
               </div>
               <div id="positions-table" class="data-table"></div>
-              <pre id="positions-json" class="view-json hidden-json"></pre>
             </article>
           </div>
         </section>
@@ -2193,7 +2186,6 @@ def dashboard_html() -> str:
                 <span id="orders-count-badge" class="status-pill">0개</span>
               </div>
               <div id="orders-table" class="data-table"></div>
-              <pre id="orders-json" class="view-json hidden-json"></pre>
             </article>
           </div>
         </section>
@@ -2251,17 +2243,8 @@ def dashboard_html() -> str:
                 <span id="events-count-badge" class="status-pill">0개</span>
               </div>
               <div id="events-table" class="data-table event-cards"></div>
-              <pre id="events-json" class="view-json hidden-json"></pre>
             </article>
           </div>
-        </section>
-
-        <section id="view-raw" class="view" data-view="raw">
-          <div class="empty-view legacy-settings-view">
-            <article class="card data-panel"><h2>개발자 엔드포인트</h2><p class="panel-copy">문제 확인이 필요할 때만 원본 응답을 확인하세요.</p><div id="endpoint-list" class="endpoint-list"></div></article>
-            <article class="card data-panel"><h2>선택한 원본 데이터</h2><pre id="raw-endpoint-json" class="view-json"></pre></article>
-          </div>
-          <article class="card data-panel" style="margin-top:20px"><h2>전체 대시보드 원본</h2><pre id="raw-aggregate-json" class="view-json"></pre></article>
         </section>
 
         <section id="view-settings" class="view" data-view="settings">
@@ -2341,13 +2324,8 @@ def dashboard_html() -> str:
               </section>
             </article>
             <article class="card data-panel">
-              <h2>개발자용 값 확인</h2>
-              <p class="panel-copy">실행 시 내부 설정(JSON)과 읽기 전용 링크를 함께 확인하세요.</p>
-              <p class="settings-helper">현재 값</p>
-              <pre id="settings-strategy-json" class="view-json"></pre>
-              <p class="settings-helper">설정 링크</p>
-              <pre id="settings-raw-links" class="view-json hidden-json"></pre>
-              <p class="settings-helper">차단 항목</p>
+              <h2>확인할 항목</h2>
+              <p class="panel-copy">원본 JSON 대신 사용자가 처리해야 할 항목만 보여줍니다.</p>
               <div id="settings-blockers-list" class="blocker-list"></div>
             </article>
           </div>
@@ -3024,22 +3002,6 @@ def dashboard_html() -> str:
         </div>`).join("");
     }
 
-    function renderEndpointList(rawLinks) {
-      const container = document.getElementById("endpoint-list");
-      if (!container || !rawLinks) return;
-      container.innerHTML = Object.entries(rawLinks).map(([name, path]) => {
-        return `<button type="button" data-endpoint="${escapeHtml(path)}">${escapeHtml(name)}: ${escapeHtml(path)}</button>`;
-      }).join("");
-      container.querySelectorAll("button").forEach((button) => {
-        button.addEventListener("click", async () => {
-          const target = button.dataset.endpoint;
-          if (!target) return;
-          const data = await getJson(target);
-          document.getElementById("raw-endpoint-json").textContent = JSON.stringify(data, null, 2);
-        });
-      });
-    }
-
     const SETTINGS_DEFAULT = {
       cash_reserve_pct: 0.50,
       target_position_pct: 0.10,
@@ -3137,22 +3099,6 @@ def dashboard_html() -> str:
       if (skipDays) skipDays.value = String(settings.skip_days);
       if (trendMaDays) trendMaDays.value = String(settings.trend_ma_days);
 
-      const strategyPanel = document.getElementById("settings-strategy-json");
-      if (strategyPanel) {
-        strategyPanel.textContent = JSON.stringify({
-          momentum: {
-            cash_reserve_pct: settings.cash_reserve_pct.toFixed(4),
-            max_exposure_pct: settings.max_exposure_pct.toFixed(4),
-            target_position_pct: settings.target_position_pct,
-            max_positions: settings.max_positions,
-            accept_top_n: settings.accept_top_n,
-            exit_ma_days: settings.exit_ma_days,
-            lookback_days: settings.lookback_days,
-            skip_days: settings.skip_days,
-            trend_ma_days: settings.trend_ma_days,
-          },
-        }, null, 2);
-      }
     }
 
     function setSettingsWritable(enabled) {
@@ -3260,7 +3206,7 @@ def dashboard_html() -> str:
       }
     }
 
-    function renderOnboarding(blockers, rawLinks, events, settings, settingsWriteEnabled) {
+    function renderOnboarding(blockers, events, settings, settingsWriteEnabled) {
       const list = document.getElementById("settings-onboarding-list");
       const rawBlockers = Array.isArray(blockers) ? blockers : [];
       const recentEvents = Array.isArray(events) ? events : [];
@@ -3294,8 +3240,6 @@ def dashboard_html() -> str:
       if (blockerBox) blockerBox.textContent = rawBlockers.length
         ? groupedBlockerDetails(rawBlockers).join("\\n")
         : "현재 표시할 차단 항목이 없습니다.";
-      const rawBox = document.getElementById("settings-raw-links");
-      if (rawBox) rawBox.textContent = JSON.stringify(rawLinks || {}, null, 2);
       if (!settingsFormInitialized) {
         setMomentumSettings(settings || SETTINGS_DEFAULT);
         settingsFormInitialized = true;
@@ -3342,7 +3286,6 @@ def dashboard_html() -> str:
 
       renderOnboarding(
         status.blockers || [],
-        dashboard.raw_links || {},
         eventRows,
         dashboard.settings || {},
         dashboard.settings_write_enabled
@@ -3367,7 +3310,7 @@ def dashboard_html() -> str:
     }
 
     function initialView() {
-      const allowed = new Set(["dashboard", "watchlist", "positions", "orders", "live", "events", "raw", "settings"]);
+      const allowed = new Set(["dashboard", "watchlist", "positions", "orders", "live", "events", "settings"]);
       const hash = window.location.hash ? window.location.hash.slice(1) : "dashboard";
       return allowed.has(hash) ? hash : "dashboard";
     }
@@ -4765,16 +4708,6 @@ class HealthServer:
                 snapshot=snapshot,
                 events_summary=runtime_summary,
             ),
-            "raw_links": {
-                "health": "/health",
-                "positions": "/positions",
-                "open_orders": "/orders/open",
-                "watchlist": "/watchlist",
-                "events": "/events",
-                "events_summary": "/events/summary?limit=50",
-                "dashboard": "/dashboard",
-                "settings_update": "/dashboard/settings",
-            },
         }
 
     def payload_for_path(

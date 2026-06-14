@@ -110,7 +110,7 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
         check["id"] == "live_order_engine"
         for check in dashboard["live_readiness"]["checks"]
     )
-    assert dashboard["raw_links"]["events"] == "/events"
+    assert "raw_links" not in dashboard
 
 
 def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
@@ -132,10 +132,11 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert TOSS_LOGO_ASSET.exists()
     assert "페이퍼 서비스 점검 완료" in html
     assert "Toss API 인증 정보가 아직 없습니다." in html
-    assert "원본 데이터" in html
-    assert "개발자" in html
+    assert "원본 데이터" not in html
+    assert 'data-view="raw"' not in html
+    assert 'id="view-raw"' not in html
+    assert "raw_links" not in html
     assert "empty-state" in html
-    assert "hidden-json" in html
     assert "renderEventCards" in html
     assert "blockerShortLabel" in html
     assert 'id="sidebar-ready"' in html
@@ -157,7 +158,8 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "현금 보유 비중" in html
     assert "설정 저장" in html
     assert 'type="range"' in html
-    assert "settings-strategy-json" in html
+    assert "settings-strategy-json" not in html
+    assert "settings-raw-links" not in html
     assert 'id="dashboard-operator-brief"' in html
     assert "function renderOperatorBrief" in html
     assert "function primaryAction" in html
