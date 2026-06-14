@@ -160,12 +160,18 @@ Secret and cleanup helpers:
 python ops/multi_user_gateway.py --delete-user-secrets alice --confirm DELETE_USER_SECRETS
 python ops/multi_user_gateway.py --list-orphans
 python ops/multi_user_gateway.py --cleanup-orphans --confirm CLEANUP_ORPHANS
+python ops/multi_user_gateway.py --offboard-user alice --confirm OFFBOARD_USER
+python ops/multi_user_gateway.py --admin-status
 ```
 
 `--delete-user-secrets` removes the user's stored Toss app ID and app secret
 from the configured backend. `--list-orphans` reports gateway containers or user
 folders that are no longer present in the registry. `--cleanup-orphans` removes
 orphan containers and moves stale user folders into `.local/users/_trash/`.
+`--offboard-user` combines user container removal, secret deletion, registry
+removal, and local file trashing for one user. `--admin-status` prints a JSON
+summary with user counts, Docker container state, orphan resources, and recent
+audit events.
 
 Each user gets separate local files:
 

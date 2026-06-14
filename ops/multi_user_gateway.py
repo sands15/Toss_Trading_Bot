@@ -44,6 +44,7 @@ TAILSCALE_USER_LOGIN_HEADER = "Tailscale-User-Login"
 TAILSCALE_USER_NAME_HEADER = "Tailscale-User-Name"
 DELETE_SECRETS_CONFIRMATION = "DELETE_USER_SECRETS"
 CLEANUP_ORPHANS_CONFIRMATION = "CLEANUP_ORPHANS"
+OFFBOARD_USER_CONFIRMATION = "OFFBOARD_USER"
 USER_CONTAINER_PREFIX = "toss-dashboard-"
 
 
@@ -183,6 +184,21 @@ def append_audit_event(path: Path, event: str, **fields: Any) -> None:
         handle.write("\n")
 
 
+def read_recent_audit_events(path: Path, *, limit: int = 20) -> list[dict[str, Any]]:
+    if limit <= 0 or not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
 def registry_public_view(registry: dict[str, Any]) -> dict[str, Any]:
     users = registry.get("users", {})
     return {
@@ -256,6 +272,35 @@ def list_gateway_containers(repo_root: Path, *, prefix: str = USER_CONTAINER_PRE
         text=True,
     )
     return sorted(name for name in result.stdout.splitlines() if name.startswith(prefix))
+
+
+def list_gateway_container_statuses(repo_root: Path, *, prefix: str = USER_CONTAINER_PREFIX) -> list[dict[str, str]]:
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--format", "{{json .}}"],
+        cwd=str(repo_root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    containers: list[dict[str, str]] = []
+    for line in result.stdout.splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("Names", ""))
+        if not name.startswith(prefix):
+            continue
+        containers.append(
+            {
+                "name": name,
+                "state": str(item.get("State", "")),
+                "status": str(item.get("Status", "")),
+            }
+        )
+    return sorted(containers, key=lambda item: item["name"])
 
 
 def list_user_dirs(users_root: Path) -> list[str]:
@@ -776,6 +821,70 @@ class UserGateway:
         return {
             "removed_orphan_containers": removed_containers,
             "trashed_stale_user_dirs": trashed_user_dirs,
+        }
+
+    def offboard_user(self, slug: str) -> dict[str, Any]:
+        user = self.user_by_slug(slug)
+        container_name = str(user.get("container_name", f"{USER_CONTAINER_PREFIX}{slug}"))
+        self.remove_container(container_name)
+        self.secret_store.delete_user_credentials(slug)
+        trash_path = trash_user_dir(self.config.users_root, slug)
+        with self._registry_lock:
+            registry = load_registry(self.config.registry_path)
+            removed_user = delete_user(registry, slug)
+            save_registry(self.config.registry_path, registry)
+        self.audit(
+            "user_offboarded",
+            slug=slug,
+            container_name=container_name,
+            trash_path=str(trash_path),
+            secret_backend=self.secret_store.backend_name,
+        )
+        return {
+            "slug": slug,
+            "removed_user": removed_user,
+            "removed_container": container_name,
+            "deleted_secrets": True,
+            "trash_path": str(trash_path),
+            "secret_backend": self.secret_store.backend_name,
+        }
+
+    def admin_status(self, *, audit_limit: int = 20) -> dict[str, Any]:
+        registry = load_registry(self.config.registry_path)
+        users = registry.get("users", {})
+        status_counts: dict[str, int] = {}
+        for user in users.values():
+            if not isinstance(user, dict):
+                continue
+            status = str(user.get("status", "unknown"))
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        docker_error = ""
+        try:
+            docker_containers = list_gateway_container_statuses(self.config.repo_root)
+        except Exception as exc:
+            docker_containers = []
+            docker_error = str(exc)
+
+        try:
+            orphans = self.list_orphans()
+        except Exception as exc:
+            orphans = {"orphan_containers": [], "stale_user_dirs": []}
+            docker_error = docker_error or str(exc)
+
+        return {
+            "registry_path": str(self.config.registry_path),
+            "users_root": str(self.config.users_root),
+            "audit_log_path": str(self.audit_log_path),
+            "secret_backend": self.secret_store.backend_name,
+            "user_count": len(users),
+            "users_by_status": status_counts,
+            "registered_containers": sorted(registered_container_names(registry)),
+            "docker_containers": docker_containers,
+            "docker_error": docker_error,
+            "orphan_containers": orphans["orphan_containers"],
+            "stale_user_dirs": orphans["stale_user_dirs"],
+            "recent_audit_events": read_recent_audit_events(self.audit_log_path, limit=audit_limit),
         }
 
     def create_user(
@@ -1350,11 +1459,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Remove orphan containers and move stale user folders into users-root/_trash",
     )
     parser.add_argument(
+        "--offboard-user",
+        metavar="SLUG",
+        help="Remove a user container, delete stored Toss credentials, trash local files, and delete registry mappings",
+    )
+    parser.add_argument("--admin-status", action="store_true", help="Print admin status summary as JSON and exit")
+    parser.add_argument("--audit-limit", type=int, default=20, help="Recent audit events to include in admin status")
+    parser.add_argument(
         "--confirm",
         default="",
         help=(
             "Required confirmation phrase for destructive admin commands. "
-            f"Use {DELETE_SECRETS_CONFIRMATION} or {CLEANUP_ORPHANS_CONFIRMATION}."
+            f"Use {DELETE_SECRETS_CONFIRMATION}, {CLEANUP_ORPHANS_CONFIRMATION}, or {OFFBOARD_USER_CONFIRMATION}."
         ),
     )
     return parser.parse_args(argv)
@@ -1400,6 +1516,18 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "error": "confirmation_required",
                     "confirm": CLEANUP_ORPHANS_CONFIRMATION,
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    if args.offboard_user and args.confirm != OFFBOARD_USER_CONFIRMATION:
+        print(
+            json.dumps(
+                {
+                    "error": "confirmation_required",
+                    "confirm": OFFBOARD_USER_CONFIRMATION,
                 },
                 ensure_ascii=False,
             ),
@@ -1452,6 +1580,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cleanup_orphans:
         print(json.dumps(gateway.cleanup_orphans(), ensure_ascii=False, indent=2))
+        return 0
+    if args.offboard_user:
+        print(json.dumps({"offboarded_user": args.offboard_user, "result": gateway.offboard_user(args.offboard_user)}, ensure_ascii=False, indent=2))
+        return 0
+    if args.admin_status:
+        print(json.dumps(gateway.admin_status(audit_limit=args.audit_limit), ensure_ascii=False, indent=2))
         return 0
 
     host = args.host or "127.0.0.1"

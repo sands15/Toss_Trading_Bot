@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -442,6 +443,154 @@ def test_orphan_cleanup_removes_containers_and_trashes_stale_user_dirs(
     audit_lines = (tmp_path / "audit.log").read_text(encoding="utf-8").splitlines()
     assert any('"event": "orphan_container_removed"' in line for line in audit_lines)
     assert any('"event": "stale_user_dir_trashed"' in line for line in audit_lines)
+
+
+def test_admin_offboard_requires_confirmation_before_gateway_init(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    gateway = _load_gateway_module()
+    monkeypatch.setattr(
+        gateway,
+        "make_secret_store",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("secret store should not initialize")),
+    )
+
+    result = gateway.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--registry",
+            str(tmp_path / "registry.json"),
+            "--users-root",
+            str(tmp_path / "users"),
+            "--audit-log",
+            str(tmp_path / "audit.log"),
+            "--offboard-user",
+            "alice",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert "confirmation_required" in captured.err
+    assert gateway.OFFBOARD_USER_CONFIRMATION in captured.err
+
+
+def test_offboard_user_removes_container_secrets_registry_and_trashes_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gateway = _load_gateway_module()
+    registry_path = tmp_path / "registry.json"
+    users_root = tmp_path / "users"
+    registry = gateway.load_registry(registry_path)
+    registry["users"]["alice"] = {
+        "slug": "alice",
+        "display_name": "Alice",
+        "client_ip": "100.64.0.10",
+        "last_client_ip": "100.64.0.11",
+        "tailscale_identity": "alice@example.com",
+        "container_name": "toss-dashboard-alice",
+        "port": 19000,
+        "status": "running",
+    }
+    registry["ip_map"]["100.64.0.10"] = "alice"
+    registry["identity_map"]["alice@example.com"] = "alice"
+    gateway.save_registry(registry_path, registry)
+    env_file = users_root / "alice" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("TOSS_CLIENT_ID=id\nTOSS_CLIENT_SECRET=secret\n", encoding="utf-8")
+    removed_containers = []
+    monkeypatch.setattr(
+        gateway.UserGateway,
+        "remove_container",
+        lambda _self, container_name: removed_containers.append(container_name),
+    )
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=registry_path,
+        users_root=users_root,
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+
+    result = manager.offboard_user("alice")
+
+    loaded = gateway.load_registry(registry_path)
+    assert removed_containers == ["toss-dashboard-alice"]
+    assert result["deleted_secrets"] is True
+    assert result["removed_user"]["slug"] == "alice"
+    assert loaded["users"] == {}
+    assert loaded["ip_map"] == {}
+    assert loaded["identity_map"] == {}
+    assert not (users_root / "alice").exists()
+    assert any(item.name.startswith("alice-") for item in (users_root / "_trash").iterdir())
+    audit_lines = (tmp_path / "audit.log").read_text(encoding="utf-8").splitlines()
+    assert any('"event": "user_offboarded"' in line for line in audit_lines)
+
+
+def test_admin_status_summarizes_users_orphans_docker_and_audit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gateway = _load_gateway_module()
+    registry_path = tmp_path / "registry.json"
+    users_root = tmp_path / "users"
+    audit_log = tmp_path / "audit.log"
+    registry = gateway.load_registry(registry_path)
+    registry["users"]["alice"] = {
+        "slug": "alice",
+        "container_name": "toss-dashboard-alice",
+        "port": 19000,
+        "status": "running",
+    }
+    gateway.save_registry(registry_path, registry)
+    (users_root / "alice").mkdir(parents=True)
+    (users_root / "bob").mkdir()
+    gateway.append_audit_event(audit_log, "setup_succeeded", slug="alice")
+
+    def fake_subprocess_run(args, **_kwargs):
+        if args[-1] == "{{json .}}":
+            stdout = "\n".join(
+                [
+                    json.dumps({"Names": "toss-dashboard-alice", "State": "running", "Status": "Up 2 minutes"}),
+                    json.dumps({"Names": "toss-dashboard-bob", "State": "exited", "Status": "Exited"}),
+                    json.dumps({"Names": "other-service", "State": "running", "Status": "Up"}),
+                ]
+            )
+            return gateway.subprocess.CompletedProcess(args, 0, stdout=stdout)
+        assert args[-1] == "{{.Names}}"
+        return gateway.subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="toss-dashboard-alice\ntoss-dashboard-bob\nother-service\n",
+        )
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_subprocess_run)
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=registry_path,
+        users_root=users_root,
+        audit_log_path=audit_log,
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+
+    status = manager.admin_status(audit_limit=5)
+
+    assert status["user_count"] == 1
+    assert status["users_by_status"] == {"running": 1}
+    assert status["registered_containers"] == ["toss-dashboard-alice"]
+    assert status["orphan_containers"] == ["toss-dashboard-bob"]
+    assert status["stale_user_dirs"] == ["bob"]
+    assert status["docker_error"] == ""
+    assert status["docker_containers"][0]["name"] == "toss-dashboard-alice"
+    assert status["recent_audit_events"][0]["event"] == "setup_succeeded"
 
 
 def test_new_user_container_uses_resource_and_log_limits(tmp_path: Path, monkeypatch) -> None:

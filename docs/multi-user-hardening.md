@@ -28,6 +28,11 @@ use the Tailscale Docker gateway.
 - Admin helper commands can list orphaned gateway containers and stale user
   folders, then clean them up after an explicit confirmation phrase. Stale user
   folders are moved into `_trash` instead of being deleted immediately.
+- Admin helper commands can offboard a user in one step by removing the Docker
+  container, deleting stored Toss credentials, removing registry mappings, and
+  moving local user files into `_trash`.
+- Admin helper commands can print a JSON status summary with user counts,
+  Docker container state, orphan resources, and recent audit events.
 - User containers have default Docker memory, CPU, and log-size limits.
 - Identity-missing, setup, registration denial, rate-limit, and container
   lifecycle events are written as JSON lines to `.local/users/audit.log`.
@@ -37,10 +42,10 @@ use the Tailscale Docker gateway.
 
 1. Verify the full Docker build/run path on the target Mac with Docker Desktop
    running.
-2. Add a one-command user offboarding flow that combines container stop/removal,
-   secret deletion, registry removal, and user-folder trashing.
-3. Add an admin-only status page or CLI summary for registration attempts,
-   container health, and recent audit events.
+2. Add an admin-only browser page for the same status data if command-line
+   operations become inconvenient.
+3. Add backup and restore documentation for registry/config/state while keeping
+   Toss API secrets out of backups.
 
 ## Current Risk Notes
 
