@@ -582,6 +582,7 @@ def _paper_service_iteration(
             momentum_exit_ma_days=config.momentum_exit_ma_days,
             momentum_max_positions=config.momentum_max_positions,
             momentum_accept_top_n=config.momentum_accept_top_n,
+            momentum_max_exposure_pct=config.momentum_max_exposure_pct,
             momentum_target_position_pct=config.momentum_target_position_pct,
             momentum_min_price=config.momentum_min_price,
             momentum_min_average_daily_value=config.momentum_min_average_daily_value,

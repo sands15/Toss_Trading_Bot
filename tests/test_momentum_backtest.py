@@ -74,6 +74,39 @@ def test_momentum_backtest_enters_relative_winner_when_market_filter_passes():
     assert entries[0].symbol == "AAA"
 
 
+def test_momentum_backtest_limits_entries_by_max_exposure():
+    candles = []
+    for day in range(40):
+        candles.append(_c(day, "SPY", Decimal("100") + Decimal(day)))
+        candles.append(_c(day, "AAA", Decimal("100") + Decimal(day * 4)))
+        candles.append(_c(day, "BBB", Decimal("100") + Decimal(day * 3)))
+
+    result = run_momentum_backtest(
+        candles,
+        config=MomentumBacktestConfig(
+            initial_equity=Decimal("10000"),
+            momentum_lookback_days=10,
+            momentum_skip_days=2,
+            trend_ma_days=5,
+            exit_ma_days=3,
+            accept_top_n=2,
+            max_positions=2,
+            max_exposure_pct=Decimal("0.30"),
+            target_position_pct=Decimal("0.50"),
+            min_price=Decimal("0"),
+            min_average_daily_value=Decimal("0"),
+            buy_commission_rate=Decimal("0"),
+            sell_commission_rate=Decimal("0"),
+            sell_sec_fee_rate=Decimal("0"),
+            min_sec_fee=Decimal("0"),
+        ),
+    )
+
+    entries = [event for event in result.backtest.audit_log if event.kind == "ENTRY"]
+    assert len(entries) == 1
+    assert entries[0].symbol == "AAA"
+
+
 def test_momentum_backtest_market_filter_blocks_new_entries():
     candles = []
     for day in range(30):

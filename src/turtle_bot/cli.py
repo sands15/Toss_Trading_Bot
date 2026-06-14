@@ -421,6 +421,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
     )
     parser.add_argument(
+        "--momentum-max-exposure-pct",
+        default="0.50",
+        help="Maximum total momentum position exposure as a fraction of equity",
+        metavar="DECIMAL",
+    )
+    parser.add_argument(
         "--momentum-target-position-pct",
         default="0.10",
         help="Target equity allocation per new momentum position",
@@ -649,6 +655,7 @@ def _momentum_backtest_config(
         exit_ma_days=args.momentum_exit_ma_days,
         max_positions=args.momentum_max_positions,
         accept_top_n=args.momentum_accept_top_n,
+        max_exposure_pct=_decimal(args.momentum_max_exposure_pct),
         target_position_pct=_decimal(args.momentum_target_position_pct),
         min_price=_decimal(args.momentum_min_price),
         min_average_daily_value=_decimal(args.momentum_min_average_daily_value),

@@ -29,6 +29,7 @@ class MomentumBacktestConfig:
     trend_ma_days: int = 200
     exit_ma_days: int = 75
     max_positions: int = 5
+    max_exposure_pct: Decimal = Decimal("0.50")
     accept_top_n: int = 2
     target_position_pct: Decimal = Decimal("0.10")
     min_price: Decimal = Decimal("5")
@@ -98,6 +99,7 @@ class MomentumBacktestResult:
                     "exit_ma_days": self.config.exit_ma_days,
                     "max_positions": self.config.max_positions,
                     "accept_top_n": self.config.accept_top_n,
+                    "max_exposure_pct": str(self.config.max_exposure_pct),
                     "target_position_pct": str(self.config.target_position_pct),
                     "min_price": str(self.config.min_price),
                     "min_average_daily_value": str(self.config.min_average_daily_value),
@@ -211,7 +213,17 @@ def run_momentum_backtest(
             if candle is None:
                 continue
             equity = _equity(cash, positions, last_closes, cfg)
-            allocation = equity * cfg.target_position_pct
+            current_exposure = _position_exposure(positions, last_closes)
+            max_exposure = equity * cfg.max_exposure_pct
+            remaining_exposure = max_exposure - current_exposure
+            if remaining_exposure <= Decimal("0"):
+                break
+            allocation = min(
+                equity * cfg.target_position_pct,
+                remaining_exposure,
+            )
+            if allocation <= Decimal("0"):
+                break
             qty = (allocation / candle.close).to_integral_value(rounding=ROUND_FLOOR)
             if qty <= 0:
                 continue
@@ -410,6 +422,16 @@ def _position_value(
             config,
         )
     return total
+
+
+def _position_exposure(
+    positions: Mapping[str, _MomentumPosition],
+    last_closes: Mapping[str, Decimal],
+) -> Decimal:
+    return sum(
+        position.qty * last_closes.get(symbol, position.entry_price)
+        for symbol, position in positions.items()
+    )
 
 
 def _equity(

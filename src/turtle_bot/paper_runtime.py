@@ -86,6 +86,7 @@ class PaperRuntimeConfig:
     momentum_trend_ma_days: int = 200
     momentum_exit_ma_days: int = 75
     momentum_max_positions: int = 5
+    momentum_max_exposure_pct: Decimal = Decimal("0.50")
     momentum_accept_top_n: int = 2
     momentum_target_position_pct: Decimal = Decimal("0.10")
     momentum_min_price: Decimal = Decimal("5")
@@ -874,8 +875,28 @@ class PaperTradingRuntime:
         for symbol, position in positions.items():
             mark = prices.get(symbol, position.avg_entry_price)
             equity += (mark - position.avg_entry_price) * position.total_qty
-        allocation = equity * self.config.momentum_target_position_pct
+        current_exposure = self._momentum_exposure(positions, prices)
+        max_exposure = equity * self.config.momentum_max_exposure_pct
+        remaining_exposure = max_exposure - current_exposure
+        if remaining_exposure <= Decimal("0"):
+            return Decimal("0")
+        allocation = min(
+            equity * self.config.momentum_target_position_pct,
+            remaining_exposure,
+        )
+        if allocation <= Decimal("0"):
+            return Decimal("0")
         return (allocation / price).to_integral_value(rounding=ROUND_FLOOR)
+
+    def _momentum_exposure(
+        self,
+        positions: Mapping[str, PositionState],
+        prices: Mapping[str, Decimal],
+    ) -> Decimal:
+        return sum(
+            position.total_qty * prices.get(symbol, position.avg_entry_price)
+            for symbol, position in positions.items()
+        )
 
     def _momentum_intent(
         self,

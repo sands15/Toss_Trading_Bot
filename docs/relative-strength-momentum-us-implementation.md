@@ -17,7 +17,8 @@ below trend.
   days.
 - Entries: buy up to 2 top-ranked candidates per day until 5 positions are
   open.
-- Position size: target 10% of current equity per new position.
+- Position size: target 10% of current equity per new position, with total
+  momentum exposure capped at 50% of current equity by default.
 - Exit: close the position when symbol close falls below its 75-day moving
   average.
 
@@ -48,7 +49,8 @@ conditions:
 - Score: 126-trading-day return excluding the most recent 21 trading days.
 - Entry: accept up to 2 top-ranked candidates per day until 5 positions are
   open.
-- Sizing: target 10% of current equity per new position.
+- Sizing: target 10% of current equity per new position, capped at 50% total
+  momentum exposure by default.
 - Exit: close the position when the candidate closes below its 75-day moving
   average.
 - Research capital: `$100,000`.
@@ -82,6 +84,7 @@ strategy:
     trend_ma_days: 200
     exit_ma_days: 75
     max_positions: 5
+    max_exposure_pct: 0.50
     accept_top_n: 2
     target_position_pct: 0.10
     min_price: 5

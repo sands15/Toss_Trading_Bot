@@ -77,6 +77,7 @@ class TradingConfig:
     momentum_trend_ma_days: int = 200
     momentum_exit_ma_days: int = 75
     momentum_max_positions: int = 5
+    momentum_max_exposure_pct: Decimal = Decimal("0.50")
     momentum_accept_top_n: int = 2
     momentum_target_position_pct: Decimal = Decimal("0.10")
     momentum_min_price: Decimal = Decimal("5")
@@ -247,6 +248,10 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
         ),
         momentum_max_positions=int(
             (strategy.get("momentum", {}) or {}).get("max_positions", 5)
+        ),
+        momentum_max_exposure_pct=_to_decimal(
+            (strategy.get("momentum", {}) or {}).get("max_exposure_pct"),
+            Decimal("0.50"),
         ),
         momentum_accept_top_n=int(
             (strategy.get("momentum", {}) or {}).get("accept_top_n", 2)

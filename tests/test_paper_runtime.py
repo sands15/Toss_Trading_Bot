@@ -392,6 +392,77 @@ def test_paper_runtime_momentum_records_relative_strength_entry():
     assert saved_position.system == TurtleSystem.MOMENTUM
 
 
+def test_paper_runtime_momentum_respects_max_exposure_budget():
+    def trend(symbol: str, base: str, step: str) -> tuple[Candle, ...]:
+        return tuple(
+            Candle(
+                timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=day),
+                symbol=symbol,
+                open=Decimal(base) + Decimal(step) * Decimal(day),
+                high=Decimal(base) + Decimal(step) * Decimal(day) + Decimal("1"),
+                low=Decimal(base) + Decimal(step) * Decimal(day) - Decimal("1"),
+                close=Decimal(base) + Decimal(step) * Decimal(day),
+                volume=Decimal("1000000"),
+            )
+            for day in range(12)
+        )
+
+    market_data = FakeMarketData(
+        candles={
+            "SPY": trend("SPY", "100", "1"),
+            "AAA": trend("AAA", "100", "4"),
+            "BBB": trend("BBB", "10", "1"),
+        },
+        prices={"SPY": Decimal("112"), "AAA": Decimal("148"), "BBB": Decimal("21")},
+    )
+    notifier = MemoryNotifier()
+
+    with SQLiteStateStore() as store:
+        store.save_paper_position(
+            _position("AAA", qty="2", system=TurtleSystem.MOMENTUM)
+        )
+        runtime = PaperTradingRuntime(
+            config=PaperRuntimeConfig(
+                symbols=("AAA", "BBB"),
+                strategy_kind="momentum",
+                momentum_lookback_days=5,
+                momentum_skip_days=1,
+                momentum_trend_ma_days=3,
+                momentum_exit_ma_days=2,
+                momentum_max_positions=5,
+                momentum_accept_top_n=2,
+                momentum_max_exposure_pct=Decimal("0.50"),
+                momentum_target_position_pct=Decimal("0.50"),
+                momentum_min_price=Decimal("0"),
+                momentum_min_average_daily_value=Decimal("0"),
+                momentum_average_daily_value_days=2,
+                initial_equity=Decimal("1000"),
+            ),
+            market_data=market_data,
+            position_sync=FakePositionSync(_clean_reconcile()),
+            store=store,
+            notifier=notifier,
+        )
+        result = runtime.run_once()
+        saved_position = store.load_paper_position("BBB")
+
+    equity = Decimal("1000") + (Decimal("148") - Decimal("100")) * Decimal("2")
+    max_exposure = equity * Decimal("0.50")
+    current_exposure = Decimal("2") * Decimal("148")
+    remaining_exposure = max_exposure - current_exposure
+    expected_allocation = min(equity * Decimal("0.50"), remaining_exposure)
+    expected_qty = (expected_allocation / Decimal("21")).to_integral_value()
+
+    assert len(result.intents) == 1
+    intent = result.intents[0]
+    assert intent.system == "MOMENTUM"
+    assert intent.symbol == "BBB"
+    assert intent.quantity == expected_qty
+    assert saved_position is not None
+    assert saved_position.total_qty == expected_qty
+    assert saved_position.system == TurtleSystem.MOMENTUM
+
+
 def test_paper_runtime_momentum_exits_below_exit_ma_without_same_day_reentry():
     candles = tuple(
         Candle(

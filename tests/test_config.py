@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from turtle_bot.config import load_config
 from turtle_bot.domain import PositionDirection
 
@@ -44,4 +46,5 @@ def test_load_config_uses_selected_momentum_defaults(tmp_path):
     assert config.momentum_trend_ma_days == 200
     assert config.momentum_exit_ma_days == 75
     assert config.momentum_max_positions == 5
+    assert config.momentum_max_exposure_pct == Decimal("0.50")
     assert config.momentum_accept_top_n == 2
