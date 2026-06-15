@@ -16,7 +16,7 @@ import yaml
 from .config import load_config
 from .health import HealthServer, HealthSnapshot
 from .market_calendar import MarketCalendarConfig, MarketCalendarGate
-from .notifier import MemoryNotifier
+from .notifier import DiscordTradeNotifier, MemoryNotifier
 from .paper_runtime import PaperOrderIntent, PaperRuntimeConfig, PaperTradingRuntime
 from .position_sync import TossPositionSync
 from .state_store import SQLiteStateStore
@@ -328,6 +328,7 @@ def build_dashboard_server(
                         raise DashboardTradingLoopStopped("dashboard emergency stop is active")
 
                 def run_loop() -> None:
+                    discord_notifier = DiscordTradeNotifier(env=env_values)
                     with SQLiteStateStore(state_db) as loop_store:
                         loop_store.record_runtime_event(
                             "INFO",
@@ -352,12 +353,18 @@ def build_dashboard_server(
                                 {"source": "dashboard"},
                             )
                     except Exception as exc:
+                        payload = {"source": "dashboard", "error": str(exc)}
                         with SQLiteStateStore(state_db) as loop_store:
                             loop_store.record_runtime_event(
                                 "ERROR",
                                 "live_trading_loop_failed",
-                                {"source": "dashboard", "error": str(exc)},
+                                payload,
                             )
+                        discord_notifier.notify(
+                            "live_trading_loop_failed",
+                            level="error",
+                            payload=payload,
+                        )
 
                 loop_thread = Thread(
                     target=run_loop,
@@ -467,6 +474,21 @@ def _dashboard_settings_payload(
     env_values = env if env is not None else environ
     client_id_env = str(config.toss.client_id_env or "").strip()
     client_secret_env = str(config.toss.client_secret_env or "").strip()
+    account_alias = ""
+    if config_path is not None:
+        try:
+            raw_config = _read_yaml(Path(config_path))
+            raw_toss = raw_config.get("toss", {})
+            if isinstance(raw_toss, Mapping):
+                account_alias = str(raw_toss.get("account_alias") or "").strip()
+        except Exception:
+            account_alias = ""
+    pilot_symbol = (
+        next(iter(config.live.allowed_symbols), None)
+        or next(iter(config.runtime.symbols), None)
+        or next(iter(config.runtime.universe_candidate_symbols), None)
+    )
+    pilot_amount = config.live.daily_notional_limit or config.live.max_order_notional
     return {
         "config": {
             "path": str(config_path) if config_path is not None else None,
@@ -482,16 +504,11 @@ def _dashboard_settings_payload(
             "live_enabled": config.live_enabled,
             "account_seq_configured": bool(config.toss.account_seq),
             "account_seq": config.toss.account_seq or "",
-            "client_id_env": client_id_env,
-            "client_secret_env": client_secret_env,
+            "account_alias": account_alias,
             "client_id_configured": bool(client_id_env and env_values.get(client_id_env)),
             "client_secret_configured": bool(
                 client_secret_env and env_values.get(client_secret_env)
             ),
-            "required_env": [
-                config.toss.client_id_env,
-                config.toss.client_secret_env,
-            ],
         },
         "live": {
             "emergency_stop": config.live.emergency_stop,
@@ -516,6 +533,18 @@ def _dashboard_settings_payload(
             "require_clean_reconcile": config.live.require_clean_reconcile,
             "block_unresolved_orders": config.live.block_unresolved_orders,
             "confirm_high_value_order": config.live.confirm_high_value_order,
+            "cancel_after_ack": config.live.cancel_after_ack,
+        },
+        "pilot": {
+            "symbol": str(pilot_symbol).upper() if pilot_symbol else None,
+            "max_quantity": (
+                str(config.live.max_order_quantity)
+                if config.live.max_order_quantity is not None
+                else "1"
+            ),
+            "daily_orders": config.live.daily_order_count_limit or 1,
+            "daily_amount": str(pilot_amount) if pilot_amount is not None else None,
+            "stop_active": config.live.emergency_stop,
             "cancel_after_ack": config.live.cancel_after_ack,
         },
         "momentum": {
@@ -853,6 +882,9 @@ def update_dashboard_settings(
         if not account_seq:
             raise ValueError("account_seq is required")
         toss_data["account_seq"] = account_seq
+    if "account_alias" in toss_payload:
+        account_alias = str(toss_payload.get("account_alias") or "").strip()
+        toss_data["account_alias"] = account_alias[:80]
 
     env_values = env if env is not None else environ
     client_id = str(toss_payload.get("client_id") or "").strip()
@@ -1036,6 +1068,17 @@ def run_paper_service(
         sleep(interval_seconds)
 
 
+def _account_alias_from_config_path(config_path: str | Path) -> str:
+    try:
+        raw = _read_yaml(Path(config_path))
+    except Exception:
+        return ""
+    toss = raw.get("toss", {})
+    if not isinstance(toss, Mapping):
+        return ""
+    return str(toss.get("account_alias") or "").strip()
+
+
 def _paper_service_iteration(
     *,
     config_path: str | Path,
@@ -1045,6 +1088,7 @@ def _paper_service_iteration(
     now,
 ) -> HealthSnapshot:
     config = load_config(config_path)
+    account_alias = _account_alias_from_config_path(config_path)
     service_mode = _runtime_mode(config)
     blockers = _paper_service_config_blockers(config, env)
     if blockers:
@@ -1221,6 +1265,8 @@ def _paper_service_iteration(
             store=store,
             result=result,
             market_open=bool(session is None or session.is_open),
+            notifier=DiscordTradeNotifier(env=env),
+            account_alias=account_alias,
         )
     return _with_latest_watchlist(
         runtime.health_snapshot(),
@@ -1328,6 +1374,8 @@ def _submit_live_intents(
     store: SQLiteStateStore,
     result,
     market_open: bool,
+    notifier: DiscordTradeNotifier | None = None,
+    account_alias: str | None = None,
 ) -> None:
     if not result.intents:
         return
@@ -1336,11 +1384,10 @@ def _submit_live_intents(
         buying_power = client.get_buying_power(currency)
         available_cash = _available_cash_from_buying_power(buying_power)
     except Exception as exc:
-        store.record_runtime_event(
-            "WARN",
-            "live_buying_power_unavailable",
-            {"currency": currency, "error": str(exc)},
-        )
+        payload = {"currency": currency, "error": str(exc), "account_alias": account_alias or ""}
+        store.record_runtime_event("WARN", "live_buying_power_unavailable", payload)
+        if notifier is not None:
+            notifier.notify("live_buying_power_unavailable", level="warn", payload=payload)
         available_cash = None
 
     orchestrator = LiveOrderOrchestrator(
@@ -1394,22 +1441,23 @@ def _submit_live_intents(
             daily_summary=daily_summary,
         )
         if final_guard_blockers:
-            store.record_runtime_event(
-                "WARN",
-                "live_order_final_guard_blocked",
-                {
-                    "guard": "final_pre_submit",
-                    "blockers": list(final_guard_blockers),
-                    "symbol": live_intent.symbol,
-                    "side": live_intent.side.value,
-                    "current_position_qty": str(
-                        position.total_qty if position is not None else Decimal("0")
-                    ),
-                    "daily_order_count": int(daily_summary["count"]),
-                    "daily_notional": str(daily_summary["notional"]),
-                    "unresolved_order_exists": unresolved_order_exists,
-                },
-            )
+            payload = {
+                "guard": "final_pre_submit",
+                "blockers": list(final_guard_blockers),
+                "symbol": live_intent.symbol,
+                "side": live_intent.side.value,
+                "quantity": str(live_intent.quantity),
+                "account_alias": account_alias or "",
+                "current_position_qty": str(
+                    position.total_qty if position is not None else Decimal("0")
+                ),
+                "daily_order_count": int(daily_summary["count"]),
+                "daily_notional": str(daily_summary["notional"]),
+                "unresolved_order_exists": unresolved_order_exists,
+            }
+            store.record_runtime_event("WARN", "live_order_final_guard_blocked", payload)
+            if notifier is not None:
+                notifier.notify("live_order_final_guard_blocked", level="warn", payload=payload)
             continue
         execution = orchestrator.submit(
             live_intent,
@@ -1427,17 +1475,34 @@ def _submit_live_intents(
             daily_summary["count"] += 1
             if live_intent.notional is not None:
                 daily_summary["notional"] += live_intent.notional
-        store.record_runtime_event(
-            "INFO" if execution.status.value not in {"REJECTED", "FAILED", "UNKNOWN"} else "WARN",
-            "live_order_execution",
-            {
-                "intent_id": execution.intent_id,
-                "status": execution.status.value,
-                "broker_order_id": execution.broker_order_id,
-                "message": execution.message,
-                "safety": execution.safety_decision.as_payload(),
-            },
+        execution_level = (
+            "INFO"
+            if execution.status.value not in {"REJECTED", "FAILED", "UNKNOWN"}
+            else "WARN"
         )
+        execution_payload = {
+            "intent_id": execution.intent_id,
+            "status": execution.status.value,
+            "broker_order_id": execution.broker_order_id,
+            "message": execution.message,
+            "safety": execution.safety_decision.as_payload(),
+            "symbol": live_intent.symbol,
+            "side": live_intent.side.value,
+            "quantity": str(live_intent.quantity),
+            "notional": str(live_intent.notional) if live_intent.notional is not None else None,
+            "account_alias": account_alias or "",
+        }
+        store.record_runtime_event(
+            execution_level,
+            "live_order_execution",
+            execution_payload,
+        )
+        if notifier is not None:
+            notifier.notify(
+                "live_order_execution",
+                level=execution_level.lower(),
+                payload=execution_payload,
+            )
         if (
             config.live.cancel_after_ack
             and execution.status.value == "ACKNOWLEDGED"

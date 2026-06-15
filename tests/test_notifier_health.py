@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from turtle_bot.health import HealthServer, HealthSnapshot, TOSS_LOGO_ASSET, dashboard_html
-from turtle_bot.notifier import MemoryNotifier
+from turtle_bot.notifier import DiscordTradeNotifier, MemoryNotifier
 
 
 def test_memory_notifier_collects_output_only_messages() -> None:
@@ -15,6 +15,47 @@ def test_memory_notifier_collects_output_only_messages() -> None:
     assert len(items) == 2
     assert items[0].message == "startup"
     assert items[0].level == "info"
+
+
+def test_discord_trade_notifier_sends_compact_trade_alert() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = DiscordTradeNotifier(
+        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
+        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+    )
+
+    notifier.notify(
+        "live_order_execution",
+        level="info",
+        payload={
+            "account_alias": "정훈 미국주식 계좌",
+            "symbol": "SPCX",
+            "side": "BUY",
+            "quantity": "1",
+            "status": "ACKNOWLEDGED",
+        },
+    )
+
+    assert sent
+    assert sent[0][0] == "https://discord.test/webhook"
+    assert b"SPCX" in sent[0][1]
+    assert "정훈 미국주식 계좌".encode("utf-8") in sent[0][1]
+    assert "매수".encode("utf-8") in sent[0][1]
+    assert "1주".encode("utf-8") in sent[0][1]
+    assert "주문 접수".encode("utf-8") in sent[0][1]
+    assert b"ACKNOWLEDGED" not in sent[0][1]
+
+
+def test_discord_trade_notifier_ignores_non_trade_noise() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = DiscordTradeNotifier(
+        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
+        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+    )
+
+    notifier.notify("settings_saved", level="info", payload={"path": "config/local.yaml"})
+
+    assert sent == []
 
 
 def test_health_payload_is_read_only_without_binding() -> None:
@@ -94,7 +135,7 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
 
     summary_payload = server.payload_for_path("/events/summary")
     assert summary_payload["total"] == 2
-    assert summary_payload["blockers"] == ["price_stale"]
+    assert summary_payload["blockers"] == ["시세가 최신인지 확인이 필요합니다."]
     assert summary_payload["paper_runtime_blocks"] == 1
 
     dashboard = server.payload_for_path("/dashboard")
@@ -175,7 +216,8 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "read-only" not in html
     assert "실주문 비활성" in html
     assert "자동 점검 완료" in html
-    assert "Toss API 인증 정보가 아직 없습니다." in html
+    assert "TOSS_CLIENT_ID" not in html
+    assert "TOSS_CLIENT_SECRET" not in html
     assert "원본 데이터" not in html
     assert 'data-view="raw"' not in html
     assert 'id="view-raw"' not in html
@@ -199,12 +241,41 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "/dashboard/actions/live-once" in html
     assert "/dashboard/actions/apply-safe-pilot" in html
     assert "/dashboard/actions/stop-trading" in html
+    assert 'id="live-once-confirmation-token"' in html
     assert "LIVE PILOT 실행" in html
+    assert 'placeholder="위 문구를 그대로 입력"' in html
     assert "function runLiveOnce" in html
     assert "function applySafePilot" in html
     assert "function stopTrading" in html
     assert "function safePilotPrerequisites" in html
     assert "function setSafePilotControls" in html
+    assert "function renderPilotSummary" in html
+    assert "function renderSetupFlow" in html
+    assert 'data-pilot-summary' in html
+    assert 'data-pilot-field="symbol"' in html
+    assert "거래 대상" in html
+    assert "최대 수량" in html
+    assert "하루 주문" in html
+    assert "하루 금액" in html
+    assert 'id="setup-flow"' in html
+    assert 'data-setup-step="api"' in html
+    assert 'data-setup-status' in html
+    assert "키/계좌를 바꿨다면" in html
+    assert "자동 실행 준비됨" in html
+    assert "알림 설정" in html
+    assert 'id="notification-enable-button"' in html
+    assert 'id="notification-test-button"' in html
+    assert 'id="notification-toast-stack"' in html
+    assert "function notifyImportantEvents" in html
+    assert "function enableBrowserNotifications" in html
+    assert "TRADE_NOTIFICATION_EVENTS" in html
+    assert "FAILURE_NOTIFICATION_EVENTS" in html
+    assert "function compactTradeNotification" in html
+    assert "function tradeStatusLabel" in html
+    assert "주문 접수" in html
+    assert "매수/매도 수량과 실패" in html
+    assert 'id="safe-pilot-next-action"' in html
+    assert "next-action-copy" in html
     assert 'id="safe-pilot-state-badge"' in html
     assert 'id="onboarding-safe-pilot-button"' in html
     assert 'id="onboarding-live-stop-button"' in html
@@ -217,8 +288,12 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'id="toss-client-id"' in html
     assert 'id="toss-client-secret"' in html
     assert 'id="toss-account-seq"' in html
+    assert 'id="toss-account-alias"' in html
+    assert "계좌 별명" in html
     assert 'id="toss-client-id-status"' in html
     assert 'id="toss-identity-confirmation"' in html
+    assert 'id="toss-identity-confirmation-token"' in html
+    assert "토스 연결 승인" in html
     assert 'id="toss-client-id-env"' not in html
     assert 'id="toss-client-secret-env"' not in html
     assert "환경변수 이름" not in html

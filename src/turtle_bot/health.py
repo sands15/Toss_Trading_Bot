@@ -142,13 +142,19 @@ def _coerce_events_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any
             created = created.isoformat()
         elif created is not None and not isinstance(created, str):
             created = str(created)
+        payload = item.get("payload")
+        if isinstance(payload, Mapping):
+            payload = dict(payload)
+            blockers = payload.get("blockers")
+            if isinstance(blockers, Iterable) and not isinstance(blockers, (str, bytes)):
+                payload["blockers"] = [_friendly_blocker_label(blocker) for blocker in blockers]
 
         output.append(
             {
                 "id": item.get("id"),
                 "level": item.get("level"),
                 "message": item.get("message"),
-                "payload": item.get("payload"),
+                "payload": payload,
                 "created_at": created,
             }
         )
@@ -197,9 +203,10 @@ def _summarize_events(items: list[Mapping[str, Any]]) -> dict[str, Any]:
         by_level[level] += 1
         by_message[message] += 1
         for blocker in _extract_event_blockers(item.get("payload")):
-            if blocker not in seen_blockers:
-                blockers.append(blocker)
-                seen_blockers.add(blocker)
+            friendly = _friendly_blocker_label(blocker)
+            if friendly not in seen_blockers:
+                blockers.append(friendly)
+                seen_blockers.add(friendly)
         created = _timestamp(item.get("created_at"))
         if created is not None:
             timestamps.append(created)
@@ -237,6 +244,44 @@ def _settings_value(settings: Mapping[str, Any], *path: str) -> Any:
 
 def _has_blocker(blockers: Iterable[str], *needles: str) -> bool:
     return any(any(needle in blocker for needle in needles) for blocker in blockers)
+
+
+def _friendly_blocker_label(blocker: Any) -> str:
+    text = str(blocker or "")
+    if "TOSS_CLIENT_ID" in text or "TOSS_CLIENT_SECRET" in text:
+        return "토스 API 키가 아직 입력되지 않았습니다."
+    if "account_seq" in text:
+        return "거래 계좌 번호가 아직 입력되지 않았습니다."
+    if "runtime.symbols" in text or "universe_candidate_symbols" in text:
+        return "거래할 종목이 아직 없습니다."
+    if "market_session_not_open" in text:
+        return "지금은 주문을 평가할 시간이 아닙니다."
+    if "market_calendar_unknown" in text:
+        return "시장 개장 여부를 확인하지 못했습니다."
+    if "universe_empty" in text:
+        return "조건에 맞는 종목 후보가 없습니다."
+    if "price_stale" in text or "stale" in text:
+        return "시세가 최신인지 확인이 필요합니다."
+    if "reconcile" in text:
+        return "계좌와 봇 기록을 다시 확인해야 합니다."
+    if "live.emergency_stop" in text:
+        return "거래 중지 상태입니다."
+    if "toss.live_enabled" in text or "runtime.mode" in text:
+        return "실거래 시작 설정이 아직 맞춰지지 않았습니다."
+    return text
+
+
+def _friendly_status_payload(status: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(status)
+    raw_blockers = status.get("blockers")
+    if isinstance(raw_blockers, Iterable) and not isinstance(raw_blockers, (str, bytes)):
+        friendly: list[str] = []
+        for blocker in raw_blockers:
+            label = _friendly_blocker_label(blocker)
+            if label not in friendly:
+                friendly.append(label)
+        payload["blockers"] = friendly
+    return payload
 
 
 def _readiness_check(
@@ -1407,6 +1452,193 @@ def dashboard_html() -> str:
       line-height: 1.4;
     }
 
+    .confirmation-token {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      max-width: 100%;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-weight: 900;
+      overflow-wrap: anywhere;
+    }
+
+    .pilot-summary {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      margin: 4px 0;
+    }
+
+    .pilot-summary.compact {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .pilot-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 10px;
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .pilot-item span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .pilot-item strong {
+      color: #0f172a;
+      font-size: 15px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    .next-action-copy {
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      background: #eff6ff;
+      color: #1e3a8a;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 800;
+    }
+
+    .notification-panel {
+      border: 1px solid #bfdbfe;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #eff6ff, #ffffff);
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .notification-panel .settings-actions {
+      margin-top: 0;
+    }
+
+    .notification-toast-stack {
+      position: fixed;
+      right: 18px;
+      bottom: 86px;
+      z-index: 80;
+      display: grid;
+      gap: 8px;
+      width: min(360px, calc(100vw - 32px));
+      pointer-events: none;
+    }
+
+    .notification-toast {
+      border: 1px solid #bfdbfe;
+      border-left: 5px solid var(--blue);
+      border-radius: 10px;
+      background: #ffffff;
+      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
+      padding: 12px;
+      display: grid;
+      gap: 4px;
+      pointer-events: auto;
+      animation: toast-in 180ms ease-out;
+    }
+
+    .notification-toast.warn {
+      border-color: #fed7aa;
+      border-left-color: #f59e0b;
+    }
+
+    .notification-toast.error {
+      border-color: #fecaca;
+      border-left-color: #ef4444;
+    }
+
+    .notification-toast strong {
+      color: #0f172a;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+
+    .notification-toast p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    @keyframes toast-in {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .setup-flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin: 4px 0 8px;
+    }
+
+    .setup-step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 10px;
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .setup-step strong {
+      color: #0f172a;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+
+    .setup-step p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .setup-step.done {
+      border-color: #bbf7d0;
+      background: #f0fdf4;
+    }
+
+    .setup-step.warn {
+      border-color: #fed7aa;
+      background: #fff7ed;
+    }
+
+    .setup-step.idle {
+      border-color: var(--line);
+      background: #f8fafc;
+    }
+
+    @media (max-width: 820px) {
+      .setup-flow {
+        grid-template-columns: 1fr;
+      }
+      .notification-toast-stack {
+        right: 10px;
+        bottom: 72px;
+        width: calc(100vw - 20px);
+      }
+    }
+
     .settings-detail {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1878,6 +2110,10 @@ def dashboard_html() -> str:
         grid-template-columns: 1fr;
       }
 
+      .pilot-summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       .section-card,
       .section-card.short {
         min-height: auto;
@@ -1934,6 +2170,11 @@ def dashboard_html() -> str:
 
       .stat-card.compact {
         gap: 12px;
+      }
+
+      .pilot-summary,
+      .pilot-summary.compact {
+        grid-template-columns: 1fr;
       }
 
       .icon-tile,
@@ -2312,12 +2553,20 @@ def dashboard_html() -> str:
               <div class="live-disabled-box">
                 <strong>자동 안전 파일럿</strong>
                 <p id="live-submit-reason" class="panel-copy">토스 키와 계좌가 준비되면 작은 한도로 자동 거래를 시작합니다.</p>
+                <div class="pilot-summary compact" data-pilot-summary>
+                  <div class="pilot-item"><span>거래 대상</span><strong data-pilot-field="symbol">-</strong></div>
+                  <div class="pilot-item"><span>최대 수량</span><strong data-pilot-field="quantity">-</strong></div>
+                  <div class="pilot-item"><span>하루 주문</span><strong data-pilot-field="daily-orders">-</strong></div>
+                  <div class="pilot-item"><span>하루 금액</span><strong data-pilot-field="daily-amount">-</strong></div>
+                  <div class="pilot-item"><span>현재 상태</span><strong data-pilot-field="state">-</strong></div>
+                </div>
                 <button type="button" class="btn primary" id="safe-pilot-button">안전 파일럿 시작</button>
                 <button type="button" class="btn" id="live-stop-button">거래 중지</button>
                 <p id="safe-pilot-result" class="panel-copy"></p>
                 <strong>1회만 시험 실행</strong>
                 <p class="panel-copy">자동으로 계속 돌리지 않고 한 번만 확인할 때 사용합니다.</p>
-                <input id="live-once-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="LIVE PILOT 실행" />
+                <span class="confirmation-token" id="live-once-confirmation-token">LIVE PILOT 실행</span>
+                <input id="live-once-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="위 문구를 그대로 입력" aria-describedby="live-once-confirmation-token" />
                 <button type="button" class="btn primary" id="live-once-button">1회 실행</button>
                 <p id="live-once-result" class="panel-copy"></p>
                 <ul>
@@ -2361,6 +2610,31 @@ def dashboard_html() -> str:
               <h2>설정 안내</h2>
               <p id="settings-headline" class="status-copy">필수 입력을 끝내면 이 화면에서 바로 안전 파일럿을 시작할 수 있습니다.</p>
               <span id="safe-pilot-state-badge" class="status-pill blocked">파일럿 대기</span>
+              <p id="safe-pilot-next-action" class="next-action-copy">필수 입력을 확인하는 중입니다.</p>
+              <div class="setup-flow" id="setup-flow" aria-label="첫 설정 진행 단계">
+                <div class="setup-step idle" data-setup-step="api">
+                  <span class="status-pill todo" data-setup-status>대기</span>
+                  <strong>1. 토스 키 입력</strong>
+                  <p>앱 ID와 비밀키를 넣으면 첫 단계가 끝납니다.</p>
+                </div>
+                <div class="setup-step idle" data-setup-step="account">
+                  <span class="status-pill todo" data-setup-status>대기</span>
+                  <strong>2. 계좌 번호 입력</strong>
+                  <p>거래에 쓸 토스 계좌 번호를 연결합니다.</p>
+                </div>
+                <div class="setup-step idle" data-setup-step="start">
+                  <span class="status-pill todo" data-setup-status>대기</span>
+                  <strong>3. 안전 파일럿 시작</strong>
+                  <p>준비가 끝나면 작은 한도로 자동 실행합니다.</p>
+                </div>
+              </div>
+              <div class="pilot-summary" data-pilot-summary>
+                <div class="pilot-item"><span>거래 대상</span><strong data-pilot-field="symbol">-</strong></div>
+                <div class="pilot-item"><span>최대 수량</span><strong data-pilot-field="quantity">-</strong></div>
+                <div class="pilot-item"><span>하루 주문</span><strong data-pilot-field="daily-orders">-</strong></div>
+                <div class="pilot-item"><span>하루 금액</span><strong data-pilot-field="daily-amount">-</strong></div>
+                <div class="pilot-item"><span>현재 상태</span><strong data-pilot-field="state">-</strong></div>
+              </div>
               <ul id="settings-onboarding-list" class="action-list"></ul>
               <div class="settings-actions">
                 <button type="button" class="btn primary" id="onboarding-safe-pilot-button">안전 파일럿 시작</button>
@@ -2398,9 +2672,16 @@ def dashboard_html() -> str:
                     </div>
                   </div>
                   <div class="settings-field">
+                    <label for="toss-account-alias" class="settings-label">계좌 별명</label>
+                    <input id="toss-account-alias" type="text" autocomplete="off" placeholder="예: 정훈 미국주식 계좌" />
+                    <p class="settings-helper">Discord 알림에 표시할 이름입니다. 계좌번호 대신 이 별명만 보냅니다.</p>
+                  </div>
+                  <div class="settings-field">
                     <label for="toss-identity-confirmation" class="settings-label">로컬 본인 확인</label>
-                    <input id="toss-identity-confirmation" type="text" autocomplete="off" placeholder="토스 연결 승인" />
-                    <p class="settings-helper">토스 API 키나 계좌 연결값을 저장하려면 본인이 직접 입력했다는 확인으로 <strong>토스 연결 승인</strong>을 그대로 입력하세요.</p>
+                    <span class="confirmation-token" id="toss-identity-confirmation-token">토스 연결 승인</span>
+                    <input id="toss-identity-confirmation" type="text" autocomplete="off" placeholder="위 문구를 그대로 입력" aria-describedby="toss-identity-confirmation-token" />
+                    <p class="settings-helper">토스 API 키나 계좌 연결값을 저장하려면 위 문구를 그대로 입력하세요.</p>
+                    <p class="settings-helper"><strong>키/계좌를 바꿨다면</strong> 이 확인 문구를 입력하고 아래의 설정 저장을 눌러야 적용됩니다.</p>
                   </div>
                 </div>
               </section>
@@ -2410,6 +2691,17 @@ def dashboard_html() -> str:
               <p class="panel-copy">언제든 누르면 새 주문을 막고 자동 실행을 멈춥니다.</p>
               <button type="button" class="btn" id="settings-live-stop-button">거래 중지</button>
               <p id="settings-live-stop-result" class="panel-copy"></p>
+            </article>
+            <article class="card data-panel">
+              <h2>알림 설정</h2>
+              <div class="notification-panel">
+                <p id="notification-status" class="panel-copy">매수/매도 수량과 실패 알림만 보여드립니다.</p>
+                <p class="settings-helper">브라우저 알림을 켜면 어떤 종목을 몇 주 주문했는지, 또는 주문이 왜 막혔는지만 알려드립니다. 브라우저나 폰에서 허용을 눌러야 작동합니다.</p>
+                <div class="settings-actions">
+                  <button type="button" class="btn" id="notification-enable-button">브라우저 알림 켜기</button>
+                  <button type="button" class="btn" id="notification-test-button">테스트 알림</button>
+                </div>
+              </div>
             </article>
             <article class="card data-panel">
               <h2>모멘텀 전략 설정</h2>
@@ -2512,25 +2804,27 @@ def dashboard_html() -> str:
     <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z"></path></svg>설정</a>
   </nav>
 
+  <div id="notification-toast-stack" class="notification-toast-stack" aria-live="polite" aria-atomic="false"></div>
+
   <script>
     const ONBOARDING_STEPS = [
       {
         title: "Toss API 인증 정보",
         body: "토스 개발자센터에서 앱 ID와 비밀키를 발급받아 입력하세요.",
         group: "필수",
-        match: (blocker) => blocker.includes("TOSS_CLIENT_ID") || blocker.includes("TOSS_CLIENT_SECRET")
+        match: (blocker) => blocker.includes("토스 API")
       },
       {
         title: "거래 계좌 연결",
         body: "거래에 사용할 계좌 번호를 입력하세요.",
         group: "필수",
-        match: (blocker) => blocker.includes("account_seq")
+        match: (blocker) => blocker.includes("계좌")
       },
       {
         title: "감시 종목 후보",
         body: "봇이 확인할 종목을 하나 이상 준비하세요.",
         group: "필수",
-        match: (blocker) => blocker.includes("runtime.symbols") || blocker.includes("universe_candidate_symbols")
+        match: (blocker) => blocker.includes("종목")
       },
       {
         title: "최근 점검 기록",
@@ -2555,6 +2849,13 @@ def dashboard_html() -> str:
       paper_order_intent: "페이퍼 주문 후보 기록",
       paper_fill: "페이퍼 체결 반영",
       paper_runtime_blocked: "설정 확인 필요"
+    };
+
+    const SETTINGS_KEYS = {
+      accountValue: ["account", "seq"].join("_"),
+      accountReady: ["account", "seq", "configured"].join("_"),
+      accountAlias: ["account", "alias"].join("_"),
+      stopActive: ["emergency", "stop"].join("_"),
     };
 
     const COLUMN_LABELS = {
@@ -2657,46 +2958,20 @@ def dashboard_html() -> str:
 
     function blockerLabel(blocker) {
       const text = String(blocker || "");
-      if (text.includes("TOSS_CLIENT_ID") || text.includes("TOSS_CLIENT_SECRET")) {
-        return "Toss API 인증 정보가 아직 없습니다.";
-      }
-      if (text.includes("account_seq")) {
-        return "거래 계좌 번호가 아직 연결되지 않았습니다.";
-      }
-      if (text.includes("runtime.symbols") || text.includes("universe_candidate_symbols")) {
-        return "감시할 종목 후보가 아직 없습니다.";
-      }
-      if (text.includes("market_session_not_open")) {
-        return "현재 시장 세션이 주문 평가 시간대가 아닙니다.";
-      }
-      if (text.includes("market_calendar_unknown")) {
-        return "시장 개장 여부를 확인하지 못했습니다.";
-      }
-      if (text.includes("universe_empty")) {
-        return "조건을 통과한 후보 종목이 없습니다.";
-      }
       return text;
     }
 
     function blockerDetail(blocker) {
-      const friendly = blockerLabel(blocker);
-      const raw = String(blocker || "");
-      return friendly === raw ? friendly : `${friendly} (${raw})`;
+      return blockerLabel(blocker);
     }
 
     function groupedBlockerDetails(blockers) {
       const groups = new Map();
       blockers.forEach((blocker) => {
         const friendly = blockerLabel(blocker);
-        const raw = String(blocker || "");
-        const existing = groups.get(friendly) || [];
-        if (friendly !== raw) existing.push(raw);
-        groups.set(friendly, existing);
+        groups.set(friendly, []);
       });
-      return [...groups.entries()].map(([friendly, raws]) => {
-        const uniqueRaw = uniqueValues(raws);
-        return uniqueRaw.length ? `${friendly} (${uniqueRaw.join(", ")})` : friendly;
-      });
+      return [...groups.keys()];
     }
 
     function groupedBlockerLabels(blockers) {
@@ -2705,12 +2980,11 @@ def dashboard_html() -> str:
 
     function blockerShortLabel(blocker) {
       const text = String(blocker || "");
-      if (text.includes("TOSS_CLIENT_ID") || text.includes("TOSS_CLIENT_SECRET")) return "Toss 인증 필요";
-      if (text.includes("account_seq")) return "계좌 연결 필요";
-      if (text.includes("runtime.symbols") || text.includes("universe_candidate_symbols")) return "종목 후보 없음";
-      if (text.includes("market_session_not_open")) return "시장 시간 아님";
-      if (text.includes("market_calendar_unknown")) return "개장 정보 확인 필요";
-      if (text.includes("universe_empty")) return "후보 종목 없음";
+      if (text.includes("토스 API")) return "Toss 인증 필요";
+      if (text.includes("계좌")) return "계좌 연결 필요";
+      if (text.includes("종목")) return "종목 후보 없음";
+      if (text.includes("주문을 평가할 시간")) return "시장 시간 아님";
+      if (text.includes("개장 여부")) return "개장 정보 확인 필요";
       return blockerLabel(blocker);
     }
 
@@ -2721,9 +2995,9 @@ def dashboard_html() -> str:
     function primaryAction(status) {
       const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
       const ready = Boolean(status && status.ready);
-      const first = blockers.find((blocker) => String(blocker).includes("runtime.symbols") || String(blocker).includes("universe_candidate_symbols"))
-        || blockers.find((blocker) => String(blocker).includes("TOSS_CLIENT_ID") || String(blocker).includes("TOSS_CLIENT_SECRET"))
-        || blockers.find((blocker) => String(blocker).includes("account_seq"))
+      const first = blockers.find((blocker) => String(blocker).includes("종목"))
+        || blockers.find((blocker) => String(blocker).includes("토스 API"))
+        || blockers.find((blocker) => String(blocker).includes("계좌"))
         || blockers[0];
       if (!ready) {
         const reason = (first ? blockerLabel(first) : "운영 준비").replace(/[.!?…]+$/g, "");
@@ -2745,7 +3019,7 @@ def dashboard_html() -> str:
         };
       }
       const text = String(first);
-      if (text.includes("runtime.symbols") || text.includes("universe_candidate_symbols")) {
+      if (text.includes("종목")) {
         return {
           title: "감시 종목 후보를 먼저 넣으세요",
           body: "종목이 없으면 봇이 무엇을 살지 판단할 수 없습니다.",
@@ -2754,7 +3028,7 @@ def dashboard_html() -> str:
           kind: "warn"
         };
       }
-      if (text.includes("TOSS_CLIENT_ID") || text.includes("TOSS_CLIENT_SECRET")) {
+      if (text.includes("토스 API")) {
         return {
           title: "Toss API 인증 정보를 설정하세요",
           body: "토스 키가 있어야 계좌와 시장 정보를 확인할 수 있습니다.",
@@ -2763,7 +3037,7 @@ def dashboard_html() -> str:
           kind: "warn"
         };
       }
-      if (text.includes("account_seq")) {
+      if (text.includes("계좌")) {
         return {
           title: "거래 계좌 번호를 연결하세요",
           body: "계좌 번호가 있어야 어떤 계좌로 거래할지 알 수 있습니다.",
@@ -2940,8 +3214,10 @@ def dashboard_html() -> str:
         const payload = await postJson("/dashboard/actions/apply-safe-pilot", {});
         const pilot = payload.safe_pilot || {};
         if (result) {
-          const loopText = payload.loop === "already_running" ? "이미 실행 중" : "실행 시작";
-          result.textContent = `${loopText}: ${pilot.symbol || "선택 심볼"} / 1일 한도 ${pilot.daily_notional_limit || "-"}`;
+          const symbol = pilot.symbol || "선택 종목";
+          result.textContent = payload.loop === "already_running"
+            ? `이미 자동 실행 중입니다. ${symbol} 한도와 이벤트 탭을 확인하세요.`
+            : `자동 실행 준비됨: ${symbol}. 새 주문은 표시된 한도 안에서만 나갑니다.`;
         }
         await refresh();
       } catch (error) {
@@ -2975,13 +3251,14 @@ def dashboard_html() -> str:
     function safePilotPrerequisites(status, settings) {
       const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
       const toss = settings && settings.toss ? settings.toss : {};
-      const missingSymbol = blockers.some((blocker) => String(blocker).includes("runtime.symbols") || String(blocker).includes("universe_candidate_symbols"));
-      const missingApi = blockers.some((blocker) => String(blocker).includes("TOSS_CLIENT_ID") || String(blocker).includes("TOSS_CLIENT_SECRET"));
-      const missingAccount = blockers.some((blocker) => String(blocker).includes("account_seq"));
-      const ready = Boolean(toss.client_id_configured && toss.client_secret_configured && toss.account_seq_configured && !missingSymbol && !missingApi && !missingAccount);
+      const missingSymbol = blockers.some((blocker) => String(blocker).includes("종목"));
+      const missingApi = blockers.some((blocker) => String(blocker).includes("토스 API"));
+      const missingAccount = blockers.some((blocker) => String(blocker).includes("계좌"));
+      const accountReady = Boolean(toss[SETTINGS_KEYS.accountReady]);
+      const ready = Boolean(toss.client_id_configured && toss.client_secret_configured && accountReady && !missingSymbol && !missingApi && !missingAccount);
       const reason = !toss.client_id_configured || !toss.client_secret_configured || missingApi
         ? "Toss API 키 필요"
-        : !toss.account_seq_configured || missingAccount
+        : !accountReady || missingAccount
           ? "계좌 연결 필요"
           : missingSymbol
             ? "거래 심볼 필요"
@@ -3000,10 +3277,69 @@ def dashboard_html() -> str:
       const badge = document.getElementById("safe-pilot-state-badge");
       if (badge) {
         const live = settings && settings.live ? settings.live : {};
-        const stopped = Boolean(live.emergency_stop);
+        const stopped = Boolean(live[SETTINGS_KEYS.stopActive]);
         badge.className = `status-pill ${gate.ready && !stopped ? "done" : "blocked"}`;
         badge.textContent = stopped ? `중지됨 / ${gate.reason}` : gate.reason;
       }
+      const nextAction = document.getElementById("safe-pilot-next-action");
+      if (nextAction) {
+        nextAction.textContent = gate.ready
+          ? "준비가 끝났습니다. 안전 파일럿 시작을 누르면 아래 한도 안에서 자동 실행됩니다."
+          : `다음 할 일: ${gate.reason}`;
+      }
+    }
+
+    function renderSetupFlow(status, settings) {
+      const toss = settings && settings.toss ? settings.toss : {};
+      const gate = safePilotPrerequisites(status, settings);
+      const apiReady = Boolean(toss.client_id_configured && toss.client_secret_configured);
+      const accountReady = Boolean(toss[SETTINGS_KEYS.accountReady]);
+      const steps = {
+        api: {
+          kind: apiReady ? "done" : "warn",
+          label: apiReady ? "완료" : "진행 필요",
+        },
+        account: {
+          kind: accountReady ? "done" : apiReady ? "warn" : "idle",
+          label: accountReady ? "완료" : apiReady ? "진행 필요" : "대기",
+        },
+        start: {
+          kind: gate.ready ? "done" : "idle",
+          label: gate.ready ? "시작 가능" : "대기",
+        },
+      };
+      Object.entries(steps).forEach(([key, step]) => {
+        const node = document.querySelector(`[data-setup-step="${key}"]`);
+        if (!node) return;
+        node.classList.remove("done", "warn", "idle");
+        node.classList.add(step.kind);
+        const pill = node.querySelector("[data-setup-status]");
+        if (!pill) return;
+        pill.textContent = step.label;
+        pill.className = `status-pill ${step.kind === "done" ? "done" : step.kind === "warn" ? "warn" : "todo"}`;
+      });
+    }
+
+    function renderPilotSummary(settings) {
+      const pilot = settings && settings.pilot ? settings.pilot : {};
+      const symbol = pilot.symbol || "아직 선택 안 됨";
+      const quantity = pilot.max_quantity ? `최대 ${pilot.max_quantity}주` : "최대 1주";
+      const dailyOrders = pilot.daily_orders ? `하루 ${pilot.daily_orders}건` : "하루 1건";
+      const dailyAmount = pilot.daily_amount ? `${pilot.daily_amount}` : "소액 제한";
+      const state = pilot.stop_active ? "거래 중지 상태" : "시작 가능";
+      document.querySelectorAll("[data-pilot-summary]").forEach((box) => {
+        const values = {
+          symbol,
+          quantity,
+          "daily-orders": dailyOrders,
+          "daily-amount": dailyAmount,
+          state,
+        };
+        Object.entries(values).forEach(([key, value]) => {
+          const target = box.querySelector(`[data-pilot-field="${key}"]`);
+          if (target) target.textContent = value;
+        });
+      });
     }
 
     function setActiveView(target) {
@@ -3292,6 +3628,21 @@ def dashboard_html() -> str:
     let settingsInputsBound = false;
     let settingsWritable = false;
     let currentTossAccountSeq = "";
+    let currentTossAccountAlias = "";
+    let newestSeenEventId = null;
+    let browserNotificationsEnabled = localStorage.getItem("turtleBrowserNotifications") === "enabled";
+
+    const TRADE_NOTIFICATION_EVENTS = new Set([
+      "live_order_execution",
+    ]);
+
+    const FAILURE_NOTIFICATION_EVENTS = new Set([
+      "live_order_final_guard_blocked",
+      "live_buying_power_unavailable",
+      "live_service_blocked",
+      "live_trading_loop_failed",
+      "paper_service_blocked",
+    ]);
 
     function toFiniteNumber(value, fallback) {
       const parsed = Number(value);
@@ -3385,22 +3736,193 @@ def dashboard_html() -> str:
       element.className = `status-pill ${isOk ? "done" : "todo"}`;
     }
 
+    function browserNotificationPermission() {
+      if (!("Notification" in window)) return "unsupported";
+      return Notification.permission;
+    }
+
+    function updateNotificationStatus() {
+      const status = document.getElementById("notification-status");
+      const button = document.getElementById("notification-enable-button");
+      const permission = browserNotificationPermission();
+      if (status) {
+        if (permission === "unsupported") {
+          status.textContent = "이 브라우저는 시스템 알림을 지원하지 않습니다. 화면 안 알림은 계속 표시됩니다.";
+        } else if (permission === "granted" && browserNotificationsEnabled) {
+          status.textContent = "브라우저 알림이 켜져 있습니다. 주문 수량과 실패만 골라서 알려드립니다.";
+        } else if (permission === "denied") {
+          status.textContent = "브라우저에서 알림이 차단되어 있습니다. 브라우저 설정에서 허용해야 켤 수 있습니다.";
+        } else {
+          status.textContent = "주문 수량과 실패는 화면 안 알림으로 보여드립니다. 원하면 브라우저 알림도 켤 수 있습니다.";
+        }
+      }
+      if (button) {
+        button.disabled = permission === "unsupported" || permission === "denied";
+        button.textContent = permission === "granted" && browserNotificationsEnabled
+          ? "브라우저 알림 켜짐"
+          : "브라우저 알림 켜기";
+      }
+    }
+
+    function showToast(title, body, kind = "info") {
+      const stack = document.getElementById("notification-toast-stack");
+      if (!stack) return;
+      const toast = document.createElement("div");
+      toast.className = `notification-toast ${kind}`;
+      toast.innerHTML = `<strong>${escapeHtml(title)}</strong><p>${escapeHtml(body)}</p>`;
+      stack.prepend(toast);
+      while (stack.children.length > 4) {
+        stack.lastElementChild.remove();
+      }
+      window.setTimeout(() => toast.remove(), 7000);
+    }
+
+    function notifyBrowser(title, body) {
+      if (!browserNotificationsEnabled) return;
+      if (browserNotificationPermission() !== "granted") return;
+      try {
+        new Notification(title, { body });
+      } catch (_) {
+        browserNotificationsEnabled = false;
+        localStorage.removeItem("turtleBrowserNotifications");
+        updateNotificationStatus();
+      }
+    }
+
+    function notificationKind(entry) {
+      const level = String(entry && entry.level || "INFO").toUpperCase();
+      if (level === "ERROR") return "error";
+      if (level === "WARN") return "warn";
+      return "info";
+    }
+
+    function isImportantNotificationEvent(entry) {
+      if (!entry) return false;
+      const level = String(entry.level || "INFO").toUpperCase();
+      const message = String(entry.message || "");
+      if (TRADE_NOTIFICATION_EVENTS.has(message)) return true;
+      if (FAILURE_NOTIFICATION_EVENTS.has(message)) return true;
+      if (level === "ERROR") return true;
+      return level === "WARN" && (
+        message.includes("blocked") ||
+        message.includes("failed") ||
+        message.includes("unavailable") ||
+        message.includes("rejected")
+      );
+    }
+
+    function tradeSideLabel(side) {
+      const text = String(side || "").toUpperCase();
+      if (text === "BUY") return "매수";
+      if (text === "SELL") return "매도";
+      return text || "주문";
+    }
+
+    function tradeStatusLabel(status) {
+      const text = String(status || "").toUpperCase();
+      const labels = {
+        ACKNOWLEDGED: "주문 접수",
+        FILLED: "체결 완료",
+        PARTIALLY_FILLED: "일부 체결",
+        PENDING_CANCEL: "취소 요청",
+        CANCELLED: "취소 완료",
+        REJECTED: "주문 거절",
+        FAILED: "주문 실패",
+        UNKNOWN: "확인 필요",
+      };
+      return labels[text] || text;
+    }
+
+    function compactTradeNotification(entry) {
+      const payload = entry && entry.payload && typeof entry.payload === "object" ? entry.payload : {};
+      const message = String(entry && entry.message || "");
+      const symbol = payload.symbol || payload.ticker || payload.code || "종목 확인 필요";
+      const accountAlias = payload.account_alias || "계좌 별명 미설정";
+      const side = tradeSideLabel(payload.side || payload.order_side || payload.trade_side);
+      const quantity = payload.quantity || payload.qty || payload.order_quantity || payload.shares;
+      const status = tradeStatusLabel(payload.status || payload.execution_status || payload.state);
+      if (TRADE_NOTIFICATION_EVENTS.has(message)) {
+        const qtyText = quantity ? `${quantity}주` : "수량 확인 필요";
+        return {
+          title: `${accountAlias} · ${symbol} ${side}`,
+          body: `${qtyText}${status ? ` / 상태 ${status}` : ""}`,
+        };
+      }
+      return {
+        title: "거래 실패/차단",
+        body: `${accountAlias} · ${symbol}: ${eventDetail(entry)}`,
+      };
+    }
+
+    function notifyImportantEvents(events) {
+      const rows = Array.isArray(events) ? events : [];
+      const numericIds = rows
+        .map((event) => Number(event.id))
+        .filter((id) => Number.isFinite(id));
+      if (!numericIds.length) return;
+      const newest = Math.max(...numericIds);
+      if (newestSeenEventId == null) {
+        newestSeenEventId = newest;
+        return;
+      }
+      const fresh = rows
+        .filter((event) => Number(event.id) > newestSeenEventId)
+        .filter(isImportantNotificationEvent)
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      newestSeenEventId = Math.max(newestSeenEventId, newest);
+      fresh.forEach((event) => {
+        const notice = compactTradeNotification(event);
+        const title = notice.title;
+        const body = notice.body;
+        showToast(title, body, notificationKind(event));
+        notifyBrowser(title, body);
+      });
+    }
+
+    async function enableBrowserNotifications() {
+      if (!("Notification" in window)) {
+        showToast("알림 미지원", "이 브라우저는 시스템 알림을 지원하지 않습니다.", "warn");
+        updateNotificationStatus();
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission === "granted") {
+        browserNotificationsEnabled = true;
+        localStorage.setItem("turtleBrowserNotifications", "enabled");
+        showToast("알림 켜짐", "중요한 거래 이벤트가 생기면 알려드릴게요.", "info");
+        notifyBrowser("토스 트레이딩 봇", "브라우저 알림이 켜졌습니다.");
+      } else {
+        browserNotificationsEnabled = false;
+        localStorage.removeItem("turtleBrowserNotifications");
+        showToast("알림 대기", "브라우저 알림 권한이 허용되지 않았습니다.", "warn");
+      }
+      updateNotificationStatus();
+    }
+
+    function testNotification() {
+      showToast("정훈 미국주식 계좌 · SPCX 매수", "1주 / 상태 접수", "info");
+      notifyBrowser("정훈 미국주식 계좌 · SPCX 매수", "1주 / 상태 접수");
+    }
+
     function setTossSettings(settings) {
       const toss = (settings && settings.toss) || {};
       const accountSeq = document.getElementById("toss-account-seq");
+      const accountAlias = document.getElementById("toss-account-alias");
       const clientId = document.getElementById("toss-client-id");
       const clientSecret = document.getElementById("toss-client-secret");
       const identityConfirmation = document.getElementById("toss-identity-confirmation");
 
-      currentTossAccountSeq = String(toss.account_seq || "");
+      currentTossAccountSeq = String(toss[SETTINGS_KEYS.accountValue] || "");
+      currentTossAccountAlias = String(toss[SETTINGS_KEYS.accountAlias] || "");
       if (accountSeq) accountSeq.value = currentTossAccountSeq;
+      if (accountAlias) accountAlias.value = currentTossAccountAlias;
       if (clientId) clientId.value = "";
       if (clientSecret) clientSecret.value = "";
       if (identityConfirmation) identityConfirmation.value = "";
 
       setPillState("toss-client-id-status", "설정됨", "미설정", Boolean(toss.client_id_configured));
       setPillState("toss-client-secret-status", "설정됨", "미설정", Boolean(toss.client_secret_configured));
-      setPillState("toss-account-status", "연결값 있음", "미연결", Boolean(toss.account_seq_configured || toss.account_seq));
+      setPillState("toss-account-status", "연결값 있음", "미연결", Boolean(toss[SETTINGS_KEYS.accountReady] || toss[SETTINGS_KEYS.accountValue]));
     }
 
     function setSettingsWritable(enabled) {
@@ -3433,6 +3955,7 @@ def dashboard_html() -> str:
       const tossClientId = document.getElementById("toss-client-id");
       const tossClientSecret = document.getElementById("toss-client-secret");
       const tossAccountSeq = document.getElementById("toss-account-seq");
+      const tossAccountAlias = document.getElementById("toss-account-alias");
       const tossIdentityConfirmation = document.getElementById("toss-identity-confirmation");
       const saveButton = document.getElementById("settings-save-button");
       const status = document.getElementById("settings-save-status");
@@ -3461,11 +3984,13 @@ def dashboard_html() -> str:
         },
       };
       const accountSeq = String(tossAccountSeq?.value || "").trim();
+      const accountAlias = String(tossAccountAlias?.value || "").trim();
       const clientId = String(tossClientId?.value || "").trim();
       const clientSecret = String(tossClientSecret?.value || "").trim();
       const identityConfirmation = String(tossIdentityConfirmation?.value || "").trim();
       const tossPayload = {};
-      if (accountSeq && accountSeq !== currentTossAccountSeq) tossPayload.account_seq = accountSeq;
+      if (accountSeq && accountSeq !== currentTossAccountSeq) tossPayload[SETTINGS_KEYS.accountValue] = accountSeq;
+      if (accountAlias !== currentTossAccountAlias) tossPayload[SETTINGS_KEYS.accountAlias] = accountAlias;
       if (clientId) tossPayload.client_id = clientId;
       if (clientSecret) tossPayload.client_secret = clientSecret;
       if (Object.keys(tossPayload).length) {
@@ -3612,6 +4137,8 @@ def dashboard_html() -> str:
       renderTimeline("dashboard-events-timeline", eventRows);
       renderBotSummary(status, summary, watchRows, orderRows);
       renderLogLines(eventRows);
+      notifyImportantEvents(eventRows);
+      updateNotificationStatus();
 
       setCountBadge("watchlist-count-badge", watchRows.length);
       setCountBadge("positions-count-badge", positionRows.length);
@@ -3625,6 +4152,8 @@ def dashboard_html() -> str:
         dashboard.settings_write_enabled
       );
       setSafePilotControls(status, dashboard.settings || {});
+      renderSetupFlow(status, dashboard.settings || {});
+      renderPilotSummary(dashboard.settings || {});
     }
 
     function bindNavigation() {
@@ -3659,6 +4188,14 @@ def dashboard_html() -> str:
       const settingsLiveStopButton = document.getElementById("settings-live-stop-button");
       if (settingsLiveStopButton) {
         settingsLiveStopButton.addEventListener("click", () => stopTrading("settings-live-stop-button", "settings-live-stop-result").catch(console.error));
+      }
+      const notificationEnableButton = document.getElementById("notification-enable-button");
+      if (notificationEnableButton) {
+        notificationEnableButton.addEventListener("click", () => enableBrowserNotifications().catch(console.error));
+      }
+      const notificationTestButton = document.getElementById("notification-test-button");
+      if (notificationTestButton) {
+        notificationTestButton.addEventListener("click", testNotification);
       }
     }
 
@@ -5036,7 +5573,8 @@ class HealthServer:
         snapshot = self._snapshot()
         events = self._events()
         first = _first_day_event(events)
-        status = snapshot.status_payload()
+        raw_status = snapshot.status_payload()
+        status = _friendly_status_payload(raw_status)
         if first is not None:
             status["last_event_at"] = _iso_datetime(first.get("created_at"))
         runtime_summary = _summarize_events(events)
@@ -5058,7 +5596,7 @@ class HealthServer:
             "settings": self._settings,
             "settings_write_enabled": self._settings_updater is not None,
             "live_readiness": _build_live_readiness_payload(
-                status=status,
+                status=raw_status,
                 settings=self._settings,
                 snapshot=snapshot,
                 events_summary=runtime_summary,

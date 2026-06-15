@@ -433,10 +433,10 @@ def test_dashboard_server_reads_runtime_events_from_sqlite(tmp_path: Path) -> No
 
     assert dashboard["status"]["mode"] == "paper"
     assert dashboard["status"]["ready"] is False
-    assert dashboard["status"]["blockers"] == ["TOSS_CLIENT_ID is not configured"]
+    assert dashboard["status"]["blockers"] == ["토스 API 키가 아직 입력되지 않았습니다."]
     assert dashboard["runtime_events"]["count"] == 1
     assert events["items"][0]["message"] == "paper_service_blocked"
-    assert summary["blockers"] == ["TOSS_CLIENT_ID is not configured"]
+    assert summary["blockers"] == ["토스 API 키가 아직 입력되지 않았습니다."]
 
 
 def test_update_momentum_settings_writes_user_friendly_cash_reserve(tmp_path: Path) -> None:
@@ -516,6 +516,7 @@ def test_update_dashboard_settings_saves_toss_connection_without_secret_echo(
                 "client_secret_env": "MY_TOSS_CLIENT_SECRET",
                 "client_id": "client-id-value",
                 "client_secret": "client-secret-value",
+                "account_alias": "정훈 미국주식 계좌",
                 "identity_confirmation": "토스 연결 승인",
             }
         },
@@ -523,6 +524,7 @@ def test_update_dashboard_settings_saves_toss_connection_without_secret_echo(
     )
 
     assert saved["toss"]["account_seq"] == "7"
+    assert saved["toss"]["account_alias"] == "정훈 미국주식 계좌"
     assert saved["toss"]["client_id_env"] == "MY_TOSS_CLIENT_ID"
     assert saved["toss"]["client_secret_env"] == "MY_TOSS_CLIENT_SECRET"
     assert env == {
@@ -532,6 +534,20 @@ def test_update_dashboard_settings_saves_toss_connection_without_secret_echo(
     loaded = config_path.read_text(encoding="utf-8")
     assert "client-id-value" not in loaded
     assert "client-secret-value" not in loaded
+
+
+def test_update_dashboard_settings_saves_account_alias_without_confirmation(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    _write_config(config_path, strategy_kind="momentum", account_seq="7")
+
+    saved = update_dashboard_settings(
+        config_path,
+        {"toss": {"account_alias": "정훈 미국주식 계좌"}},
+    )
+
+    assert saved["toss"]["account_alias"] == "정훈 미국주식 계좌"
 
 
 def test_update_dashboard_settings_requires_identity_confirmation_for_toss_changes(
