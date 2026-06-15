@@ -10,14 +10,18 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from turtle_bot.cli import run
+from turtle_bot.config import load_config
 from turtle_bot.domain import Candle
 from turtle_bot.operations import (
     LaunchdServiceConfig,
+    apply_safe_pilot_settings,
     build_dashboard_server,
     check_operations_config,
+    ensure_local_config,
     operations_checks_payload,
     render_launchd_plist,
     run_paper_service,
+    stop_live_trading_settings,
     update_dashboard_settings,
     update_momentum_settings,
 )
@@ -31,6 +35,7 @@ class RecordedRequest:
     url: str
     headers: Mapping[str, str]
     query: Mapping[str, Any] | None
+    json_body: Mapping[str, Any] | None
     form_body: Mapping[str, Any] | None
 
 
@@ -55,6 +60,7 @@ class FakeTransport:
                 url=url,
                 headers=dict(headers),
                 query=dict(query) if query is not None else None,
+                json_body=dict(json_body) if json_body is not None else None,
                 form_body=form_body,
             )
         )
@@ -67,6 +73,13 @@ def _write_config(
     path: Path,
     *,
     live_enabled: bool = False,
+    live_emergency_stop: bool = True,
+    live_allowed_symbols: tuple[str, ...] = (),
+    live_max_order_quantity: str | None = "1",
+    live_max_order_notional: str | None = None,
+    live_daily_order_count_limit: int | None = 1,
+    live_daily_notional_limit: str | None = None,
+    live_cancel_after_ack: bool = False,
     symbols: tuple[str, ...] = (),
     account_seq: str | None = None,
     universe_enabled: bool = False,
@@ -81,6 +94,8 @@ def _write_config(
     symbol_lines.extend(f"    - {symbol}" for symbol in symbols)
     universe_symbol_lines = ["  universe_candidate_symbols:"]
     universe_symbol_lines.extend(f"    - {symbol}" for symbol in universe_candidate_symbols)
+    live_symbol_lines = ["  allowed_symbols:"]
+    live_symbol_lines.extend(f"    - {symbol}" for symbol in live_allowed_symbols)
     path.write_text(
         "\n".join(
             [
@@ -90,6 +105,18 @@ def _write_config(
                 "  base_url: https://example.test",
                 f"  client_id_env: {client_id_env}",
                 f"  client_secret_env: {client_secret_env}",
+                "live:",
+                f"  emergency_stop: {str(live_emergency_stop).lower()}",
+                *live_symbol_lines,
+                f"  max_order_quantity: {live_max_order_quantity or ''}",
+                f"  max_order_notional: {live_max_order_notional or ''}",
+                f"  daily_order_count_limit: {live_daily_order_count_limit if live_daily_order_count_limit is not None else ''}",
+                f"  daily_notional_limit: {live_daily_notional_limit or ''}",
+                "  require_market_open: true",
+                "  require_clean_reconcile: true",
+                "  block_unresolved_orders: true",
+                "  confirm_high_value_order: false",
+                f"  cancel_after_ack: {str(live_cancel_after_ack).lower()}",
                 "runtime:",
                 f"  mode: {runtime_mode}",
                 "  market: KR",
@@ -214,6 +241,57 @@ def test_render_launchd_plist_is_valid_paper_service_plist(tmp_path: Path) -> No
     assert plist["StandardErrorPath"].endswith("turtle-paper.err.log")
 
 
+def test_ensure_local_config_copies_template_without_secrets(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    template = config_dir / "local.example.yaml"
+    target = config_dir / "local.yaml"
+    template.parent.mkdir(parents=True)
+    template.write_text(
+        "toss:\n  live_enabled: false\n  account_seq: ''\n",
+        encoding="utf-8",
+    )
+
+    created_path, created = ensure_local_config(target)
+    second_path, second_created = ensure_local_config(target)
+
+    assert created_path == target
+    assert created is True
+    assert second_path == target
+    assert second_created is False
+    assert target.read_text(encoding="utf-8") == template.read_text(encoding="utf-8")
+
+
+def test_dashboard_server_auto_creates_local_config_from_template(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    target = config_dir / "local.yaml"
+    template = config_dir / "local.example.yaml"
+    template.parent.mkdir(parents=True)
+    template.write_text(
+        "\n".join(
+            [
+                "toss:",
+                "  live_enabled: false",
+                "runtime:",
+                "  mode: shadow",
+                "live:",
+                "  emergency_stop: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    server = build_dashboard_server(
+        state_db=tmp_path / "state" / "turtle.sqlite3",
+        config_path=target,
+    )
+    dashboard = server.payload_for_path("/dashboard")
+
+    assert target.exists()
+    assert dashboard["settings"]["config"]["created_from_template"] is True
+    assert dashboard["settings"]["config"]["path"] == str(target)
+
+
 def test_checked_in_launchd_template_is_valid_plist() -> None:
     template = Path("ops/launchd/com.sands15.toss-turtle-bot.plist")
 
@@ -240,7 +318,7 @@ def test_operations_check_blocks_live_enabled_config(tmp_path: Path) -> None:
     )
 
     assert payload["status"] == "blocked"
-    assert any("live trading is enabled" in blocker for blocker in payload["blockers"])
+    assert "toss.live_enabled must be false unless runtime.mode is live" in payload["blockers"]
 
 
 def test_operations_check_validates_toss_readiness_with_custom_env_names(tmp_path: Path) -> None:
@@ -531,6 +609,304 @@ def test_paper_service_with_toss_read_only_data_runs_paper_iteration(
         "paper_order_intent",
         "paper_order_guard",
     ]
+
+
+def test_live_service_submits_order_through_toss_adapter_and_records_ledger(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        live_max_order_quantity="1",
+        live_max_order_notional="100000",
+        live_daily_order_count_limit=1,
+        live_daily_notional_limit="100000",
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(
+                200,
+                {},
+                {"candles": [_api_candle(day) for day in range(21)]},
+            ),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(
+                200,
+                {},
+                {"prices": [{"symbol": "TEST", "lastPrice": "105"}]},
+            ),
+            TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
+            TossHttpResponse(200, {}, {"result": {"orderId": "live-order-1"}}),
+        ]
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    events = store.list_runtime_events(limit=10)
+    execution_order = store.load_execution_order(snapshot.open_orders[0]["intent_id"])
+    assert snapshot.mode == "live"
+    assert snapshot.ready is True
+    assert store.load_paper_position("TEST") is None
+    assert execution_order is not None
+    assert execution_order["status"] == "ACKNOWLEDGED"
+    assert execution_order["broker_order_id"] == "live-order-1"
+    assert transport.requests[-1].method == "POST"
+    assert transport.requests[-1].url == "https://example.test/api/v1/orders"
+    assert transport.requests[-1].json_body is not None
+    assert transport.requests[-1].json_body["symbol"] == "TEST"
+    assert transport.requests[-1].json_body["side"] == "BUY"
+    assert transport.requests[-1].json_body["orderType"] == "LIMIT"
+    assert any(event["message"] == "live_order_execution" for event in events)
+
+
+def test_live_service_blocks_when_emergency_stop_is_active(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=True,
+        live_allowed_symbols=("TEST",),
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=FakeTransport([]),
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.mode == "live"
+    assert snapshot.ready is False
+    assert "live.emergency_stop is active" in snapshot.blockers
+
+
+def test_live_service_blocks_second_order_by_daily_count_limit(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        live_daily_order_count_limit=1,
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+    first_transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"candles": [_api_candle(day) for day in range(21)]}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
+            TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
+            TossHttpResponse(200, {}, {"result": {"orderId": "live-order-1"}}),
+        ]
+    )
+    second_transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"candles": [_api_candle(day) for day in range(21)]}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
+            TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
+        ]
+    )
+
+    first = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=first_transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+    second = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=second_transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    latest_execution = store.load_execution_order(second.open_orders[0]["intent_id"])
+    assert first.ready is True
+    assert second.ready is True
+    assert latest_execution is not None
+    assert latest_execution["status"] == "REJECTED"
+    assert latest_execution["raw"]["code"] == "DAILY_ORDER_LIMIT"
+    assert len(second_transport.requests) == 7
+
+
+def test_live_service_can_cancel_immediately_after_ack_for_pilot(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        live_cancel_after_ack=True,
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"candles": [_api_candle(day) for day in range(21)]}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
+            TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
+            TossHttpResponse(200, {}, {"result": {"orderId": "live-order-1"}}),
+            TossHttpResponse(200, {}, {"result": {"orderId": "cancel-order-1"}}),
+        ]
+    )
+
+    snapshot = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    execution_order = store.load_execution_order(snapshot.open_orders[0]["intent_id"])
+    messages = [event["message"] for event in store.list_runtime_events(limit=10)]
+    assert execution_order is not None
+    assert execution_order["status"] == "PENDING_CANCEL"
+    assert execution_order["broker_order_id"] == "cancel-order-1"
+    assert transport.requests[-1].method == "POST"
+    assert transport.requests[-1].url == "https://example.test/api/v1/orders/live-order-1/cancel"
+    assert "live_order_cancel_after_ack" in messages
+
+
+def test_dashboard_live_once_action_requires_confirmation(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+
+    server = build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+    )
+
+    try:
+        server.action_for_path("/dashboard/actions/live-once", {"confirmation": "wrong"})
+    except ValueError as exc:
+        assert "confirmation" in str(exc)
+    else:
+        raise AssertionError("live once action accepted a wrong confirmation")
+
+
+def test_apply_safe_pilot_settings_enables_small_live_loop_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    _write_config(
+        config_path,
+        live_enabled=False,
+        live_emergency_stop=True,
+        symbols=("TEST", "ALT"),
+        account_seq="7",
+        runtime_mode="shadow",
+    )
+
+    result = apply_safe_pilot_settings(config_path)
+    config = load_config(config_path)
+
+    assert result["status"] == "configured"
+    assert result["symbol"] == "TEST"
+    assert config.runtime.mode == "live"
+    assert config.toss.live_enabled is True
+    assert config.live.emergency_stop is False
+    assert config.live.allowed_symbols == ("TEST",)
+    assert config.live.max_order_quantity == Decimal("1")
+    assert config.live.max_order_notional == Decimal("10000")
+    assert config.live.daily_order_count_limit == 1
+    assert config.live.daily_notional_limit == Decimal("10000")
+    assert config.live.require_market_open is True
+    assert config.live.require_clean_reconcile is True
+    assert config.live.block_unresolved_orders is True
+    assert config.live.cancel_after_ack is True
+
+
+def test_stop_live_trading_settings_persists_emergency_stop(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+
+    result = stop_live_trading_settings(config_path)
+    config = load_config(config_path)
+
+    assert result["status"] == "stopped"
+    assert result["emergency_stop"] is True
+    assert config.live.emergency_stop is True
+    assert config.runtime.mode == "live"
+    assert config.toss.live_enabled is True
 
 
 def test_paper_service_can_run_momentum_strategy_from_config(

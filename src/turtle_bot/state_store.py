@@ -24,6 +24,17 @@ class SQLiteStateStore:
             "PENDING_REPLACE",
         }
     )
+    unresolved_execution_statuses = frozenset(
+        {
+            "PENDING",
+            "PENDING_CANCEL",
+            "PENDING_REPLACE",
+            "SENT",
+            "ACKNOWLEDGED",
+            "PARTIAL_FILLED",
+            "UNKNOWN",
+        }
+    )
 
     def __init__(self, path: str | Path = ":memory:") -> None:
         self.path = self._normalize_path(path)
@@ -173,6 +184,47 @@ class SQLiteStateStore:
                   status TEXT NOT NULL,
                   broker_order_id TEXT,
                   raw TEXT
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_intents (
+                  intent_id TEXT PRIMARY KEY,
+                  idempotency_key TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  side TEXT NOT NULL,
+                  quantity TEXT NOT NULL,
+                  order_type TEXT NOT NULL,
+                  limit_price TEXT,
+                  payload TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_orders (
+                  intent_id TEXT PRIMARY KEY,
+                  idempotency_key TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  side TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  broker_order_id TEXT,
+                  raw TEXT,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  intent_id TEXT NOT NULL,
+                  event_type TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  payload TEXT,
+                  created_at TEXT NOT NULL
                 )
                 """
             )
@@ -623,6 +675,219 @@ class SQLiteStateStore:
         if row is None:
             return False
         return row["status"].upper() in self.unresolved_order_statuses
+
+    def record_order_intent(self, intent: Any) -> None:
+        payload = intent.as_payload()
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO order_intents (
+                    intent_id,
+                    idempotency_key,
+                    symbol,
+                    side,
+                    quantity,
+                    order_type,
+                    limit_price,
+                    payload,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(intent_id) DO UPDATE SET
+                  idempotency_key = excluded.idempotency_key,
+                  symbol = excluded.symbol,
+                  side = excluded.side,
+                  quantity = excluded.quantity,
+                  order_type = excluded.order_type,
+                  limit_price = excluded.limit_price,
+                  payload = excluded.payload,
+                  created_at = excluded.created_at
+                """,
+                (
+                    intent.intent_id,
+                    intent.idempotency_key,
+                    intent.symbol,
+                    intent.side.value,
+                    self._to_str(intent.quantity),
+                    intent.order_type.value,
+                    self._to_str(intent.limit_price),
+                    self._json_dump(payload),
+                    self._now_iso(intent.created_at),
+                ),
+            )
+
+    def record_execution_order(
+        self,
+        *,
+        intent_id: str,
+        idempotency_key: str,
+        symbol: str,
+        side: str,
+        status: str,
+        broker_order_id: str | None = None,
+        raw: Any = None,
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO execution_orders (
+                    intent_id,
+                    idempotency_key,
+                    symbol,
+                    side,
+                    status,
+                    broker_order_id,
+                    raw,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(intent_id) DO UPDATE SET
+                  idempotency_key = excluded.idempotency_key,
+                  symbol = excluded.symbol,
+                  side = excluded.side,
+                  status = excluded.status,
+                  broker_order_id = excluded.broker_order_id,
+                  raw = excluded.raw,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    intent_id,
+                    idempotency_key,
+                    symbol,
+                    side,
+                    status,
+                    broker_order_id,
+                    self._json_dump(raw),
+                    self._now_iso(),
+                ),
+            )
+
+    def has_unresolved_execution_key(self, idempotency_key: str) -> bool:
+        row = self._conn.execute(
+            "SELECT status FROM execution_orders WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if row is None:
+            return False
+        return row["status"].upper() in self.unresolved_execution_statuses
+
+    def load_execution_order(self, intent_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """
+            SELECT
+                intent_id,
+                idempotency_key,
+                symbol,
+                side,
+                status,
+                broker_order_id,
+                raw,
+                updated_at
+            FROM execution_orders
+            WHERE intent_id = ?
+            """,
+            (intent_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "intent_id": row["intent_id"],
+            "idempotency_key": row["idempotency_key"],
+            "symbol": row["symbol"],
+            "side": row["side"],
+            "status": row["status"],
+            "broker_order_id": row["broker_order_id"],
+            "raw": self._json_load(row["raw"]),
+            "updated_at": datetime.fromisoformat(row["updated_at"]),
+        }
+
+    def execution_summary_since(self, since: datetime) -> dict[str, Any]:
+        rows = self._conn.execute(
+            """
+            SELECT status, raw
+            FROM execution_orders
+            WHERE updated_at >= ?
+            """,
+            (self._now_iso(since),),
+        ).fetchall()
+        count = 0
+        notional = Decimal("0")
+        for row in rows:
+            status = str(row["status"]).upper()
+            if status in {"REJECTED", "FAILED"}:
+                continue
+            count += 1
+            raw = self._json_load(row["raw"]) or {}
+            request = raw.get("request") if isinstance(raw.get("request"), dict) else raw
+            value = None
+            if isinstance(request, dict):
+                value = request.get("notional") or request.get("orderAmount")
+            if value is not None:
+                try:
+                    notional += Decimal(str(value))
+                except Exception:
+                    pass
+        return {"count": count, "notional": notional}
+
+    def record_execution_event(
+        self,
+        *,
+        intent_id: str,
+        event_type: str,
+        status: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO execution_events (
+                    intent_id,
+                    event_type,
+                    status,
+                    payload,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    intent_id,
+                    event_type,
+                    status,
+                    self._json_dump(payload),
+                    self._now_iso(),
+                ),
+            )
+
+    def list_execution_events(
+        self,
+        *,
+        intent_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT id, intent_id, event_type, status, payload, created_at
+            FROM execution_events
+            """
+        params: tuple[object, ...] = ()
+        if intent_id is not None:
+            sql += " WHERE intent_id = ?"
+            params = (intent_id,)
+        sql += " ORDER BY created_at DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (*params, limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "intent_id": row["intent_id"],
+                "event_type": row["event_type"],
+                "status": row["status"],
+                "payload": self._json_load(row["payload"]),
+                "created_at": datetime.fromisoformat(row["created_at"]),
+            }
+            for row in rows
+        ]
 
     def record_market_data_snapshot(
         self,

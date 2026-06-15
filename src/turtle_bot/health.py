@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 PayloadProvider = Callable[[], Mapping[str, Any]]
 EventsProvider = Callable[[int | None], list[Mapping[str, Any]]]
+ActionRunner = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
 TOSS_LOGO_ASSET = Path(__file__).with_name("assets") / "toss-symbol.png"
 
 
@@ -216,8 +217,12 @@ def _summarize_events(items: list[Mapping[str, Any]]) -> dict[str, Any]:
         "shadow_order_intents": by_message.get("shadow_order_intent", 0),
         "shadow_fills": by_message.get("shadow_fill", 0),
         "shadow_guard_checks": by_message.get("shadow_order_guard", 0),
+        "live_order_intents": by_message.get("live_order_intent", 0),
+        "live_order_executions": by_message.get("live_order_execution", 0),
+        "live_runtime_blocks": by_message.get("live_service_blocked", 0),
         "paper_runtime_blocks": by_message.get("paper_service_blocked", 0)
-        + by_message.get("shadow_service_blocked", 0),
+        + by_message.get("shadow_service_blocked", 0)
+        + by_message.get("live_service_blocked", 0),
     }
 
 
@@ -271,6 +276,21 @@ def _build_live_readiness_payload(
     open_order_count = len(snapshot.open_orders)
     event_total = int(events_summary.get("total") or 0)
 
+    mode_is_live = runtime_mode == "live"
+    live_gate_blocked = (mode_is_live and not live_enabled) or (not mode_is_live and live_enabled)
+    can_submit_live_orders = (
+        mode_is_live
+        and live_enabled
+        and bool(status.get("ready"))
+        and not api_blocked
+        and not account_blocked
+        and account_configured
+        and not universe_blocked
+        and not market_blocked
+        and not reconcile_blocked
+        and open_order_count > 0
+    )
+
     checks = [
         _readiness_check(
             "toss_credentials",
@@ -297,11 +317,13 @@ def _build_live_readiness_payload(
         _readiness_check(
             "strategy_mode",
             "전략/런타임 모드",
-            "done" if strategy_kind == "momentum" and runtime_mode in {"paper", "shadow"} else "warn",
+            "blocked" if live_gate_blocked else "done" if runtime_mode in {"paper", "shadow", "live"} else "warn",
             f"{strategy_kind} 전략, {runtime_mode} 모드로 표시됩니다.",
-            "실거래 전에는 shadow 모드로 실제 계좌 조회 검증을 먼저 돌리세요."
-            if runtime_mode != "shadow"
-            else "shadow 검증 결과와 이벤트를 확인하세요.",
+            "live 모드는 runtime.mode=live 와 toss.live_enabled=true 조합에서만 동작합니다."
+            if live_gate_blocked
+            else "live 모드에서는 주문 후보가 safety gate를 통과하면 Toss 주문 API로 제출됩니다."
+            if mode_is_live
+            else "실거래 전에는 shadow 모드로 실제 계좌 조회 검증을 먼저 돌리세요.",
         ),
         _readiness_check(
             "universe",
@@ -327,14 +349,14 @@ def _build_live_readiness_payload(
         ),
         _readiness_check(
             "open_orders",
-            "미체결 주문",
-            "warn" if open_order_count else "done",
-            f"미체결/주문 후보 {open_order_count}건이 표시됩니다."
+            "주문 후보",
+            "done" if open_order_count else "warn" if mode_is_live else "done",
+            f"주문 후보 {open_order_count}건이 표시됩니다."
             if open_order_count
-            else "현재 표시된 미체결 주문은 없습니다.",
-            "실거래 전 중복 주문 여부를 먼저 정리하세요."
+            else "현재 표시된 주문 후보는 없습니다.",
+            "live 모드에서는 이 후보가 실주문 제출 대상입니다."
             if open_order_count
-            else "주문 중복 위험은 낮아 보입니다.",
+            else "신호가 없으면 live 모드여도 주문은 제출되지 않습니다.",
         ),
         _readiness_check(
             "event_audit",
@@ -350,17 +372,31 @@ def _build_live_readiness_payload(
         _readiness_check(
             "live_order_engine",
             "실주문 제출 엔진",
-            "blocked",
-            "현재 코드에는 실제 주문 생성/정정/취소 계층이 연결되어 있지 않습니다.",
-            "토스 API 주문 계약 검증, 이중 확인, kill switch, 주문 한도 테스트가 끝나기 전까지 실주문은 비활성입니다.",
+            "done" if mode_is_live and live_enabled else "warn",
+            "실주문 adapter와 execution ledger 경로가 연결되어 있습니다."
+            if mode_is_live and live_enabled
+            else "실주문 엔진은 연결되어 있지만 현재 모드에서는 주문을 제출하지 않습니다.",
+            "실거래 중에는 execution ledger와 WARN 이벤트를 같이 확인하세요."
+            if mode_is_live and live_enabled
+            else "runtime.mode=live 와 toss.live_enabled=true를 함께 설정해야 자동 실주문 경로가 열립니다.",
         ),
     ]
     counts = Counter(str(item["status"]) for item in checks)
     blocked_count = counts.get("blocked", 0)
     warning_count = counts.get("warn", 0)
-    state = "blocked" if blocked_count else "needs_review" if warning_count else "ready_for_shadow"
+    state = (
+        "ready_for_live"
+        if can_submit_live_orders
+        else "blocked"
+        if blocked_count
+        else "needs_review"
+        if warning_count
+        else "ready_for_shadow"
+    )
     headline = (
-        "실거래 주문 제출은 아직 비활성입니다"
+        "실거래 주문 제출 가능 상태입니다"
+        if can_submit_live_orders
+        else "실거래 주문 제출은 차단 상태입니다"
         if blocked_count
         else "실거래 전 최종 검토가 필요합니다"
         if warning_count
@@ -377,8 +413,10 @@ def _build_live_readiness_payload(
         "runtime_mode": runtime_mode,
         "strategy_kind": strategy_kind,
         "live_enabled": live_enabled,
-        "can_submit_live_orders": False,
-        "submit_disabled_reason": "실제 주문 API 계층이 아직 연결되어 있지 않습니다.",
+        "can_submit_live_orders": can_submit_live_orders,
+        "submit_disabled_reason": None
+        if can_submit_live_orders
+        else "live 모드, live_enabled, readiness, 주문 후보, 계좌/시세/reconcile gate를 모두 통과해야 합니다.",
         "checks": checks,
     }
 
@@ -2272,13 +2310,20 @@ def dashboard_html() -> str:
             <article class="card data-panel live-panel">
               <h2>주문 제출 상태</h2>
               <div class="live-disabled-box">
-                <strong>실주문 제출 비활성</strong>
-                <p id="live-submit-reason" class="panel-copy">실제 주문 API 계층이 아직 연결되어 있지 않습니다.</p>
-                <button type="button" class="btn primary" disabled>실거래 주문 제출 불가</button>
+                <strong>자동 안전 파일럿</strong>
+                <p id="live-submit-reason" class="panel-copy">API 입력과 계좌 확인이 끝나면 안전 한도를 적용하고 live 거래 루프를 시작합니다.</p>
+                <button type="button" class="btn primary" id="safe-pilot-button">안전 파일럿 시작</button>
+                <button type="button" class="btn" id="live-stop-button">거래 중지</button>
+                <p id="safe-pilot-result" class="panel-copy"></p>
+                <strong>수동 1회 live pilot 실행</strong>
+                <p class="panel-copy">자동 루프 대신 1회만 직접 돌릴 때 사용합니다.</p>
+                <input id="live-once-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="LIVE PILOT 실행" />
+                <button type="button" class="btn primary" id="live-once-button">1회 실행</button>
+                <p id="live-once-result" class="panel-copy"></p>
                 <ul>
-                  <li>토스 주문 API 요청/응답 계약 검증 필요</li>
-                  <li>kill switch, 주문 한도, 중복 주문 방지 필요</li>
-                  <li>shadow 검증 로그와 계좌 대조 통과 필요</li>
+                  <li>안전 파일럿은 첫 심볼 1주, 일 1건, 소액 한도, 시장 열림, 클린 reconcile을 강제합니다</li>
+                  <li>거래 중지는 live.emergency_stop을 켜고 대시보드 루프를 멈춥니다</li>
+                  <li>cancel_after_ack가 켜져 있으면 주문 ACK 후 취소 요청까지 보냅니다</li>
                 </ul>
               </div>
             </article>
@@ -2316,6 +2361,11 @@ def dashboard_html() -> str:
               <h2>설정 안내</h2>
               <p id="settings-headline" class="status-copy">실행 전 점검 항목을 확인하고 모멘텀 값을 바로 입력해 보세요.</p>
               <ul id="settings-onboarding-list" class="action-list"></ul>
+              <div class="settings-actions">
+                <button type="button" class="btn primary" id="onboarding-safe-pilot-button">안전 파일럿 시작</button>
+                <button type="button" class="btn" id="onboarding-live-stop-button">거래 중지</button>
+              </div>
+              <p id="onboarding-live-action-result" class="panel-copy"></p>
             </article>
             <article class="card data-panel">
               <h2>토스 API / 계좌 연결</h2>
@@ -2353,6 +2403,12 @@ def dashboard_html() -> str:
                   </div>
                 </div>
               </section>
+            </article>
+            <article class="card data-panel">
+              <h2>실거래 중지 스위치</h2>
+              <p class="panel-copy">언제든 누르면 live.emergency_stop을 켜고 대시보드가 시작한 자동 거래 루프를 멈춥니다.</p>
+              <button type="button" class="btn" id="settings-live-stop-button">거래 중지</button>
+              <p id="settings-live-stop-result" class="panel-copy"></p>
             </article>
             <article class="card data-panel">
               <h2>모멘텀 전략 설정</h2>
@@ -2839,6 +2895,75 @@ def dashboard_html() -> str:
         if (!response.ok) throw new Error(`${path} failed: ${response.status}`);
         return response.json();
       });
+    }
+
+    async function postJson(path, payload) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || `${path} failed: ${response.status}`);
+      }
+      return data;
+    }
+
+    async function runLiveOnce() {
+      const input = document.getElementById("live-once-confirmation");
+      const button = document.getElementById("live-once-button");
+      const result = document.getElementById("live-once-result");
+      const confirmation = input ? input.value.trim() : "";
+      if (button) button.disabled = true;
+      if (result) result.textContent = "1회 실행 요청 중...";
+      try {
+        const payload = await postJson("/dashboard/actions/live-once", { confirmation });
+        if (result) {
+          const status = payload && payload.snapshot ? payload.snapshot.status : payload.status;
+          result.textContent = `실행 완료: ${status || "completed"}`;
+        }
+        await refresh();
+      } catch (error) {
+        if (result) result.textContent = `실행 실패: ${error.message}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function applySafePilot(buttonId = "safe-pilot-button", resultId = "safe-pilot-result") {
+      const button = document.getElementById(buttonId);
+      const result = document.getElementById(resultId);
+      if (button) button.disabled = true;
+      if (result) result.textContent = "안전 파일럿 설정 적용 및 거래 루프 시작 중...";
+      try {
+        const payload = await postJson("/dashboard/actions/apply-safe-pilot", {});
+        const pilot = payload.safe_pilot || {};
+        if (result) {
+          result.textContent = `시작됨: ${pilot.symbol || "선택 심볼"} / 1일 한도 ${pilot.daily_notional_limit || "-"} / 루프 ${payload.loop || payload.status}`;
+        }
+        await refresh();
+      } catch (error) {
+        if (result) result.textContent = `시작 실패: ${error.message}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function stopTrading(buttonId = "live-stop-button", resultId = "safe-pilot-result") {
+      const button = document.getElementById(buttonId);
+      const result = document.getElementById(resultId);
+      if (button) button.disabled = true;
+      if (result) result.textContent = "거래 중지 스위치 적용 중...";
+      try {
+        await postJson("/dashboard/actions/stop-trading", {});
+        if (result) result.textContent = "거래 중지됨: live.emergency_stop이 켜졌습니다.";
+        await refresh();
+      } catch (error) {
+        if (result) result.textContent = `중지 실패: ${error.message}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
     }
 
     function setActiveView(target) {
@@ -3401,6 +3526,13 @@ def dashboard_html() -> str:
       if (blockerBox) blockerBox.textContent = rawBlockers.length
         ? groupedBlockerDetails(rawBlockers).join("\\n")
         : "현재 표시할 차단 항목이 없습니다.";
+      const configInfo = settings && settings.config ? settings.config : {};
+      if (configInfo.created_from_template) {
+        const headline = document.getElementById("settings-headline");
+        if (headline) {
+          headline.innerHTML = `<strong>로컬 설정 파일 생성됨</strong> ${escapeHtml(configInfo.path || "config/local.yaml")} 값을 확인하세요.`;
+        }
+      }
       if (!settingsFormInitialized) {
         setMomentumSettings(settings || SETTINGS_DEFAULT);
         setTossSettings(settings || {});
@@ -3469,6 +3601,24 @@ def dashboard_html() -> str:
       });
       const button = document.getElementById("refresh-button");
       if (button) button.addEventListener("click", () => refresh().catch(console.error));
+      const liveOnceButton = document.getElementById("live-once-button");
+      if (liveOnceButton) liveOnceButton.addEventListener("click", () => runLiveOnce().catch(console.error));
+      const safePilotButton = document.getElementById("safe-pilot-button");
+      if (safePilotButton) safePilotButton.addEventListener("click", () => applySafePilot().catch(console.error));
+      const onboardingSafePilotButton = document.getElementById("onboarding-safe-pilot-button");
+      if (onboardingSafePilotButton) {
+        onboardingSafePilotButton.addEventListener("click", () => applySafePilot("onboarding-safe-pilot-button", "onboarding-live-action-result").catch(console.error));
+      }
+      const liveStopButton = document.getElementById("live-stop-button");
+      if (liveStopButton) liveStopButton.addEventListener("click", () => stopTrading().catch(console.error));
+      const onboardingLiveStopButton = document.getElementById("onboarding-live-stop-button");
+      if (onboardingLiveStopButton) {
+        onboardingLiveStopButton.addEventListener("click", () => stopTrading("onboarding-live-stop-button", "onboarding-live-action-result").catch(console.error));
+      }
+      const settingsLiveStopButton = document.getElementById("settings-live-stop-button");
+      if (settingsLiveStopButton) {
+        settingsLiveStopButton.addEventListener("click", () => stopTrading("settings-live-stop-button", "settings-live-stop-result").catch(console.error));
+      }
     }
 
     function initialView() {
@@ -4772,6 +4922,7 @@ class HealthServer:
         events_provider: EventsProvider | None = None,
         settings: Mapping[str, Any] | None = None,
         settings_updater: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+        action_runner: ActionRunner | None = None,
         host: str = "127.0.0.1",
         port: int = 8765,
         start_server: bool = False,
@@ -4784,6 +4935,7 @@ class HealthServer:
         self._events_provider = events_provider if events_provider is not None else (lambda *_: [])
         self._settings = dict(settings or {})
         self._settings_updater = settings_updater
+        self._action_runner = action_runner
         self.host = host
         self.port = port
         self._server: HTTPServer | None = None
@@ -4899,6 +5051,18 @@ class HealthServer:
             return self._dashboard_payload()
         raise ValueError(f"unsupported read-only path: {path}")
 
+    def action_for_path(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = path.lower()
+        if normalized not in {
+            "/dashboard/actions/live-once",
+            "/dashboard/actions/apply-safe-pilot",
+            "/dashboard/actions/stop-trading",
+        }:
+            raise ValueError(f"unsupported action path: {path}")
+        if self._action_runner is None:
+            raise RuntimeError("dashboard actions require --config")
+        return dict(self._action_runner(normalized, payload))
+
     def start(self) -> None:
         if self._server is not None:
             return
@@ -4974,6 +5138,31 @@ class HealthServer:
             def do_POST(self):
                 parsed = urlparse(self.path)
                 path = parsed.path or "/"
+                if path.startswith("/dashboard/actions/"):
+                    if server_ref._action_runner is None:
+                        self._send_json(self, 409, {"error": "dashboard actions require --config"})
+                        return
+                    try:
+                        length = int(self.headers.get("Content-Length", "0"))
+                        if length <= 0:
+                            raise ValueError("request body missing")
+                        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        self._send_json(self, 400, {"error": "invalid json", "message": str(exc)})
+                        return
+                    try:
+                        result = server_ref.action_for_path(path, payload)
+                    except ValueError as exc:
+                        self._send_json(self, 400, {"error": str(exc)})
+                        return
+                    except RuntimeError as exc:
+                        self._send_json(self, 409, {"error": str(exc)})
+                        return
+                    except Exception as exc:
+                        self._send_json(self, 500, {"error": "action failed", "message": str(exc)})
+                        return
+                    self._send_json(self, 200, result)
+                    return
                 if path != "/dashboard/settings":
                     self.send_response(405)
                     self.send_header("Content-Type", "application/json")

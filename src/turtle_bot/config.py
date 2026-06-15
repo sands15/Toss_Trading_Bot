@@ -57,10 +57,26 @@ class AiConfig:
 
 
 @dataclass(frozen=True)
+class LiveConfig:
+    emergency_stop: bool = True
+    allowed_symbols: tuple[str, ...] = ()
+    max_order_quantity: Decimal | None = Decimal("1")
+    max_order_notional: Decimal | None = None
+    daily_order_count_limit: int | None = 1
+    daily_notional_limit: Decimal | None = None
+    require_market_open: bool = True
+    require_clean_reconcile: bool = True
+    block_unresolved_orders: bool = True
+    confirm_high_value_order: bool = False
+    cancel_after_ack: bool = False
+
+
+@dataclass(frozen=True)
 class TradingConfig:
     toss: TossConfig = field(default_factory=TossConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     ai: AiConfig = field(default_factory=AiConfig)
+    live: LiveConfig = field(default_factory=LiveConfig)
     strategy_kind: str = "turtle"
     minimum_tick: Decimal = Decimal("1")
     risk_pct_per_unit: Decimal = Decimal("0.005")
@@ -99,6 +115,18 @@ def _to_decimal(value: Any, default: Decimal) -> Decimal:
         return Decimal(str(value))
     except Exception:
         return default
+
+
+def _to_optional_decimal(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    return _to_decimal(value, Decimal("0"))
+
+
+def _to_optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
 
 
 def _momentum_max_exposure_pct(momentum: Mapping[str, Any]) -> Decimal:
@@ -170,6 +198,7 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
     toss = raw.get("toss", {}) or {}
     runtime = raw.get("runtime", {}) or {}
     ai = raw.get("ai", {}) or {}
+    live = raw.get("live", {}) or {}
     return TradingConfig(
         toss=TossConfig(
             live_enabled=bool(toss.get("live_enabled", False)),
@@ -233,6 +262,23 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             timeout_seconds=int(ai.get("timeout_seconds", 30)),
             max_tokens=int(ai.get("max_tokens", 700)),
             temperature=_to_decimal(ai.get("temperature"), Decimal("0.2")),
+        ),
+        live=LiveConfig(
+            emergency_stop=bool(live.get("emergency_stop", True)),
+            allowed_symbols=_to_symbols(live.get("allowed_symbols")),
+            max_order_quantity=_to_optional_decimal(
+                live.get("max_order_quantity", Decimal("1"))
+            ),
+            max_order_notional=_to_optional_decimal(live.get("max_order_notional")),
+            daily_order_count_limit=_to_optional_int(
+                live.get("daily_order_count_limit", 1)
+            ),
+            daily_notional_limit=_to_optional_decimal(live.get("daily_notional_limit")),
+            require_market_open=bool(live.get("require_market_open", True)),
+            require_clean_reconcile=bool(live.get("require_clean_reconcile", True)),
+            block_unresolved_orders=bool(live.get("block_unresolved_orders", True)),
+            confirm_high_value_order=bool(live.get("confirm_high_value_order", False)),
+            cancel_after_ack=bool(live.get("cancel_after_ack", False)),
         ),
         minimum_tick=_to_decimal(strategy.get("minimum_tick"), Decimal("1")),
         strategy_kind=str(strategy.get("kind", "turtle")).strip().lower(),

@@ -113,6 +113,47 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     assert "raw_links" not in dashboard
 
 
+def test_dashboard_live_readiness_can_report_submit_ready_state() -> None:
+    snapshot = HealthSnapshot(
+        mode="live",
+        ready=True,
+        blockers=(),
+        positions=(),
+        open_orders=({"intent_id": "live-1", "symbol": "AAA"},),
+        watchlist=({"symbol": "AAA", "nearest_distance": "1"},),
+    )
+    events = [
+        {
+            "id": 1,
+            "level": "INFO",
+            "message": "live_order_execution",
+            "payload": {"status": "ACKNOWLEDGED"},
+            "created_at": datetime(2026, 6, 12, 1, 0, tzinfo=timezone.utc),
+        },
+    ]
+    server = HealthServer(
+        snapshot,
+        events_provider=lambda limit: events[:limit] if limit is not None else events,
+        settings={
+            "strategy_kind": "turtle",
+            "runtime": {"mode": "live"},
+            "toss": {
+                "live_enabled": True,
+                "account_seq_configured": True,
+            },
+        },
+    )
+
+    dashboard = server.payload_for_path("/dashboard")
+
+    readiness = dashboard["live_readiness"]
+    assert readiness["state"] == "ready_for_live"
+    assert readiness["can_submit_live_orders"] is True
+    assert readiness["submit_disabled_reason"] is None
+    assert readiness["summary"]["blocked"] == 0
+    assert dashboard["runtime_summary"]["live_order_executions"] == 1
+
+
 def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     html = dashboard_html()
 
@@ -155,6 +196,18 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'id="view-live"' in html
     assert 'id="live-readiness-checks"' in html
     assert "function renderLiveReadiness" in html
+    assert "/dashboard/actions/live-once" in html
+    assert "/dashboard/actions/apply-safe-pilot" in html
+    assert "/dashboard/actions/stop-trading" in html
+    assert "LIVE PILOT 실행" in html
+    assert "function runLiveOnce" in html
+    assert "function applySafePilot" in html
+    assert "function stopTrading" in html
+    assert 'id="onboarding-safe-pilot-button"' in html
+    assert 'id="onboarding-live-stop-button"' in html
+    assert 'id="safe-pilot-button"' in html
+    assert 'id="live-stop-button"' in html
+    assert 'id="settings-live-stop-button"' in html
     assert "dashboard.live_readiness" in html
     assert "can_submit_live_orders" in html
     assert "cash_reserve_pct" in html

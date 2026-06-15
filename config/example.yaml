@@ -9,6 +9,21 @@ toss:
   client_id_env: TOSS_CLIENT_ID
   client_secret_env: TOSS_CLIENT_SECRET
 
+live:
+  # Final live-order safety gates. These are checked immediately before Toss
+  # order submission and are separate from strategy sizing.
+  emergency_stop: true
+  allowed_symbols: []
+  max_order_quantity: 1
+  max_order_notional:
+  daily_order_count_limit: 1
+  daily_notional_limit:
+  require_market_open: true
+  require_clean_reconcile: true
+  block_unresolved_orders: true
+  confirm_high_value_order: false
+  cancel_after_ack: false
+
 ai:
   enabled: false
   provider: openai_compatible
@@ -22,6 +37,8 @@ ai:
 runtime:
   # paper: forward-test with virtual fills.
   # shadow: real read-only account/market validation with virtual fills and no live orders.
+  # live: real Toss order submission after safety gates pass.
+  #       Requires toss.live_enabled: true and a tiny allowlisted pilot setup.
   mode: paper
   market: KR
   timezone: Asia/Seoul

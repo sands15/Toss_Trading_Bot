@@ -1,10 +1,20 @@
 toss:
   live_enabled: false
-  # Fill this locally. Do not commit config/local.yaml.
-  account_seq: ""
+  account_seq: ''
   client_id_env: TOSS_CLIENT_ID
   client_secret_env: TOSS_CLIENT_SECRET
-
+live:
+  emergency_stop: true
+  allowed_symbols: []
+  max_order_quantity: 1
+  max_order_notional:
+  daily_order_count_limit: 1
+  daily_notional_limit:
+  require_market_open: true
+  require_clean_reconcile: true
+  block_unresolved_orders: true
+  confirm_high_value_order: false
+  cancel_after_ack: false
 ai:
   enabled: false
   provider: openai_compatible
@@ -14,10 +24,7 @@ ai:
   timeout_seconds: 30
   max_tokens: 700
   temperature: 0.2
-
 runtime:
-  # Use paper for virtual-only forward tests.
-  # Use shadow for real read-only account/market validation with virtual fills.
   mode: shadow
   market: US
   timezone: America/New_York
@@ -26,7 +33,6 @@ runtime:
   log_dir: logs
   interval_seconds: 60
   candle_interval: 1d
-  # Momentum needs at least lookback_days + skip_days + MA warmup.
   candle_count: 320
   exclude_current_session: true
   watchlist_enabled: true
@@ -38,19 +44,17 @@ runtime:
   universe_min_price: 5
   universe_min_average_daily_value: 50000000
   universe_min_completed_candles: 275
-  # Start with a small liquid list. Replace with your own candidate universe.
   symbols:
-    - QQQ
-    - SPY
-    - XLK
-    - SMH
-    - NVDA
-    - MSFT
-    - AAPL
-    - AVGO
-    - AMD
-    - META
-
+  - QQQ
+  - SPY
+  - XLK
+  - SMH
+  - NVDA
+  - MSFT
+  - AAPL
+  - AVGO
+  - AMD
+  - META
 strategy:
   kind: momentum
   minimum_tick: 0.01
@@ -62,14 +66,14 @@ strategy:
     trend_ma_days: 200
     exit_ma_days: 75
     max_positions: 5
-    # Minimum cash reserve. 0.50 means keep at least 50% cash.
-    cash_reserve_pct: 0.50
+    cash_reserve_pct: 0.1
     accept_top_n: 2
-    target_position_pct: 0.10
+    target_position_pct: 0.1
     min_price: 5
     min_average_daily_value: 50000000
     average_daily_value_days: 20
     use_market_filter: true
+    max_exposure_pct: 0.9
   risk:
     risk_pct_per_unit: 0.005
     stop_n: 2.0

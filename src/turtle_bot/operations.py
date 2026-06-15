@@ -7,18 +7,25 @@ from os import environ
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event, Lock, Thread
 from typing import Any, Callable, Mapping, Sequence
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import yaml
 from .config import load_config
 from .health import HealthServer, HealthSnapshot
 from .market_calendar import MarketCalendarConfig, MarketCalendarGate
 from .notifier import MemoryNotifier
-from .paper_runtime import PaperRuntimeConfig, PaperTradingRuntime
+from .paper_runtime import PaperOrderIntent, PaperRuntimeConfig, PaperTradingRuntime
 from .position_sync import TossPositionSync
 from .state_store import SQLiteStateStore
 from .toss_client import TOSS_BASE_URL, TossClient, TossCredentials, TossTransport
+from .toss_live_adapter import TossLiveBrokerAdapter
+from .live_execution import LiveOrderOrchestrator
+from .live_order import OrderIntent, OrderType
+from .live_safety import PreTradeSafety, PreTradeSafetyConfig, PreTradeSafetyContext
+from .domain import Side, TurtleSystem
 from .toss_market_data import TossMarketDataConfig, TossReadOnlyMarketDataProvider
 from .universe import Universe, UniverseBuilder, UniversePolicy
 from .watchlist import Watchlist, WatchlistBuilder, WatchlistRow
@@ -26,12 +33,34 @@ from .watchlist import Watchlist, WatchlistBuilder, WatchlistRow
 
 DEFAULT_SERVICE_LABEL = "com.sands15.toss-turtle-bot"
 DEFAULT_DASHBOARD_BLOCKERS = (
-    "runtime.mode must be paper or shadow",
+    "runtime.mode must be paper, shadow, or live",
     "runtime.symbols or runtime.universe_candidate_symbols is required",
     "TOSS_CLIENT_ID is not configured",
     "TOSS_CLIENT_SECRET is not configured",
     "toss.account_seq is not configured",
 )
+
+
+class DashboardTradingLoopStopped(RuntimeError):
+    """Raised internally to stop the dashboard-managed trading loop."""
+
+
+def ensure_local_config(
+    config_path: str | Path | None = None,
+    *,
+    template_path: str | Path | None = None,
+) -> tuple[Path, bool]:
+    target = Path(config_path or Path("config") / "local.yaml").expanduser()
+    if target.exists():
+        return target, False
+    template = Path(template_path or target.parent / "local.example.yaml").expanduser()
+    if not template.exists():
+        template = Path(template_path or target.parent / "example.yaml").expanduser()
+    if not template.exists():
+        raise FileNotFoundError(f"config template not found for {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    return target, True
 
 
 @dataclass(frozen=True)
@@ -169,13 +198,22 @@ def check_operations_config(
                     env=env,
                 )
             )
+            mode = _runtime_mode(config)
             checks.append(
                 OperationsCheck(
-                    "live_disabled",
-                    not config.live_enabled,
-                    "live trading disabled"
-                    if not config.live_enabled
-                    else "live trading is enabled; paper service refuses this config",
+                    "live_mode_gate",
+                    (mode == "live" and config.live_enabled)
+                    or (mode != "live" and not config.live_enabled),
+                    "live mode gate is configured"
+                    if (
+                        (mode == "live" and config.live_enabled)
+                        or (mode != "live" and not config.live_enabled)
+                    )
+                    else (
+                        "toss.live_enabled must be true for runtime.mode live"
+                        if mode == "live"
+                        else "toss.live_enabled must be false unless runtime.mode is live"
+                    ),
                 )
             )
     else:
@@ -225,7 +263,10 @@ def build_dashboard_server(
     default_blockers: Sequence[str] = DEFAULT_DASHBOARD_BLOCKERS
     settings_payload: Mapping[str, Any] = {}
     settings_updater: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
+    action_runner: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None
+    config_created = False
     if config_path is not None:
+        config_path, config_created = ensure_local_config(config_path)
         env_values = env if env is not None else environ
         config = load_config(config_path)
         watchlist_name = config.runtime.watchlist_name
@@ -233,7 +274,12 @@ def build_dashboard_server(
             config,
             env_values,
         )
-        settings_payload = _dashboard_settings_payload(config, env_values)
+        settings_payload = _dashboard_settings_payload(
+            config,
+            env_values,
+            config_path=config_path,
+            config_created=config_created,
+        )
 
         def settings_updater(payload: Mapping[str, Any]) -> Mapping[str, Any]:
             nonlocal config, default_blockers, settings_payload, watchlist_name
@@ -241,8 +287,134 @@ def build_dashboard_server(
             config = load_config(config_path)
             watchlist_name = config.runtime.watchlist_name
             default_blockers = _paper_service_config_blockers(config, env_values)
-            settings_payload = _dashboard_settings_payload(config, env_values)
+            settings_payload = _dashboard_settings_payload(
+                config,
+                env_values,
+                config_path=config_path,
+                config_created=False,
+            )
             return {"config": result, "settings": settings_payload}
+
+        action_lock = Lock()
+        loop_lock = Lock()
+        loop_stop_event: Event | None = None
+        loop_thread: Thread | None = None
+
+        def refresh_dashboard_state() -> None:
+            nonlocal config, default_blockers, settings_payload, watchlist_name
+            config = load_config(config_path)
+            watchlist_name = config.runtime.watchlist_name
+            default_blockers = _paper_service_config_blockers(config, env_values)
+            settings_payload = _dashboard_settings_payload(
+                config,
+                env_values,
+                config_path=config_path,
+                config_created=False,
+            )
+
+        def start_dashboard_trading_loop() -> str:
+            nonlocal loop_stop_event, loop_thread
+            with loop_lock:
+                if loop_thread is not None and loop_thread.is_alive():
+                    return "already_running"
+                loop_stop_event = Event()
+                active_stop_event = loop_stop_event
+                active_config = load_config(config_path)
+
+                def interruptible_sleep(seconds: float) -> None:
+                    if active_stop_event.wait(seconds):
+                        raise DashboardTradingLoopStopped("dashboard trading loop stopped")
+
+                def run_loop() -> None:
+                    with SQLiteStateStore(state_db) as loop_store:
+                        loop_store.record_runtime_event(
+                            "INFO",
+                            "live_trading_loop_started",
+                            {"source": "dashboard"},
+                        )
+                    try:
+                        run_paper_service(
+                            config_path=config_path,
+                            state_db=state_db,
+                            log_dir=active_config.runtime.log_dir,
+                            interval_seconds=active_config.runtime.interval_seconds,
+                            once=False,
+                            sleep=interruptible_sleep,
+                            env=env_values,
+                        )
+                    except DashboardTradingLoopStopped:
+                        with SQLiteStateStore(state_db) as loop_store:
+                            loop_store.record_runtime_event(
+                                "INFO",
+                                "live_trading_loop_stopped",
+                                {"source": "dashboard"},
+                            )
+                    except Exception as exc:
+                        with SQLiteStateStore(state_db) as loop_store:
+                            loop_store.record_runtime_event(
+                                "ERROR",
+                                "live_trading_loop_failed",
+                                {"source": "dashboard", "error": str(exc)},
+                            )
+
+                loop_thread = Thread(
+                    target=run_loop,
+                    name="turtle-dashboard-live-loop",
+                    daemon=True,
+                )
+                loop_thread.start()
+                return "started"
+
+        def action_runner(path: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+            nonlocal config, default_blockers, settings_payload, watchlist_name, loop_stop_event
+            if path == "/dashboard/actions/apply-safe-pilot":
+                result = apply_safe_pilot_settings(config_path, state_db=state_db)
+                refresh_dashboard_state()
+                loop_status = start_dashboard_trading_loop()
+                return {
+                    "status": "started" if loop_status == "started" else "already_running",
+                    "loop": loop_status,
+                    "safe_pilot": {
+                        "symbol": result["symbol"],
+                        "max_order_notional": result["max_order_notional"],
+                        "daily_notional_limit": result["daily_notional_limit"],
+                    },
+                    "settings": settings_payload,
+                }
+            if path == "/dashboard/actions/stop-trading":
+                result = stop_live_trading_settings(config_path)
+                if loop_stop_event is not None:
+                    loop_stop_event.set()
+                refresh_dashboard_state()
+                return {"status": "stopped", "kill_switch": result, "settings": settings_payload}
+            if path != "/dashboard/actions/live-once":
+                raise ValueError(f"unsupported action: {path}")
+            confirmation = str(payload.get("confirmation") or "").strip()
+            if confirmation != "LIVE PILOT 실행":
+                raise ValueError("confirmation must be LIVE PILOT 실행")
+            if not action_lock.acquire(blocking=False):
+                raise RuntimeError("live once action is already running")
+            try:
+                config = load_config(config_path)
+                snapshot = run_paper_service(
+                    config_path=config_path,
+                    state_db=state_db,
+                    log_dir=config.runtime.log_dir,
+                    interval_seconds=config.runtime.interval_seconds,
+                    once=True,
+                    env=env_values,
+                )
+                watchlist_name = config.runtime.watchlist_name
+                default_blockers = _paper_service_config_blockers(config, env_values)
+                settings_payload = _dashboard_settings_payload(
+                    config,
+                    env_values,
+                    config_path=config_path,
+                    config_created=False,
+                )
+                return {"status": "completed", "snapshot": snapshot.as_payload()}
+            finally:
+                action_lock.release()
 
     def snapshot_provider() -> HealthSnapshot:
         with SQLiteStateStore(state_db) as store:
@@ -273,17 +445,25 @@ def build_dashboard_server(
         start_server=start_server,
         settings=settings_payload,
         settings_updater=settings_updater,
+        action_runner=action_runner,
     )
 
 
 def _dashboard_settings_payload(
     config,
     env: Mapping[str, str] | None = None,
+    *,
+    config_path: str | Path | None = None,
+    config_created: bool = False,
 ) -> dict[str, Any]:
     env_values = env if env is not None else environ
     client_id_env = str(config.toss.client_id_env or "").strip()
     client_secret_env = str(config.toss.client_secret_env or "").strip()
     return {
+        "config": {
+            "path": str(config_path) if config_path is not None else None,
+            "created_from_template": config_created,
+        },
         "strategy_kind": config.strategy_kind,
         "runtime": {
             "mode": config.runtime.mode,
@@ -304,6 +484,31 @@ def _dashboard_settings_payload(
                 config.toss.client_id_env,
                 config.toss.client_secret_env,
             ],
+        },
+        "live": {
+            "emergency_stop": config.live.emergency_stop,
+            "allowed_symbols": list(config.live.allowed_symbols),
+            "max_order_quantity": (
+                str(config.live.max_order_quantity)
+                if config.live.max_order_quantity is not None
+                else None
+            ),
+            "max_order_notional": (
+                str(config.live.max_order_notional)
+                if config.live.max_order_notional is not None
+                else None
+            ),
+            "daily_order_count_limit": config.live.daily_order_count_limit,
+            "daily_notional_limit": (
+                str(config.live.daily_notional_limit)
+                if config.live.daily_notional_limit is not None
+                else None
+            ),
+            "require_market_open": config.live.require_market_open,
+            "require_clean_reconcile": config.live.require_clean_reconcile,
+            "block_unresolved_orders": config.live.block_unresolved_orders,
+            "confirm_high_value_order": config.live.confirm_high_value_order,
+            "cancel_after_ack": config.live.cancel_after_ack,
         },
         "momentum": {
             "cash_reserve_pct": str(config.momentum_cash_reserve_pct),
@@ -452,6 +657,121 @@ def update_momentum_settings(
     return dict(raw)
 
 
+def _write_yaml(config_file: Path, raw: Mapping[str, Any]) -> None:
+    config_file.write_text(
+        yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+
+def _first_safe_pilot_symbol(config, *, state_db: str | Path | None = None) -> str:
+    if state_db is not None:
+        try:
+            with SQLiteStateStore(state_db) as store:
+                latest_watchlist = store.latest_watchlist(name=config.runtime.watchlist_name)
+        except Exception:
+            latest_watchlist = None
+        if latest_watchlist is not None:
+            for row in latest_watchlist.rows:
+                symbol = str(row.symbol or "").strip().upper()
+                if symbol:
+                    return symbol
+    for symbol in config.runtime.symbols:
+        normalized = str(symbol or "").strip().upper()
+        if normalized:
+            return normalized
+    for symbol in config.runtime.universe_candidate_symbols:
+        normalized = str(symbol or "").strip().upper()
+        if normalized:
+            return normalized
+    return ""
+
+
+def _default_safe_pilot_notional(market: str) -> str:
+    return "300" if str(market or "").strip().upper() == "US" else "10000"
+
+
+def apply_safe_pilot_settings(
+    config_path: str | Path,
+    *,
+    state_db: str | Path | None = None,
+) -> dict[str, Any]:
+    """Apply the smallest dashboard-managed live pilot settings."""
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"config file not found: {config_file}")
+    raw = _read_yaml(config_file)
+    config = load_config(config_file)
+    symbol = _first_safe_pilot_symbol(config, state_db=state_db)
+    if not symbol:
+        raise ValueError("runtime.symbols or universe_candidate_symbols is required")
+
+    toss = raw.get("toss", {})
+    if not isinstance(toss, Mapping):
+        toss = {}
+    toss_data = dict(toss)
+    toss_data["live_enabled"] = True
+
+    runtime = raw.get("runtime", {})
+    if not isinstance(runtime, Mapping):
+        runtime = {}
+    runtime_data = dict(runtime)
+    runtime_data["mode"] = "live"
+
+    live = raw.get("live", {})
+    if not isinstance(live, Mapping):
+        live = {}
+    live_data = dict(live)
+    notional_limit = str(
+        live_data.get("max_order_notional")
+        or live_data.get("daily_notional_limit")
+        or _default_safe_pilot_notional(config.runtime.market)
+    )
+    live_data.update(
+        {
+            "emergency_stop": False,
+            "allowed_symbols": [symbol],
+            "max_order_quantity": 1,
+            "max_order_notional": notional_limit,
+            "daily_order_count_limit": 1,
+            "daily_notional_limit": notional_limit,
+            "require_market_open": True,
+            "require_clean_reconcile": True,
+            "block_unresolved_orders": True,
+            "confirm_high_value_order": False,
+            "cancel_after_ack": True,
+        }
+    )
+
+    raw["toss"] = toss_data
+    raw["runtime"] = runtime_data
+    raw["live"] = live_data
+    _write_yaml(config_file, raw)
+    return {
+        "status": "configured",
+        "symbol": symbol,
+        "max_order_notional": notional_limit,
+        "daily_notional_limit": notional_limit,
+        "config": dict(raw),
+    }
+
+
+def stop_live_trading_settings(config_path: str | Path) -> dict[str, Any]:
+    """Persist the dashboard live-trading kill switch."""
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"config file not found: {config_file}")
+    raw = _read_yaml(config_file)
+    live = raw.get("live", {})
+    if not isinstance(live, Mapping):
+        live = {}
+    live_data = dict(live)
+    live_data["emergency_stop"] = True
+    raw["live"] = live_data
+    _write_yaml(config_file, raw)
+    return {"status": "stopped", "emergency_stop": True, "config": dict(raw)}
+
+
 def update_dashboard_settings(
     config_path: str | Path,
     payload: Mapping[str, Any],
@@ -529,9 +849,14 @@ def run_dashboard_server(
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     ensure_runtime_dirs(state_db=state_db, log_dir=Path("logs"))
+    config_file = None
+    if config_path is not None:
+        config_file, _ = ensure_local_config(config_path)
+    else:
+        config_file, _ = ensure_local_config()
     build_dashboard_server(
         state_db=state_db,
-        config_path=config_path,
+        config_path=config_file,
         host=host,
         port=port,
         start_server=True,
@@ -636,9 +961,9 @@ def run_paper_service(
     now=lambda: datetime.now(timezone.utc),
 ) -> HealthSnapshot:
     config = load_config(config_path)
-    if config.live_enabled:
-        raise RuntimeError("paper service refuses configs with toss.live_enabled=true")
     service_mode = _runtime_mode(config)
+    if config.live_enabled and service_mode != "live":
+        raise RuntimeError("paper/shadow service refuses configs with toss.live_enabled=true")
 
     ensure_runtime_dirs(state_db=state_db, log_dir=log_dir)
     store = SQLiteStateStore(state_db)
@@ -790,6 +1115,8 @@ def _paper_service_iteration(
                 snapshot.as_payload() | {"market_session": session.as_payload()},
             )
             return snapshot
+    else:
+        session = None
 
     if not watchlist_built:
         universe = _build_universe(
@@ -833,7 +1160,7 @@ def _paper_service_iteration(
             stop_n=config.stop_n,
             max_units_per_symbol=config.max_units_per_symbol,
             pyramid_step_n=config.pyramid_step_n,
-            simulate_fills=True,
+            simulate_fills=service_mode != "live",
             require_clean_reconcile=service_mode != "shadow",
             momentum_market_symbol=config.momentum_market_symbol,
             momentum_lookback_days=config.momentum_lookback_days,
@@ -855,7 +1182,15 @@ def _paper_service_iteration(
         notifier=MemoryNotifier(),
         now=now,
     )
-    runtime.run_once()
+    result = runtime.run_once()
+    if service_mode == "live":
+        _submit_live_intents(
+            config=config,
+            client=client,
+            store=store,
+            result=result,
+            market_open=bool(session is None or session.is_open),
+        )
     return _with_latest_watchlist(
         runtime.health_snapshot(),
         store,
@@ -864,11 +1199,21 @@ def _paper_service_iteration(
 
 
 def _paper_service_config_blockers(config, env: Mapping[str, str]) -> tuple[str, ...]:
-    return tuple(
+    blockers = [
         check.message
         for check in _build_toss_readiness_checks(config=config, env=env)
         if not check.passed
-    )
+    ]
+    mode = _runtime_mode(config)
+    if mode == "live" and not config.live_enabled:
+        blockers.append("toss.live_enabled must be true for runtime.mode live")
+    if mode != "live" and config.live_enabled:
+        blockers.append("toss.live_enabled must be false unless runtime.mode is live")
+    if mode == "live" and config.live.emergency_stop:
+        blockers.append("live.emergency_stop is active")
+    if mode == "live" and not config.live.allowed_symbols:
+        blockers.append("live.allowed_symbols is required for runtime.mode live")
+    return tuple(blockers)
 
 
 def _runtime_mode(config) -> str:
@@ -890,7 +1235,7 @@ def _build_toss_readiness_checks(
     )
     mode = str(config.runtime.mode or "").strip().lower()
     has_symbols = bool(config.runtime.symbols or config.runtime.universe_candidate_symbols)
-    mode_is_supported = mode in {"paper", "shadow"}
+    mode_is_supported = mode in {"paper", "shadow", "live"}
 
     return (
         OperationsCheck(
@@ -898,7 +1243,7 @@ def _build_toss_readiness_checks(
             mode_is_supported,
             f"runtime.mode is {mode}"
             if mode_is_supported
-            else f"runtime.mode must be paper or shadow, got {config.runtime.mode}",
+            else f"runtime.mode must be paper, shadow, or live, got {config.runtime.mode}",
         ),
         OperationsCheck(
             "runtime_symbols_or_universe_candidates",
@@ -943,6 +1288,143 @@ def _build_toss_readiness_checks(
             else "toss.account_seq is not configured",
         ),
     )
+
+
+def _submit_live_intents(
+    *,
+    config,
+    client: TossClient,
+    store: SQLiteStateStore,
+    result,
+    market_open: bool,
+) -> None:
+    if not result.intents:
+        return
+    currency = "USD" if str(config.runtime.market).strip().upper() == "US" else "KRW"
+    try:
+        buying_power = client.get_buying_power(currency)
+        available_cash = _available_cash_from_buying_power(buying_power)
+    except Exception as exc:
+        store.record_runtime_event(
+            "WARN",
+            "live_buying_power_unavailable",
+            {"currency": currency, "error": str(exc)},
+        )
+        available_cash = None
+
+    orchestrator = LiveOrderOrchestrator(
+        safety=PreTradeSafety(
+            PreTradeSafetyConfig(
+                live_enabled=config.live_enabled,
+                emergency_stop=config.live.emergency_stop,
+                allowed_symbols=config.live.allowed_symbols,
+                max_order_quantity=config.live.max_order_quantity,
+                max_order_notional=config.live.max_order_notional,
+                daily_order_count_limit=config.live.daily_order_count_limit,
+                daily_notional_limit=config.live.daily_notional_limit,
+                require_market_open=config.live.require_market_open,
+                require_clean_reconcile=config.live.require_clean_reconcile,
+                block_unresolved_orders=config.live.block_unresolved_orders,
+            )
+        ),
+        broker=TossLiveBrokerAdapter(
+            client,
+            confirm_high_value_order=config.live.confirm_high_value_order,
+        ),
+        store=store,
+    )
+    daily_summary = store.execution_summary_since(_start_of_local_day(config.runtime.timezone_name))
+    for paper_intent in result.intents:
+        live_intent = _live_order_intent_from_paper(paper_intent)
+        position = store.load_position(live_intent.symbol)
+        unresolved_order_exists = any(
+            order.symbol == live_intent.symbol for order in result.reconcile.open_orders
+        )
+        execution = orchestrator.submit(
+            live_intent,
+            context=PreTradeSafetyContext(
+                market_open=market_open,
+                reconcile_clean=result.reconcile.clean,
+                unresolved_order_exists=unresolved_order_exists,
+                available_cash=available_cash,
+                current_position_qty=position.total_qty if position is not None else Decimal("0"),
+                daily_order_count=int(daily_summary["count"]),
+                daily_notional=daily_summary["notional"],
+            ),
+        )
+        if execution.status.value not in {"REJECTED", "FAILED", "UNKNOWN"}:
+            daily_summary["count"] += 1
+            if live_intent.notional is not None:
+                daily_summary["notional"] += live_intent.notional
+        store.record_runtime_event(
+            "INFO" if execution.status.value not in {"REJECTED", "FAILED", "UNKNOWN"} else "WARN",
+            "live_order_execution",
+            {
+                "intent_id": execution.intent_id,
+                "status": execution.status.value,
+                "broker_order_id": execution.broker_order_id,
+                "message": execution.message,
+                "safety": execution.safety_decision.as_payload(),
+            },
+        )
+        if (
+            config.live.cancel_after_ack
+            and execution.status.value == "ACKNOWLEDGED"
+            and execution.broker_order_id is not None
+        ):
+            cancel_execution = orchestrator.cancel_acknowledged(
+                live_intent,
+                broker_order_id=execution.broker_order_id,
+            )
+            store.record_runtime_event(
+                "INFO"
+                if cancel_execution.status.value == "PENDING_CANCEL"
+                else "WARN",
+                "live_order_cancel_after_ack",
+                {
+                    "intent_id": cancel_execution.intent_id,
+                    "status": cancel_execution.status.value,
+                    "broker_order_id": cancel_execution.broker_order_id,
+                    "message": cancel_execution.message,
+                },
+            )
+
+
+def _live_order_intent_from_paper(intent: PaperOrderIntent) -> OrderIntent:
+    system = TurtleSystem(intent.system) if intent.system else None
+    return OrderIntent(
+        intent_id=intent.intent_id,
+        idempotency_key=_live_client_order_id(intent.intent_id),
+        symbol=intent.symbol,
+        side=Side(intent.side),
+        quantity=intent.quantity,
+        order_type=OrderType.LIMIT,
+        limit_price=intent.fill_price,
+        source=f"{intent.mode}:{intent.signal_kind}",
+        reason=intent.reason,
+        system=system,
+        signal_id=intent.source_signal_id,
+        created_at=intent.created_at,
+        metadata=intent.as_payload(),
+    )
+
+
+def _live_client_order_id(intent_id: str) -> str:
+    return "".join(char if char.isalnum() or char in "-_" else "-" for char in intent_id)[-36:]
+
+
+def _available_cash_from_buying_power(payload: Mapping[str, Any]) -> Decimal | None:
+    for key in ("cashBuyingPower", "buyingPower", "availableCash", "krw", "usd"):
+        value = payload.get(key)
+        if value is not None:
+            return Decimal(str(value))
+    return None
+
+
+def _start_of_local_day(timezone_name: str) -> datetime:
+    now_local = datetime.now(ZoneInfo(timezone_name))
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_local.astimezone(timezone.utc)
 
 
 def _should_build_watchlist(status: str) -> bool:

@@ -415,7 +415,7 @@ class PaperTradingRuntime:
                 )
                 continue
 
-            position = self.store.load_paper_position(symbol)
+            position = self._load_strategy_position(symbol)
             signals, self._strategy_state = evaluate_signals(
                 symbol=symbol,
                 completed_candles=candles,
@@ -505,7 +505,7 @@ class PaperTradingRuntime:
     ) -> PaperRunResult:
         positions = {
             position.symbol: position
-            for position in self.store.list_paper_positions(status=PositionStatus.OPEN)
+            for position in self._list_strategy_positions(status=PositionStatus.OPEN)
             if position.system == TurtleSystem.MOMENTUM
         }
         symbols = tuple(
@@ -632,7 +632,7 @@ class PaperTradingRuntime:
                 guard_results=guard_results,
             ):
                 accepted_symbols.append(symbol)
-                filled = self.store.load_paper_position(symbol)
+                filled = self._load_strategy_position(symbol)
                 if filled is not None and filled.status == PositionStatus.OPEN:
                     positions[symbol] = filled
 
@@ -743,7 +743,7 @@ class PaperTradingRuntime:
         if result is None:
             positions = tuple(
                 _position_payload(position)
-                for position in self.store.list_paper_positions()
+                for position in self._list_strategy_positions()
             )
             return HealthSnapshot(
                 mode=self.config.mode,
@@ -756,7 +756,7 @@ class PaperTradingRuntime:
 
         positions = tuple(
             _position_payload(position)
-            for position in self.store.list_paper_positions()
+            for position in self._list_strategy_positions()
         )
         return HealthSnapshot(
             mode=self.config.mode,
@@ -767,6 +767,16 @@ class PaperTradingRuntime:
             watchlist=tuple({"symbol": symbol} for symbol in self.config.symbols),
             generated_at=result.generated_at,
         )
+
+    def _load_strategy_position(self, symbol: str) -> PositionState | None:
+        if self.config.mode == "live":
+            return self.store.load_position(symbol)
+        return self.store.load_paper_position(symbol)
+
+    def _list_strategy_positions(self, *, status=None) -> list[PositionState]:
+        if self.config.mode == "live":
+            return self.store.list_positions(status=status)
+        return self.store.list_paper_positions(status=status)
 
     def _intent_from_signal(
         self,
