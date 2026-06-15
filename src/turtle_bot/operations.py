@@ -324,6 +324,8 @@ def build_dashboard_server(
                 def interruptible_sleep(seconds: float) -> None:
                     if active_stop_event.wait(seconds):
                         raise DashboardTradingLoopStopped("dashboard trading loop stopped")
+                    if _dashboard_loop_should_stop(config_path):
+                        raise DashboardTradingLoopStopped("dashboard emergency stop is active")
 
                 def run_loop() -> None:
                     with SQLiteStateStore(state_db) as loop_store:
@@ -386,7 +388,13 @@ def build_dashboard_server(
                 if loop_stop_event is not None:
                     loop_stop_event.set()
                 refresh_dashboard_state()
-                return {"status": "stopped", "kill_switch": result, "settings": settings_payload}
+                open_orders = _dashboard_open_order_summary(state_db)
+                return {
+                    "status": "stopped",
+                    "kill_switch": result,
+                    "open_orders": open_orders,
+                    "settings": settings_payload,
+                }
             if path != "/dashboard/actions/live-once":
                 raise ValueError(f"unsupported action: {path}")
             confirmation = str(payload.get("confirmation") or "").strip()
@@ -770,6 +778,29 @@ def stop_live_trading_settings(config_path: str | Path) -> dict[str, Any]:
     raw["live"] = live_data
     _write_yaml(config_file, raw)
     return {"status": "stopped", "emergency_stop": True, "config": dict(raw)}
+
+
+def _dashboard_loop_should_stop(config_path: str | Path) -> bool:
+    try:
+        config = load_config(config_path)
+    except Exception:
+        return False
+    return _runtime_mode(config) == "live" and bool(config.live.emergency_stop)
+
+
+def _dashboard_open_order_summary(state_db: str | Path) -> dict[str, Any]:
+    with SQLiteStateStore(state_db) as store:
+        events = store.list_runtime_events(limit=100)
+    latest = _latest_health_event_payload(events)
+    if latest is None:
+        return {"count": 0, "items": (), "warning": None}
+    open_orders = _payload_items(latest.get("open_orders"))
+    warning = (
+        "open orders may still need broker-side review"
+        if open_orders
+        else None
+    )
+    return {"count": len(open_orders), "items": open_orders, "warning": warning}
 
 
 def update_dashboard_settings(
@@ -1340,6 +1371,46 @@ def _submit_live_intents(
         unresolved_order_exists = any(
             order.symbol == live_intent.symbol for order in result.reconcile.open_orders
         )
+        store.record_runtime_event(
+            "INFO",
+            "live_order_final_guard_snapshot",
+            {
+                "guard": "final_pre_submit",
+                "symbol": live_intent.symbol,
+                "side": live_intent.side.value,
+                "current_position_qty": str(
+                    position.total_qty if position is not None else Decimal("0")
+                ),
+                "daily_order_count": int(daily_summary["count"]),
+                "daily_notional": str(daily_summary["notional"]),
+                "unresolved_order_exists": unresolved_order_exists,
+            },
+        )
+        final_guard_blockers = _live_final_guard_blockers(
+            config=config,
+            live_intent=live_intent,
+            position_qty=position.total_qty if position is not None else Decimal("0"),
+            unresolved_order_exists=unresolved_order_exists,
+            daily_summary=daily_summary,
+        )
+        if final_guard_blockers:
+            store.record_runtime_event(
+                "WARN",
+                "live_order_final_guard_blocked",
+                {
+                    "guard": "final_pre_submit",
+                    "blockers": list(final_guard_blockers),
+                    "symbol": live_intent.symbol,
+                    "side": live_intent.side.value,
+                    "current_position_qty": str(
+                        position.total_qty if position is not None else Decimal("0")
+                    ),
+                    "daily_order_count": int(daily_summary["count"]),
+                    "daily_notional": str(daily_summary["notional"]),
+                    "unresolved_order_exists": unresolved_order_exists,
+                },
+            )
+            continue
         execution = orchestrator.submit(
             live_intent,
             context=PreTradeSafetyContext(
@@ -1388,6 +1459,25 @@ def _submit_live_intents(
                     "message": cancel_execution.message,
                 },
             )
+
+
+def _live_final_guard_blockers(
+    *,
+    config,
+    live_intent: OrderIntent,
+    position_qty: Decimal,
+    unresolved_order_exists: bool,
+    daily_summary: Mapping[str, Any],
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    allowed_symbols = {str(symbol).upper() for symbol in config.live.allowed_symbols}
+    if not config.live_enabled:
+        blockers.append("live_disabled")
+    if config.live.emergency_stop:
+        blockers.append("emergency_stop_active")
+    if allowed_symbols and live_intent.symbol.upper() not in allowed_symbols:
+        blockers.append("symbol_not_allowlisted")
+    return tuple(blockers)
 
 
 def _live_order_intent_from_paper(intent: PaperOrderIntent) -> OrderIntent:

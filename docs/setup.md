@@ -1,4 +1,4 @@
-# Setup
+﻿# Setup
 
 This guide is for a new user setting up the bot from a fresh checkout.
 
@@ -128,27 +128,20 @@ Expected result:
 
 ## 6. Controlled Live Pilot
 
-Dashboard path for the operator:
+The dashboard keeps the first live run intentionally small.
 
-1. Enter the Toss API client id/secret.
-2. Confirm the Toss account sequence.
-3. Press `안전 파일럿 시작`.
+Operator flow:
 
-The dashboard action applies the safe pilot config automatically:
+1. Enter the Toss app ID and secret.
+2. Enter the account sequence for the account to trade.
+3. Press the safe pilot start button in Settings or Live.
 
-- `runtime.mode: live`
-- `toss.live_enabled: true`
-- `live.emergency_stop: false`
-- first available symbol allowlisted
-- one-share max quantity
-- one order per local day
-- small daily notional cap
-- `cancel_after_ack: true`
+The button switches the bot into live mode, selects one allowed symbol, limits
+the pilot to one share and one order per day, and keeps the daily amount small.
+The stop button turns the kill switch back on and stops the dashboard-managed
+loop.
 
-Use `거래 중지` on the dashboard to persist `live.emergency_stop: true` and stop the
-dashboard-managed trading loop.
-
-Only after a clean shadow run, change both values together:
+If you edit the config manually, change these values together:
 
 ```yaml
 toss:
@@ -156,15 +149,7 @@ toss:
 
 runtime:
   mode: live
-```
 
-Start with one allowlisted symbol and a very small order size. The live runtime
-uses the same strategy signal path, but switches off virtual fills and submits
-approved order intents through the live execution ledger.
-
-Keep the independent live safety block tight:
-
-```yaml
 live:
   emergency_stop: false
   allowed_symbols:
@@ -179,5 +164,9 @@ live:
   cancel_after_ack: true
 ```
 
-`strategy.momentum.target_position_pct` still controls the desired strategy
-size. The `live:` block is a final hard cap before the Toss order API call.
+Start with one allowed symbol and a very small order size. In live mode the bot
+uses the same strategy signal path, but sends approved orders to Toss instead of
+recording virtual fills.
+
+`strategy.momentum.target_position_pct` still controls the target strategy size.
+The `live:` block is the final hard cap before any Toss order request.

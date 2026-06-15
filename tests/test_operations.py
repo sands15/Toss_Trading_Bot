@@ -909,6 +909,44 @@ def test_stop_live_trading_settings_persists_emergency_stop(tmp_path: Path) -> N
     assert config.toss.live_enabled is True
 
 
+def test_dashboard_stop_action_reports_open_order_warning(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+    store = SQLiteStateStore(state_db)
+    store.record_runtime_event(
+        "INFO",
+        "live_service_heartbeat",
+        {
+            "mode": "live",
+            "ready": True,
+            "blockers": [],
+            "open_orders": [{"symbol": "TEST", "intent_id": "intent-1"}],
+        },
+    )
+    server = build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+    )
+
+    result = server.action_for_path("/dashboard/actions/stop-trading", {})
+    config = load_config(config_path)
+
+    assert result["status"] == "stopped"
+    assert result["open_orders"]["count"] == 1
+    assert result["open_orders"]["warning"] == "open orders may still need broker-side review"
+    assert config.live.emergency_stop is True
+
+
 def test_paper_service_can_run_momentum_strategy_from_config(
     tmp_path: Path,
 ) -> None:

@@ -298,10 +298,10 @@ def _build_live_readiness_payload(
             "blocked" if api_blocked else "done",
             "토스 앱 인증 정보 확인 필요"
             if api_blocked
-            else "필수 API 인증 정보가 설정되어 있습니다.",
+            else "토스 연결 키가 입력되어 있습니다.",
             "토스 개발자센터에서 발급받은 앱 ID와 비밀키를 설정하세요."
             if api_blocked
-            else "인증 정보는 화면에 노출하지 않습니다.",
+            else "비밀키는 화면에 다시 보여주지 않습니다.",
         ),
         _readiness_check(
             "toss_account",
@@ -309,21 +309,21 @@ def _build_live_readiness_payload(
             "blocked" if account_blocked or not account_configured else "done",
             "거래 계좌 번호가 아직 확인되지 않았습니다."
             if account_blocked or not account_configured
-            else "계좌 식별자가 로컬 설정에 들어 있습니다.",
-            "설정 파일의 toss.account_seq 값을 넣고 다시 확인하세요."
+            else "거래에 사용할 계좌 번호가 입력되어 있습니다.",
+            "설정 화면에서 계좌 번호를 입력하세요."
             if account_blocked or not account_configured
-            else "실거래 전 계좌가 의도한 계좌인지 한 번 더 확인하세요.",
+            else "실거래 전 사용할 계좌가 맞는지만 확인하세요.",
         ),
         _readiness_check(
             "strategy_mode",
             "전략/런타임 모드",
             "blocked" if live_gate_blocked else "done" if runtime_mode in {"paper", "shadow", "live"} else "warn",
-            f"{strategy_kind} 전략, {runtime_mode} 모드로 표시됩니다.",
-            "live 모드는 runtime.mode=live 와 toss.live_enabled=true 조합에서만 동작합니다."
+            f"현재 전략은 {strategy_kind}, 거래 상태는 {runtime_mode}입니다.",
+            "안전 파일럿 시작 버튼이 필요한 실거래 설정을 자동으로 맞춥니다."
             if live_gate_blocked
-            else "live 모드에서는 주문 후보가 safety gate를 통과하면 Toss 주문 API로 제출됩니다."
+            else "실거래 중에는 조건을 통과한 주문 후보만 토스로 보냅니다."
             if mode_is_live
-            else "실거래 전에는 shadow 모드로 실제 계좌 조회 검증을 먼저 돌리세요.",
+            else "실거래 전에는 계좌 조회와 주문 후보가 정상인지 먼저 확인합니다.",
         ),
         _readiness_check(
             "universe",
@@ -332,20 +332,20 @@ def _build_live_readiness_payload(
             "감시할 종목 후보가 부족합니다."
             if universe_blocked
             else "종목 후보/유니버스 설정이 준비되어 있습니다.",
-            "runtime.symbols 또는 universe_candidate_symbols를 설정하세요."
+            "거래할 종목을 하나 이상 넣어 주세요."
             if universe_blocked
-            else "PIT 유니버스와 로컬 가격 데이터 교집합을 계속 확인하세요.",
+            else "봇은 이 목록 안에서만 주문 후보를 만듭니다.",
         ),
         _readiness_check(
             "market_data",
             "시장/시세 상태",
             "warn" if market_blocked or reconcile_blocked or not status.get("ready") else "done",
-            "시장 시간, 캘린더, 시세 최신성 중 확인할 항목이 있습니다."
+            "주문 판단 전에 확인할 항목이 있습니다."
             if market_blocked or reconcile_blocked or not status.get("ready")
-            else "현재 상태 payload 기준으로 막힌 시세 항목은 없습니다.",
-            "시장 개장 상태와 최근 heartbeat를 확인한 뒤 주문 판단을 진행하세요."
+            else "시장 상태와 시세 확인이 준비되어 있습니다.",
+            "장이 열렸는지, 최근 점검이 정상인지 확인한 뒤 시작하세요."
             if market_blocked or reconcile_blocked or not status.get("ready")
-            else "초 단위 감시는 포지션 보유 중에만 켜는 구성이 좋습니다.",
+            else "주문 직전에도 같은 조건을 다시 확인합니다.",
         ),
         _readiness_check(
             "open_orders",
@@ -354,9 +354,9 @@ def _build_live_readiness_payload(
             f"주문 후보 {open_order_count}건이 표시됩니다."
             if open_order_count
             else "현재 표시된 주문 후보는 없습니다.",
-            "live 모드에서는 이 후보가 실주문 제출 대상입니다."
+            "실거래 중에는 이 후보가 실제 주문 대상입니다."
             if open_order_count
-            else "신호가 없으면 live 모드여도 주문은 제출되지 않습니다.",
+            else "매수 신호가 없으면 실거래를 시작해도 주문은 나가지 않습니다.",
         ),
         _readiness_check(
             "event_audit",
@@ -365,7 +365,7 @@ def _build_live_readiness_payload(
             f"최근 이벤트 {event_total}건을 확인했습니다."
             if event_total
             else "아직 이벤트 로그가 비어 있습니다.",
-            "최소 한 번 이상 paper/shadow heartbeat가 쌓인 뒤 실전 전환을 검토하세요."
+            "먼저 봇이 최근에 정상 점검을 한 기록이 있어야 합니다."
             if not event_total
             else "이벤트 탭에서 WARN/ERROR를 확인하세요.",
         ),
@@ -373,12 +373,12 @@ def _build_live_readiness_payload(
             "live_order_engine",
             "실주문 제출 엔진",
             "done" if mode_is_live and live_enabled else "warn",
-            "실주문 adapter와 execution ledger 경로가 연결되어 있습니다."
+            "실제 주문을 보낼 준비 경로가 연결되어 있습니다."
             if mode_is_live and live_enabled
             else "실주문 엔진은 연결되어 있지만 현재 모드에서는 주문을 제출하지 않습니다.",
-            "실거래 중에는 execution ledger와 WARN 이벤트를 같이 확인하세요."
+            "실거래 중에는 최근 이벤트와 주문 기록을 같이 확인하세요."
             if mode_is_live and live_enabled
-            else "runtime.mode=live 와 toss.live_enabled=true를 함께 설정해야 자동 실주문 경로가 열립니다.",
+            else "안전 파일럿 시작 버튼이 이 설정을 자동으로 맞춥니다.",
         ),
     ]
     counts = Counter(str(item["status"]) for item in checks)
@@ -394,11 +394,11 @@ def _build_live_readiness_payload(
         else "ready_for_shadow"
     )
     headline = (
-        "실거래 주문 제출 가능 상태입니다"
+        "실거래를 시작할 준비가 됐습니다"
         if can_submit_live_orders
-        else "실거래 주문 제출은 차단 상태입니다"
+        else "아직 실거래를 시작할 수 없습니다"
         if blocked_count
-        else "실거래 전 최종 검토가 필요합니다"
+        else "시작 전 마지막 확인이 필요합니다"
         if warning_count
         else "shadow 검증 기준은 통과했습니다"
     )
@@ -416,7 +416,7 @@ def _build_live_readiness_payload(
         "can_submit_live_orders": can_submit_live_orders,
         "submit_disabled_reason": None
         if can_submit_live_orders
-        else "live 모드, live_enabled, readiness, 주문 후보, 계좌/시세/reconcile gate를 모두 통과해야 합니다.",
+        else "토스 키, 계좌, 거래 종목, 시장 상태, 주문 후보가 준비되어야 합니다.",
         "checks": checks,
     }
 
@@ -2303,7 +2303,7 @@ def dashboard_html() -> str:
               </div>
               <div class="live-hero">
                 <strong id="live-readiness-headline">실거래 상태를 불러오는 중입니다</strong>
-                <p id="live-readiness-copy" class="panel-copy">API, 계좌, 시장 상태, 이벤트 로그, 주문 엔진 연결 상태를 확인합니다.</p>
+                <p id="live-readiness-copy" class="panel-copy">토스 키, 계좌, 시장 상태, 주문 후보가 준비됐는지 확인합니다.</p>
                 <div id="live-readiness-summary" class="live-summary"></div>
               </div>
             </article>
@@ -2311,19 +2311,19 @@ def dashboard_html() -> str:
               <h2>주문 제출 상태</h2>
               <div class="live-disabled-box">
                 <strong>자동 안전 파일럿</strong>
-                <p id="live-submit-reason" class="panel-copy">API 입력과 계좌 확인이 끝나면 안전 한도를 적용하고 live 거래 루프를 시작합니다.</p>
+                <p id="live-submit-reason" class="panel-copy">토스 키와 계좌가 준비되면 작은 한도로 자동 거래를 시작합니다.</p>
                 <button type="button" class="btn primary" id="safe-pilot-button">안전 파일럿 시작</button>
                 <button type="button" class="btn" id="live-stop-button">거래 중지</button>
                 <p id="safe-pilot-result" class="panel-copy"></p>
-                <strong>수동 1회 live pilot 실행</strong>
-                <p class="panel-copy">자동 루프 대신 1회만 직접 돌릴 때 사용합니다.</p>
+                <strong>1회만 시험 실행</strong>
+                <p class="panel-copy">자동으로 계속 돌리지 않고 한 번만 확인할 때 사용합니다.</p>
                 <input id="live-once-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="LIVE PILOT 실행" />
                 <button type="button" class="btn primary" id="live-once-button">1회 실행</button>
                 <p id="live-once-result" class="panel-copy"></p>
                 <ul>
-                  <li>안전 파일럿은 첫 심볼 1주, 일 1건, 소액 한도, 시장 열림, 클린 reconcile을 강제합니다</li>
-                  <li>거래 중지는 live.emergency_stop을 켜고 대시보드 루프를 멈춥니다</li>
-                  <li>cancel_after_ack가 켜져 있으면 주문 ACK 후 취소 요청까지 보냅니다</li>
+                  <li>안전 파일럿은 선택된 종목 1주, 하루 1건, 소액 한도로만 움직입니다</li>
+                  <li>거래 중지를 누르면 새 주문을 막고 자동 실행을 멈춥니다</li>
+                  <li>시험 모드에서는 주문 접수 확인 뒤 바로 취소 요청을 보냅니다</li>
                 </ul>
               </div>
             </article>
@@ -2359,7 +2359,8 @@ def dashboard_html() -> str:
           <div class="empty-view">
             <article class="card data-panel">
               <h2>설정 안내</h2>
-              <p id="settings-headline" class="status-copy">실행 전 점검 항목을 확인하고 모멘텀 값을 바로 입력해 보세요.</p>
+              <p id="settings-headline" class="status-copy">필수 입력을 끝내면 이 화면에서 바로 안전 파일럿을 시작할 수 있습니다.</p>
+              <span id="safe-pilot-state-badge" class="status-pill blocked">파일럿 대기</span>
               <ul id="settings-onboarding-list" class="action-list"></ul>
               <div class="settings-actions">
                 <button type="button" class="btn primary" id="onboarding-safe-pilot-button">안전 파일럿 시작</button>
@@ -2369,13 +2370,13 @@ def dashboard_html() -> str:
             </article>
             <article class="card data-panel">
               <h2>토스 API / 계좌 연결</h2>
-              <p class="panel-copy">토스 개발자센터에서 발급받은 앱 ID와 비밀키, 그리고 연결할 계좌 번호를 입력합니다. 비밀값은 저장 후 화면에 남기지 않습니다.</p>
+              <p class="panel-copy">토스에서 받은 앱 ID, 비밀키, 거래할 계좌 번호를 입력합니다. 비밀키는 저장 후 화면에 다시 보이지 않습니다.</p>
               <section class="settings-form">
                 <div class="settings-grid">
                   <div class="settings-field">
                     <label for="toss-client-id" class="settings-label">토스 앱 ID</label>
                     <input id="toss-client-id" type="password" autocomplete="off" placeholder="토스 개발자센터에서 복사한 앱 ID" />
-                    <p class="settings-helper">토스 Open API 앱을 만들면 발급되는 공개 식별자입니다.</p>
+                    <p class="settings-helper">토스 개발자센터에서 앱을 만들면 나오는 ID입니다.</p>
                     <div class="credential-status">
                       <span id="toss-client-id-status" class="status-pill todo">미설정</span>
                     </div>
@@ -2383,7 +2384,7 @@ def dashboard_html() -> str:
                   <div class="settings-field">
                     <label for="toss-client-secret" class="settings-label">토스 앱 비밀키</label>
                     <input id="toss-client-secret" type="password" autocomplete="off" placeholder="토스 개발자센터에서 복사한 비밀키" />
-                    <p class="settings-helper">계좌 조회와 시세 요청에 쓰는 비밀값입니다. 저장 후 다시 보여주지 않습니다.</p>
+                    <p class="settings-helper">토스 연결에 필요한 비밀키입니다. 저장 후 다시 보여주지 않습니다.</p>
                     <div class="credential-status">
                       <span id="toss-client-secret-status" class="status-pill todo">미설정</span>
                     </div>
@@ -2391,7 +2392,7 @@ def dashboard_html() -> str:
                   <div class="settings-field">
                     <label for="toss-account-seq" class="settings-label">연결할 토스 계좌 번호</label>
                     <input id="toss-account-seq" type="text" inputmode="numeric" autocomplete="off" placeholder="예: 7" />
-                    <p class="settings-helper">토스 API가 계좌를 구분할 때 쓰는 짧은 번호입니다. 계좌 목록 조회에서 보이는 accountSeq 값을 넣습니다.</p>
+                    <p class="settings-helper">토스 계좌 목록에서 보이는 accountSeq 번호를 넣습니다.</p>
                     <div class="credential-status">
                       <span id="toss-account-status" class="status-pill todo">미연결</span>
                     </div>
@@ -2406,7 +2407,7 @@ def dashboard_html() -> str:
             </article>
             <article class="card data-panel">
               <h2>실거래 중지 스위치</h2>
-              <p class="panel-copy">언제든 누르면 live.emergency_stop을 켜고 대시보드가 시작한 자동 거래 루프를 멈춥니다.</p>
+              <p class="panel-copy">언제든 누르면 새 주문을 막고 자동 실행을 멈춥니다.</p>
               <button type="button" class="btn" id="settings-live-stop-button">거래 중지</button>
               <p id="settings-live-stop-result" class="panel-copy"></p>
             </article>
@@ -2521,19 +2522,19 @@ def dashboard_html() -> str:
       },
       {
         title: "거래 계좌 연결",
-        body: "연결할 계좌의 accountSeq 값을 계좌 연결번호로 입력하세요.",
+        body: "거래에 사용할 계좌 번호를 입력하세요.",
         group: "필수",
         match: (blocker) => blocker.includes("account_seq")
       },
       {
         title: "감시 종목 후보",
-        body: "runtime.symbols 또는 universe_candidate_symbols를 설정하세요.",
+        body: "봇이 확인할 종목을 하나 이상 준비하세요.",
         group: "필수",
         match: (blocker) => blocker.includes("runtime.symbols") || blocker.includes("universe_candidate_symbols")
       },
       {
-        title: "페이퍼 서비스 확인",
-        body: "이벤트 탭에서 페이퍼 서비스 heartbeat가 최근에 기록됐는지 확인하세요.",
+        title: "최근 점검 기록",
+        body: "이벤트 탭에서 봇이 최근에 정상 점검했는지 확인하세요.",
         group: "확인",
         match: () => false,
         eventMessage: "paper_service_heartbeat"
@@ -2542,18 +2543,18 @@ def dashboard_html() -> str:
 
     const EVENT_LABELS = {
       paper_service_started: "페이퍼 서비스 시작",
-      paper_service_heartbeat: "페이퍼 서비스 점검 완료",
+      paper_service_heartbeat: "자동 점검 완료",
       paper_service_blocked: "설정 미완료로 중지",
       market_session_state: "시장 상태 확인",
       paper_service_market_closed: "시장 휴장/대기",
       premarket_watchlist_blocked: "관심 종목 생성 일부 실패",
       premarket_watchlist_generated: "관심 종목 생성 완료",
       universe_generated: "후보 종목 필터링 완료",
-      paper_reconcile_blocked: "계좌 대조 차단",
+      paper_reconcile_blocked: "계좌 확인 필요",
       paper_order_guard: "주문 안전 조건 확인",
       paper_order_intent: "페이퍼 주문 후보 기록",
       paper_fill: "페이퍼 체결 반영",
-      paper_runtime_blocked: "페이퍼 런타임 차단"
+      paper_runtime_blocked: "설정 확인 필요"
     };
 
     const COLUMN_LABELS = {
@@ -2727,17 +2728,17 @@ def dashboard_html() -> str:
       if (!ready) {
         const reason = (first ? blockerLabel(first) : "운영 준비").replace(/[.!?…]+$/g, "");
         return {
-          title: "현재 운영이 차단 상태입니다",
-          body: `차단 원인: ${reason}. 설정 탭으로 이동해 차단 항목을 우선 처리해 주세요.`,
+          title: "아직 시작할 준비가 안 됐습니다",
+          body: `먼저 확인할 항목: ${reason}. 설정 탭에서 이 항목부터 채워 주세요.`,
           href: "#settings",
-          label: "차단 설정 확인",
+          label: "필수 설정 확인",
           kind: "blocked"
         };
       }
       if (!first) {
         return {
           title: "운영 상태를 확인하세요",
-          body: "막힌 설정은 없습니다. 이벤트 탭에서 최근 heartbeat와 시장 상태를 확인하면 됩니다.",
+          body: "필수 설정은 끝났습니다. 이벤트 탭에서 최근 점검과 시장 상태를 확인하면 됩니다.",
           href: "#events",
           label: "이벤트 보기",
           kind: "done"
@@ -2747,7 +2748,7 @@ def dashboard_html() -> str:
       if (text.includes("runtime.symbols") || text.includes("universe_candidate_symbols")) {
         return {
           title: "감시 종목 후보를 먼저 넣으세요",
-          body: "종목 후보가 없으면 관심 종목과 페이퍼 주문 후보를 만들 수 없습니다.",
+          body: "종목이 없으면 봇이 무엇을 살지 판단할 수 없습니다.",
           href: "#settings",
           label: "설정 확인",
           kind: "warn"
@@ -2756,7 +2757,7 @@ def dashboard_html() -> str:
       if (text.includes("TOSS_CLIENT_ID") || text.includes("TOSS_CLIENT_SECRET")) {
         return {
           title: "Toss API 인증 정보를 설정하세요",
-          body: "인증 정보가 없으면 계좌, 장 정보, 종목 데이터를 Toss에서 확인할 수 없습니다.",
+          body: "토스 키가 있어야 계좌와 시장 정보를 확인할 수 있습니다.",
           href: "#settings",
           label: "설정 확인",
           kind: "warn"
@@ -2765,7 +2766,7 @@ def dashboard_html() -> str:
       if (text.includes("account_seq")) {
         return {
           title: "거래 계좌 번호를 연결하세요",
-          body: "계좌가 연결되어야 포지션과 주문 상태를 읽을 수 있습니다.",
+          body: "계좌 번호가 있어야 어떤 계좌로 거래할지 알 수 있습니다.",
           href: "#settings",
           label: "설정 확인",
           kind: "warn"
@@ -2773,7 +2774,7 @@ def dashboard_html() -> str:
       }
       return {
         title: blockerLabel(first),
-        body: "설정 탭에서 세부 항목을 확인하세요.",
+        body: "설정 탭에서 빠진 항목을 확인하세요.",
         href: "#settings",
         label: "설정 확인",
         kind: "warn"
@@ -2800,14 +2801,14 @@ def dashboard_html() -> str:
     function statusText(kind) {
       if (kind === "done") return "완료";
       if (kind === "warn") return "진행 필요";
-      if (kind === "blocked") return "차단";
+      if (kind === "blocked") return "확인 필요";
       return "확인";
     }
 
     function liveStateLabel(state) {
       if (state === "ready_for_shadow") return "shadow 기준 통과";
       if (state === "needs_review") return "검토 필요";
-      if (state === "blocked") return "실거래 차단";
+      if (state === "blocked") return "준비 필요";
       return "확인 중";
     }
 
@@ -2845,14 +2846,13 @@ def dashboard_html() -> str:
       if (copy) {
         const mode = data.runtime_mode ? modeLabel(data.runtime_mode) : "대기";
         const strategy = data.strategy_kind || "unknown";
-        const liveFlag = data.live_enabled ? "켜짐" : "꺼짐";
-        copy.textContent = `현재 전략 ${strategy}, 런타임 ${mode}, live_enabled ${liveFlag}. 실제 주문 제출 가능 여부: ${data.can_submit_live_orders ? "가능" : "불가"}.`;
+        copy.textContent = `현재 전략은 ${strategy}, 거래 상태는 ${mode}입니다. 실거래 시작: ${data.can_submit_live_orders ? "가능" : "아직 준비 필요"}.`;
       }
       if (summary) {
         const items = [
           ["통과", counts.done || 0],
           ["검토", counts.warning || 0],
-          ["차단", counts.blocked || 0],
+          ["확인 필요", counts.blocked || 0],
         ];
         summary.innerHTML = items.map(([label, value]) => `
           <div class="live-summary-item">
@@ -2861,7 +2861,7 @@ def dashboard_html() -> str:
           </div>`).join("");
       }
       if (submitReason) {
-        submitReason.textContent = data.submit_disabled_reason || "실제 주문 제출은 비활성입니다.";
+        submitReason.textContent = data.submit_disabled_reason || "아직 실제 주문은 보내지 않습니다.";
       }
       if (checkCount) {
         checkCount.textContent = `${checks.length}개`;
@@ -2935,12 +2935,13 @@ def dashboard_html() -> str:
       const button = document.getElementById(buttonId);
       const result = document.getElementById(resultId);
       if (button) button.disabled = true;
-      if (result) result.textContent = "안전 파일럿 설정 적용 및 거래 루프 시작 중...";
+      if (result) result.textContent = "안전 파일럿을 준비하고 자동 실행을 시작하는 중입니다...";
       try {
         const payload = await postJson("/dashboard/actions/apply-safe-pilot", {});
         const pilot = payload.safe_pilot || {};
         if (result) {
-          result.textContent = `시작됨: ${pilot.symbol || "선택 심볼"} / 1일 한도 ${pilot.daily_notional_limit || "-"} / 루프 ${payload.loop || payload.status}`;
+          const loopText = payload.loop === "already_running" ? "이미 실행 중" : "실행 시작";
+          result.textContent = `${loopText}: ${pilot.symbol || "선택 심볼"} / 1일 한도 ${pilot.daily_notional_limit || "-"}`;
         }
         await refresh();
       } catch (error) {
@@ -2956,13 +2957,52 @@ def dashboard_html() -> str:
       if (button) button.disabled = true;
       if (result) result.textContent = "거래 중지 스위치 적용 중...";
       try {
-        await postJson("/dashboard/actions/stop-trading", {});
-        if (result) result.textContent = "거래 중지됨: live.emergency_stop이 켜졌습니다.";
+        const payload = await postJson("/dashboard/actions/stop-trading", {});
+        const openOrders = payload.open_orders || {};
+        if (result) {
+          result.textContent = openOrders.count > 0
+            ? `거래를 멈췄습니다. 아직 끝나지 않은 주문 ${openOrders.count}건은 Toss에서 확인하세요.`
+            : "거래를 멈췄습니다. 새 주문은 보내지 않습니다.";
+        }
         await refresh();
       } catch (error) {
         if (result) result.textContent = `중지 실패: ${error.message}`;
       } finally {
         if (button) button.disabled = false;
+      }
+    }
+
+    function safePilotPrerequisites(status, settings) {
+      const blockers = Array.isArray(status && status.blockers) ? status.blockers : [];
+      const toss = settings && settings.toss ? settings.toss : {};
+      const missingSymbol = blockers.some((blocker) => String(blocker).includes("runtime.symbols") || String(blocker).includes("universe_candidate_symbols"));
+      const missingApi = blockers.some((blocker) => String(blocker).includes("TOSS_CLIENT_ID") || String(blocker).includes("TOSS_CLIENT_SECRET"));
+      const missingAccount = blockers.some((blocker) => String(blocker).includes("account_seq"));
+      const ready = Boolean(toss.client_id_configured && toss.client_secret_configured && toss.account_seq_configured && !missingSymbol && !missingApi && !missingAccount);
+      const reason = !toss.client_id_configured || !toss.client_secret_configured || missingApi
+        ? "Toss API 키 필요"
+        : !toss.account_seq_configured || missingAccount
+          ? "계좌 연결 필요"
+          : missingSymbol
+            ? "거래 심볼 필요"
+            : "시작 가능";
+      return { ready, reason };
+    }
+
+    function setSafePilotControls(status, settings) {
+      const gate = safePilotPrerequisites(status, settings);
+      ["safe-pilot-button", "onboarding-safe-pilot-button"].forEach((id) => {
+        const button = document.getElementById(id);
+        if (!button) return;
+        button.disabled = !gate.ready;
+        button.title = gate.ready ? "안전 파일럿 시작" : gate.reason;
+      });
+      const badge = document.getElementById("safe-pilot-state-badge");
+      if (badge) {
+        const live = settings && settings.live ? settings.live : {};
+        const stopped = Boolean(live.emergency_stop);
+        badge.className = `status-pill ${gate.ready && !stopped ? "done" : "blocked"}`;
+        badge.textContent = stopped ? `중지됨 / ${gate.reason}` : gate.reason;
       }
     }
 
@@ -3123,14 +3163,14 @@ def dashboard_html() -> str:
       const rows = [
         ["상태", status && status.ready ? "준비됨" : "설정 확인 필요", status && status.ready ? "done" : "blocked"],
         ["모드", status && status.mode ? status.mode : "idle", ""],
-        ["마지막 heartbeat", shortTimestamp(status && status.last_heartbeat_at), ""],
+        ["마지막 점검", shortTimestamp(status && status.last_heartbeat_at), ""],
         ["마지막 이벤트", shortTimestamp(status && status.last_event_at), ""],
         ["차단 항목", blockers.length ? `${blockers.length}개` : "없음", blockers.length ? "warn" : "done"]
       ];
       container.className = "info-list";
       const nextStep = labels.length
         ? `<div class="next-step blocked"><strong>다음 할 일</strong><p>${escapeHtml(labels.slice(0, 2).join(" · "))} 항목부터 우선 처리해 주세요.</p><a href="#settings" data-view="settings">설정에서 바로 처리</a></div>`
-        : `<div class="next-step ${ready ? "done" : "blocked"}"><strong>다음 할 일</strong><p>${ready ? "현재 막힌 설정이 없습니다. 최근 이벤트를 확인해 전환 상태를 점검해 보세요." : "설정이 멈춘 상태입니다. 차단 원인을 해제한 뒤 대시보드를 새로고침하세요."}</p><a href="${ready ? "#events" : "#settings"}" data-view="${ready ? "events" : "settings"}">${ready ? "이벤트 확인" : "차단 설정 확인"}</a></div>`;
+        : `<div class="next-step ${ready ? "done" : "blocked"}"><strong>다음 할 일</strong><p>${ready ? "필수 설정은 끝났습니다. 최근 이벤트에서 봇 상태를 확인하세요." : "아직 필요한 입력이 남아 있습니다. 설정 화면에서 빠진 항목을 채운 뒤 새로고침하세요."}</p><a href="${ready ? "#events" : "#settings"}" data-view="${ready ? "events" : "settings"}">${ready ? "이벤트 확인" : "필수 설정 확인"}</a></div>`;
       container.innerHTML = rows.map(([label, value, kind]) => `
         <div class="info-row">
           <span class="dot"></span>
@@ -3193,7 +3233,7 @@ def dashboard_html() -> str:
       const container = document.getElementById(elementId);
       if (!container) return;
       if (!items || !items.length) {
-        container.innerHTML = `<li class="event-line"><span class="event-dot"></span><strong>-</strong><span>이벤트 기록이 없습니다. 최근 설정과 heartbeat를 확인하세요.</span><span class="helper-text">빈 상태</span></li>`;
+        container.innerHTML = `<li class="event-line"><span class="event-dot"></span><strong>-</strong><span>아직 기록이 없습니다. 설정을 저장한 뒤 봇 점검 기록을 기다려 주세요.</span><span class="helper-text">빈 상태</span></li>`;
         return;
       }
       container.innerHTML = items.slice(0, 6).map((entry) => {
@@ -3500,7 +3540,7 @@ def dashboard_html() -> str:
       if (headline) {
         headline.textContent = rawBlockers.length
           ? `먼저 ${groupedBlockerDetails(rawBlockers)[0]} 항목부터 확인하세요.`
-          : "필수 설정은 통과했습니다. 이벤트 탭에서 최근 heartbeat와 주문 가드를 확인하세요.";
+          : "필수 입력은 끝났습니다. 안전 파일럿을 시작하기 전에 최근 점검 기록만 확인하세요.";
       }
       if (list) {
         list.innerHTML = ONBOARDING_STEPS.map((step, index) => {
@@ -3513,7 +3553,7 @@ def dashboard_html() -> str:
             ? uniqueValues(matched.map(blockerLabel)).join(" ")
             : eventSeen
               ? step.body
-              : "아직 최근 heartbeat가 보이지 않습니다.";
+              : "아직 최근 자동 점검 기록이 없습니다.";
           return `<li>
             <strong>${index + 1}. ${escapeHtml(step.title)}</strong>
             <p><span class="status-pill">${escapeHtml(step.group)}</span></p>
@@ -3525,12 +3565,12 @@ def dashboard_html() -> str:
       const blockerBox = document.getElementById("settings-blockers-list");
       if (blockerBox) blockerBox.textContent = rawBlockers.length
         ? groupedBlockerDetails(rawBlockers).join("\\n")
-        : "현재 표시할 차단 항목이 없습니다.";
+        : "현재 추가로 입력할 필수 항목이 없습니다.";
       const configInfo = settings && settings.config ? settings.config : {};
       if (configInfo.created_from_template) {
         const headline = document.getElementById("settings-headline");
         if (headline) {
-          headline.innerHTML = `<strong>로컬 설정 파일 생성됨</strong> ${escapeHtml(configInfo.path || "config/local.yaml")} 값을 확인하세요.`;
+          headline.innerHTML = `<strong>설정 파일이 준비됐습니다</strong> ${escapeHtml(configInfo.path || "config/local.yaml")}에서 필요한 값만 채우면 됩니다.`;
         }
       }
       if (!settingsFormInitialized) {
@@ -3584,6 +3624,7 @@ def dashboard_html() -> str:
         dashboard.settings || {},
         dashboard.settings_write_enabled
       );
+      setSafePilotControls(status, dashboard.settings || {});
     }
 
     function bindNavigation() {
