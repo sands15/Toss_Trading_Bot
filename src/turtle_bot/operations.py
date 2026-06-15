@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import plistlib
+import subprocess
 import sys
 import time
 from os import environ
@@ -483,6 +485,8 @@ def _dashboard_settings_payload(
                 account_alias = str(raw_toss.get("account_alias") or "").strip()
         except Exception:
             account_alias = ""
+    if not account_alias:
+        account_alias = _tailscale_profile_name()
     pilot_symbol = (
         next(iter(config.live.allowed_symbols), None)
         or next(iter(config.runtime.symbols), None)
@@ -1072,11 +1076,45 @@ def _account_alias_from_config_path(config_path: str | Path) -> str:
     try:
         raw = _read_yaml(Path(config_path))
     except Exception:
-        return ""
+        return _tailscale_profile_name()
     toss = raw.get("toss", {})
     if not isinstance(toss, Mapping):
+        return _tailscale_profile_name()
+    return str(toss.get("account_alias") or "").strip() or _tailscale_profile_name()
+
+
+def _tailscale_profile_name() -> str:
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=2,
+            check=False,
+        )
+    except Exception:
         return ""
-    return str(toss.get("account_alias") or "").strip()
+    if result.returncode != 0 or not result.stdout:
+        return ""
+    try:
+        payload = json.loads(result.stdout)
+    except Exception:
+        return ""
+    self_info = payload.get("Self", {})
+    users = payload.get("User", {})
+    user_id = self_info.get("UserID")
+    user_info = users.get(str(user_id), {}) if user_id is not None else {}
+    for value in (
+        user_info.get("DisplayName"),
+        user_info.get("LoginName"),
+        payload.get("CurrentTailnet", {}).get("Name"),
+        self_info.get("HostName"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _paper_service_iteration(

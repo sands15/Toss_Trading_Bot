@@ -173,7 +173,7 @@ class DiscordTradeNotifier:
     @staticmethod
     def _account_label(payload: Mapping[str, Any]) -> str:
         alias = str(payload.get("account_alias") or "").strip()
-        return alias or "계좌 별명 미설정"
+        return alias or "내 계좌"
 
     @staticmethod
     def _side_label(side: Any) -> str:

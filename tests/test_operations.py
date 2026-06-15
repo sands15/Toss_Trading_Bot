@@ -14,6 +14,7 @@ from turtle_bot.config import load_config
 from turtle_bot.domain import Candle
 from turtle_bot.operations import (
     LaunchdServiceConfig,
+    _tailscale_profile_name,
     apply_safe_pilot_settings,
     build_dashboard_server,
     check_operations_config,
@@ -37,6 +38,28 @@ class RecordedRequest:
     query: Mapping[str, Any] | None
     json_body: Mapping[str, Any] | None
     form_body: Mapping[str, Any] | None
+
+
+def test_tailscale_profile_name_uses_current_user_display_name(monkeypatch) -> None:
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "Self": {"UserID": 123, "HostName": "device"},
+                "CurrentTailnet": {"Name": "tailnet@example.com"},
+                "User": {
+                    "123": {
+                        "LoginName": "login@example.com",
+                        "DisplayName": "유프",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("turtle_bot.operations.subprocess.run", lambda *args, **kwargs: FakeResult())
+
+    assert _tailscale_profile_name() == "유프"
 
 
 class FakeTransport:

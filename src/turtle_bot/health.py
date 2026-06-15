@@ -2674,7 +2674,7 @@ def dashboard_html() -> str:
                   <div class="settings-field">
                     <label for="toss-account-alias" class="settings-label">계좌 별명</label>
                     <input id="toss-account-alias" type="text" autocomplete="off" placeholder="예: 정훈 미국주식 계좌" />
-                    <p class="settings-helper">Discord 알림에 표시할 이름입니다. 계좌번호 대신 이 별명만 보냅니다.</p>
+                    <p class="settings-helper">Discord 알림에 표시할 이름입니다. 비워두면 Tailscale 프로필 이름을 사용하고, 계좌번호는 보내지 않습니다.</p>
                   </div>
                   <div class="settings-field">
                     <label for="toss-identity-confirmation" class="settings-label">로컬 본인 확인</label>
@@ -3837,7 +3837,7 @@ def dashboard_html() -> str:
       const payload = entry && entry.payload && typeof entry.payload === "object" ? entry.payload : {};
       const message = String(entry && entry.message || "");
       const symbol = payload.symbol || payload.ticker || payload.code || "종목 확인 필요";
-      const accountAlias = payload.account_alias || "계좌 별명 미설정";
+      const accountAlias = payload.account_alias || "내 계좌";
       const side = tradeSideLabel(payload.side || payload.order_side || payload.trade_side);
       const quantity = payload.quantity || payload.qty || payload.order_quantity || payload.shares;
       const status = tradeStatusLabel(payload.status || payload.execution_status || payload.state);
