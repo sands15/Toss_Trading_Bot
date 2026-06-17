@@ -689,6 +689,8 @@ class UserGateway:
         )
 
     def audit(self, event: str, **fields: Any) -> None:
+        if "path" in fields:
+            fields["request_path"] = fields.pop("path")
         append_audit_event(self.audit_log_path, event, **fields)
 
     def registration_allowed(self, client_ip: str) -> bool:
@@ -1280,7 +1282,7 @@ def make_handler(gateway: UserGateway):
         def handle_setup(self) -> None:
             identity = tailscale_identity_from_headers(self.headers)
             if identity is None:
-                gateway.audit("identity_missing", client_ip=self.client_ip(), path=self.path)
+                gateway.audit("identity_missing", client_ip=self.client_ip(), request_path=self.path)
                 self.send_identity_required_page(401, "Tailscale Serve를 통해 다시 접속해 주세요.")
                 return
             if not gateway.registration_allowed(self.client_ip()):
@@ -1288,7 +1290,7 @@ def make_handler(gateway: UserGateway):
                     "setup_registration_denied",
                     client_ip=self.client_ip(),
                     tailscale_identity=identity["identity"],
-                    path=self.path,
+                    request_path=self.path,
                 )
                 self.send_setup_page(403, "이 기기는 등록 허용 목록에 없습니다. 관리자에게 Tailscale IP 등록을 요청하세요.")
                 return
@@ -1344,7 +1346,7 @@ def make_handler(gateway: UserGateway):
         def route_or_setup(self) -> None:
             identity = tailscale_identity_from_headers(self.headers)
             if identity is None:
-                gateway.audit("identity_missing", client_ip=self.client_ip(), path=self.path)
+                gateway.audit("identity_missing", client_ip=self.client_ip(), request_path=self.path)
                 self.send_identity_required_page()
                 return
             user = gateway.user_for_identity(identity["identity"])

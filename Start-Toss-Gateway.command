@@ -48,8 +48,12 @@ fi
 python_bin="$repo_root/.venv/bin/python"
 
 echo "Installing/updating Toss dashboard package..."
-"$python_bin" -m pip install -U pip >/dev/null
-"$python_bin" -m pip install -e "." >/dev/null
+LOG_PATH="${TOSS_GATEWAY_START_LOG:-/tmp/toss-gateway-start.log}"
+{
+  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] update start"
+  "$python_bin" -m pip install -U pip
+  "$python_bin" -m pip install -e "."
+} >> "$LOG_PATH" 2>&1
 
 cat <<EOF
 
