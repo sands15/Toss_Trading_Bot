@@ -3594,7 +3594,7 @@ def dashboard_html() -> str:
           normalized.includes("not allowed ip") ||
           normalized.includes("not allowed address")
         ) {
-          return `Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다. '현재 공개 IP 확인' 버튼으로 나온 IP를 Toss 개발자센터 앱 허용 IP에 추가한 뒤 다시 실행하세요. 원문: ${raw}`;
+          return "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다. '현재 공개 IP 확인' 버튼으로 나온 IP를 Toss 개발자센터 앱 허용 IP에 추가한 뒤 다시 실행하세요.";
         }
         if (normalized.includes("confirmation must be")) {
           return pathName === "/dashboard/actions/live-smoke-test"

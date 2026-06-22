@@ -389,6 +389,7 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "현재 공개 IP 확인" in html
     assert "Toss 개발자센터 앱 허용 IP" in html
     assert "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다" in html
+    assert "원문:" not in html
     assert "LIVE PILOT 실행" in html
     assert "실주문 테스트" in html
     assert 'placeholder="위 문구를 그대로 입력"' in html
