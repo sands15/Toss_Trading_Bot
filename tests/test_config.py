@@ -95,6 +95,7 @@ def test_load_config_parses_live_safety_controls(tmp_path):
                 "  block_unresolved_orders: true",
                 "  confirm_high_value_order: true",
                 "  cancel_after_ack: true",
+                "  max_consecutive_order_failures: 4",
             ]
         )
         + "\n",
@@ -111,3 +112,4 @@ def test_load_config_parses_live_safety_controls(tmp_path):
     assert config.live.daily_notional_limit == Decimal("600")
     assert config.live.confirm_high_value_order is True
     assert config.live.cancel_after_ack is True
+    assert config.live.max_consecutive_order_failures == 4

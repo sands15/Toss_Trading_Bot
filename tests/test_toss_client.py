@@ -129,8 +129,34 @@ def test_get_candles_normalizes_decimal_candles():
         "count": 1,
         "adjusted": True,
     }
+
+
+def test_rate_limit_response_pauses_group_and_skips_network_until_resume():
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                429,
+                {},
+                {"error": {"code": "too-many-requests", "message": "slow down"}},
+            ),
+        ]
+    )
+    client = _client(transport)
+
+    with pytest.raises(TossApiError) as first:
+        client.get_candles("AAPL", count=1)
+
+    assert first.value.status == 429
+    assert client.rate_limits.is_group_paused("market") is True
+    request_count = len(transport.requests)
+
+    with pytest.raises(TossApiError) as second:
+        client.get_candles("MSFT", count=1)
+
+    assert second.value.code == "rate-limit-paused"
+    assert len(transport.requests) == request_count
     assert transport.requests[1].headers["Authorization"] == "Bearer tok"
-    assert client.rate_limits.get_group_snapshot("market").remaining == 5
 
 
 def test_get_candles_accepts_official_result_wrapper():

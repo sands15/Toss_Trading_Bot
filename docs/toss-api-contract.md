@@ -206,6 +206,11 @@ approved otherwise.
 `GET /api/v1/orders?status=OPEN` returns pending/open states and is the primary
 duplicate-order defense. Use it before new order creation.
 
+`GET /api/v1/orders?status=CLOSED` is the account-scoped source for recently
+finished orders and their execution summary. Do not use `GET /api/v1/trades`
+as account trade history; that endpoint is market-data tick history for a
+symbol and does not require `X-Tossinvest-Account`.
+
 The implementation must tolerate unknown future enum values in broker
 responses. Unknown order status must block live orders for that symbol until
 manually or programmatically reconciled.

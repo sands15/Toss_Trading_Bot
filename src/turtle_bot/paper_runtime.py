@@ -413,6 +413,13 @@ class PaperTradingRuntime:
                     "paper_market_data_blocked",
                     {"symbol": symbol, "error": str(exc)},
                 )
+                if self._is_rate_limit_pause(exc):
+                    self.store.record_runtime_event(
+                        "WARN",
+                        "market_data_rate_limit_paused",
+                        {"symbol": symbol, "error": str(exc)},
+                    )
+                    break
                 continue
 
             position = self._load_strategy_position(symbol)
@@ -532,6 +539,13 @@ class PaperTradingRuntime:
                     "paper_market_data_blocked",
                     {"symbol": symbol, "error": str(exc), "strategy": "momentum"},
                 )
+                if self._is_rate_limit_pause(exc):
+                    self.store.record_runtime_event(
+                        "WARN",
+                        "market_data_rate_limit_paused",
+                        {"symbol": symbol, "error": str(exc), "strategy": "momentum"},
+                    )
+                    break
                 continue
             evaluated_symbols.append(symbol)
 
@@ -772,6 +786,16 @@ class PaperTradingRuntime:
         if self.config.mode == "live":
             return self.store.load_position(symbol)
         return self.store.load_paper_position(symbol)
+
+    @staticmethod
+    def _is_rate_limit_pause(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "rate-limit-paused" in text
+            or "요청 제한 대기" in text
+            or "요청 한도를 초과" in text
+            or "too-many-requests" in text
+        )
 
     def _list_strategy_positions(self, *, status=None) -> list[PositionState]:
         if self.config.mode == "live":

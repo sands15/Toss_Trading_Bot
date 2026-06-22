@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from turtle_bot.domain import Candle
-from turtle_bot.toss_client import CandlePage
+from turtle_bot.toss_client import CandlePage, TossApiError
 from turtle_bot.toss_market_data import (
     TossMarketDataConfig,
     TossReadOnlyMarketDataProvider,
@@ -59,6 +59,7 @@ class FakeReadOnlyMarketClient:
 class SnapshotStore:
     def __init__(self) -> None:
         self.items: list[tuple[str, str, dict[str, Any]]] = []
+        self.latest: tuple[tuple[Candle, ...], datetime | None] | None = None
 
     def record_market_data_snapshot(
         self,
@@ -69,6 +70,28 @@ class SnapshotStore:
         captured_at: datetime | None = None,
     ) -> None:
         self.items.append((kind, symbol, payload))
+
+    def latest_candles_snapshot(
+        self,
+        symbol: str,
+        *,
+        interval: str = "1d",
+    ) -> tuple[tuple[Candle, ...], datetime | None] | None:
+        return self.latest
+
+
+class RateLimitedClient(FakeReadOnlyMarketClient):
+    def get_candles(
+        self,
+        symbol: str,
+        *,
+        interval: str = "1d",
+        count: int = 100,
+        before: str | datetime | None = None,
+        adjusted: bool = True,
+    ) -> CandlePage:
+        self.candle_calls += 1
+        raise TossApiError(429, code="rate-limit-paused", message="paused")
 
 
 def test_extract_price_accepts_common_toss_payload_shapes() -> None:
@@ -100,6 +123,49 @@ def test_toss_market_data_provider_caches_and_records_snapshots() -> None:
     assert client.candle_calls == 1
     assert client.price_calls == 1
     assert [item[0] for item in store.items] == ["candles", "price"]
+    assert "candles" in store.items[0][2]
+
+
+def test_toss_market_data_provider_uses_persistent_candle_cache() -> None:
+    now = datetime(2026, 1, 25, tzinfo=timezone.utc)
+    store = SnapshotStore()
+    store.latest = (tuple(_c(day) for day in range(3)), now - timedelta(minutes=1))
+    client = FakeReadOnlyMarketClient(
+        candles_payload=tuple(_c(day) for day in range(5)),
+        prices_payload={},
+    )
+    provider = TossReadOnlyMarketDataProvider(
+        client=client,
+        config=TossMarketDataConfig(candle_count=5),
+        store=store,
+        now=lambda: now,
+    )
+
+    candles = provider.get_completed_candles("TEST")
+
+    assert candles == tuple(_c(day) for day in range(3))
+    assert client.candle_calls == 0
+
+
+def test_toss_market_data_provider_falls_back_to_stale_cache_on_rate_limit() -> None:
+    now = datetime(2026, 1, 25, tzinfo=timezone.utc)
+    store = SnapshotStore()
+    store.latest = (tuple(_c(day) for day in range(3)), now - timedelta(days=3))
+    client = RateLimitedClient(
+        candles_payload=(),
+        prices_payload={},
+    )
+    provider = TossReadOnlyMarketDataProvider(
+        client=client,
+        config=TossMarketDataConfig(candle_count=5, candle_max_age_seconds=1),
+        store=store,
+        now=lambda: now,
+    )
+
+    candles = provider.get_completed_candles("TEST")
+
+    assert candles == tuple(_c(day) for day in range(3))
+    assert client.candle_calls == 1
 
 
 def test_toss_market_data_provider_excludes_current_session_candle() -> None:

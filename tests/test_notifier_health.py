@@ -24,7 +24,7 @@ def test_discord_trade_notifier_sends_compact_trade_alert() -> None:
         sender=lambda url, body, timeout: sent.append((url, body, timeout)),
     )
 
-    notifier.notify(
+    sent_ok = notifier.notify(
         "live_order_execution",
         level="info",
         payload={
@@ -36,6 +36,7 @@ def test_discord_trade_notifier_sends_compact_trade_alert() -> None:
         },
     )
 
+    assert sent_ok is True
     assert sent
     assert sent[0][0] == "https://discord.test/webhook"
     assert b"SPCX" in sent[0][1]
@@ -46,6 +47,68 @@ def test_discord_trade_notifier_sends_compact_trade_alert() -> None:
     assert b"ACKNOWLEDGED" not in sent[0][1]
 
 
+def test_discord_trade_notifier_sends_cancel_after_ack_alert() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = DiscordTradeNotifier(
+        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
+        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+    )
+
+    notifier.notify(
+        "live_order_cancel_after_ack",
+        level="info",
+        payload={
+            "account_alias": "정훈 미국주식 계좌",
+            "symbol": "XLK",
+            "quantity": "1",
+            "status": "PENDING_CANCEL",
+        },
+    )
+
+    assert sent
+    assert b"XLK" in sent[0][1]
+    assert "정훈 미국주식 계좌".encode("utf-8") in sent[0][1]
+    assert "취소 요청".encode("utf-8") in sent[0][1]
+
+
+def test_discord_trade_notifier_sends_dashboard_test_alert() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = DiscordTradeNotifier(
+        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
+        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+    )
+
+    sent_ok = notifier.notify(
+        "discord_alert_test",
+        level="info",
+        payload={"account_alias": "정훈 미국주식 계좌"},
+    )
+
+    assert sent_ok is True
+    assert sent
+    assert "거래 알림 테스트".encode("utf-8") in sent[0][1]
+    assert "정훈 미국주식 계좌".encode("utf-8") in sent[0][1]
+
+
+def test_discord_trade_notifier_keeps_safe_failure_reason() -> None:
+    def fail_send(url: str, body: bytes, timeout: float) -> None:
+        raise RuntimeError("network unreachable")
+
+    notifier = DiscordTradeNotifier(
+        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
+        sender=fail_send,
+    )
+
+    sent_ok = notifier.notify(
+        "discord_alert_test",
+        level="info",
+        payload={"account_alias": "정훈 미국주식 계좌"},
+    )
+
+    assert sent_ok is False
+    assert notifier.last_error == "network unreachable"
+
+
 def test_discord_trade_notifier_ignores_non_trade_noise() -> None:
     sent: list[tuple[str, bytes, float]] = []
     notifier = DiscordTradeNotifier(
@@ -53,8 +116,9 @@ def test_discord_trade_notifier_ignores_non_trade_noise() -> None:
         sender=lambda url, body, timeout: sent.append((url, body, timeout)),
     )
 
-    notifier.notify("settings_saved", level="info", payload={"path": "config/local.yaml"})
+    sent_ok = notifier.notify("settings_saved", level="info", payload={"path": "config/local.yaml"})
 
+    assert sent_ok is False
     assert sent == []
 
 
@@ -104,6 +168,31 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     )
     events = [
         {
+            "id": 5,
+            "level": "INFO",
+            "message": "live_order_status_synced",
+            "payload": {"checked": 1, "updated": 1, "failed": 0, "remaining_unresolved": 0},
+            "created_at": datetime(2026, 6, 12, 1, 3, tzinfo=timezone.utc),
+        },
+        {
+            "id": 4,
+            "level": "INFO",
+            "message": "broker_order_history_synced",
+            "payload": {"closed_orders_count": 1},
+            "created_at": datetime(2026, 6, 12, 1, 2, tzinfo=timezone.utc),
+        },
+        {
+            "id": 3,
+            "level": "INFO",
+            "message": "broker_account_synced",
+            "payload": {
+                "holdings_count": 1,
+                "open_orders_count": 0,
+                "synced_live_positions": True,
+            },
+            "created_at": datetime(2026, 6, 12, 1, 1, tzinfo=timezone.utc),
+        },
+        {
             "id": 2,
             "level": "WARN",
             "message": "paper_service_blocked",
@@ -121,6 +210,27 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     server = HealthServer(
         snapshot,
         events_provider=lambda limit: events[:limit] if limit is not None else events,
+        broker_snapshots_provider=lambda: {
+            "closed_orders": {
+                "captured_at": "2026-06-12T01:02:00+00:00",
+                "payload": {
+                    "orders": [
+                        {
+                            "orderId": "closed-1",
+                            "symbol": "AAA",
+                            "side": "BUY",
+                            "status": "FILLED",
+                            "quantity": "1",
+                            "execution": {
+                                "filledQuantity": "1",
+                                "averageFilledPrice": "100",
+                            },
+                            "orderedAt": "2026-06-12T10:00:00+09:00",
+                        }
+                    ]
+                },
+            }
+        },
         settings={
             "momentum": {
                 "cash_reserve_pct": "0.50",
@@ -131,10 +241,10 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
 
     events_payload = server.payload_for_path("/events", {"limit": ["1"]})
     assert events_payload["count"] == 1
-    assert events_payload["items"][0]["created_at"] == "2026-06-12T01:00:00+00:00"
+    assert events_payload["items"][0]["created_at"] == "2026-06-12T01:03:00+00:00"
 
     summary_payload = server.payload_for_path("/events/summary")
-    assert summary_payload["total"] == 2
+    assert summary_payload["total"] == 5
     assert summary_payload["blockers"] == ["시세가 최신인지 확인이 필요합니다."]
     assert summary_payload["paper_runtime_blocks"] == 1
 
@@ -143,8 +253,12 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     assert dashboard["watchlist"]["count"] == 1
     assert dashboard["positions"]["count"] == 1
     assert dashboard["paper_intents"]["count"] == 1
-    assert dashboard["runtime_events"]["count"] == 2
+    assert dashboard["runtime_events"]["count"] == 5
     assert dashboard["settings"]["momentum"]["cash_reserve_pct"] == "0.50"
+    assert dashboard["broker_snapshots"]["closed_orders"]["captured_at"] == "2026-06-12T01:02:00+00:00"
+    assert dashboard["live_monitor"]["order_history"]["source"] == "orders_closed"
+    assert dashboard["live_monitor"]["order_history"]["closed_orders_count"] == 1
+    assert dashboard["live_monitor"]["order_status_tracking"]["remaining_unresolved"] == 0
     assert dashboard["live_readiness"]["can_submit_live_orders"] is False
     assert dashboard["live_readiness"]["summary"]["blocked"] >= 1
     assert any(
@@ -239,12 +353,16 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'id="live-readiness-checks"' in html
     assert "function renderLiveReadiness" in html
     assert "/dashboard/actions/live-once" in html
+    assert "/dashboard/actions/live-smoke-test" in html
     assert "/dashboard/actions/apply-safe-pilot" in html
     assert "/dashboard/actions/stop-trading" in html
     assert 'id="live-once-confirmation-token"' in html
+    assert 'id="live-smoke-test-button"' in html
     assert "LIVE PILOT 실행" in html
+    assert "실주문 테스트" in html
     assert 'placeholder="위 문구를 그대로 입력"' in html
     assert "function runLiveOnce" in html
+    assert "function runLiveSmokeTest" in html
     assert "function applySafePilot" in html
     assert "function stopTrading" in html
     assert "function safePilotPrerequisites" in html
@@ -257,6 +375,8 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "최대 수량" in html
     assert "하루 주문" in html
     assert "하루 금액" in html
+    assert "실패 퓨즈" in html
+    assert 'data-pilot-field="failure-fuse"' in html
     assert 'id="setup-flow"' in html
     assert 'data-setup-step="api"' in html
     assert 'data-setup-status' in html
@@ -265,9 +385,12 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "알림 설정" in html
     assert 'id="notification-enable-button"' in html
     assert 'id="notification-test-button"' in html
+    assert 'id="discord-notification-test-button"' in html
     assert 'id="notification-toast-stack"' in html
     assert "function notifyImportantEvents" in html
+    assert "function sendDiscordTestNotification" in html
     assert "function enableBrowserNotifications" in html
+    assert "updateNotificationStatus(dashboard.settings || {})" in html
     assert "TRADE_NOTIFICATION_EVENTS" in html
     assert "FAILURE_NOTIFICATION_EVENTS" in html
     assert "function compactTradeNotification" in html
@@ -289,6 +412,7 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'id="toss-client-secret"' in html
     assert 'id="toss-account-seq"' in html
     assert 'id="toss-account-alias"' in html
+    assert 'id="toss-settings-save-button"' in html
     assert "계좌 별명" in html
     assert 'id="toss-client-id-status"' in html
     assert 'id="toss-identity-confirmation"' in html

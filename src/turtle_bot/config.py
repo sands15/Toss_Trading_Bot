@@ -17,6 +17,8 @@ class TossConfig:
     account_seq: str | None = None
     client_id_env: str = "TOSS_CLIENT_ID"
     client_secret_env: str = "TOSS_CLIENT_SECRET"
+    require_live_consent: bool = False
+    allowed_live_consent_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ class LiveConfig:
     block_unresolved_orders: bool = True
     confirm_high_value_order: bool = False
     cancel_after_ack: bool = False
+    max_consecutive_order_failures: int | None = 3
 
 
 @dataclass(frozen=True)
@@ -158,6 +161,30 @@ def _to_clean_string(value: Any, *, allow_empty: bool = False) -> str | None:
     return text
 
 
+def _to_string_list(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        if "," in value:
+            return tuple(
+                part.strip()
+                for part in value.split(",")
+                if part is not None and str(part).strip()
+            )
+        text = value.strip()
+        return (text,) if text else ()
+    if isinstance(value, (list, tuple, set)):
+        return tuple(
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        )
+    if isinstance(value, Mapping):
+        return tuple()
+    text = str(value).strip()
+    return (text,) if text else ()
+
+
 def _to_directions(value: Any) -> tuple[PositionDirection, ...]:
     if value is None:
         return (PositionDirection.LONG,)
@@ -214,6 +241,12 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
                 allow_empty=False,
             )
             or "TOSS_CLIENT_SECRET",
+            require_live_consent=bool(toss.get("require_live_consent", False)),
+            allowed_live_consent_ids=_to_string_list(
+                toss.get("allowed_live_consent_ids")
+                or toss.get("consent_ids")
+                or toss.get("allowed_consent_ids")
+            ),
         ),
         runtime=RuntimeConfig(
             mode=str(runtime.get("mode", "paper")),
@@ -279,6 +312,9 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             block_unresolved_orders=bool(live.get("block_unresolved_orders", True)),
             confirm_high_value_order=bool(live.get("confirm_high_value_order", False)),
             cancel_after_ack=bool(live.get("cancel_after_ack", False)),
+            max_consecutive_order_failures=_to_optional_int(
+                live.get("max_consecutive_order_failures", 3)
+            ),
         ),
         minimum_tick=_to_decimal(strategy.get("minimum_tick"), Decimal("1")),
         strategy_kind=str(strategy.get("kind", "turtle")).strip().lower(),

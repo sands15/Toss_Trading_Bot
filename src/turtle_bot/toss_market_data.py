@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .domain import Candle, as_decimal
 from .market_cache import MarketDataCache
-from .toss_client import CandlePage
+from .toss_client import CandlePage, TossApiError
 
 
 PRICE_KEYS = (
@@ -47,6 +47,14 @@ class MarketDataSnapshotStore(Protocol):
     ) -> None:
         ...
 
+    def latest_candles_snapshot(
+        self,
+        symbol: str,
+        *,
+        interval: str = "1d",
+    ) -> tuple[tuple[Candle, ...], datetime | None] | None:
+        ...
+
 
 @dataclass(frozen=True)
 class TossMarketDataConfig:
@@ -56,7 +64,7 @@ class TossMarketDataConfig:
     exclude_current_session: bool = True
     local_timezone: str = "Asia/Seoul"
     price_max_age_seconds: int = 15
-    candle_max_age_seconds: int = 3600
+    candle_max_age_seconds: int = 43200
 
 
 class TossReadOnlyMarketDataProvider:
@@ -87,12 +95,23 @@ class TossReadOnlyMarketDataProvider:
         if cached.is_fresh:
             return cached.value
 
-        page = self.client.get_candles(
-            symbol,
-            interval=self.config.candle_interval,
-            count=self.config.candle_count,
-            adjusted=self.config.adjusted,
-        )
+        stored = self._stored_candles(symbol, max_age=max_age)
+        if stored is not None:
+            return stored
+
+        try:
+            page = self.client.get_candles(
+                symbol,
+                interval=self.config.candle_interval,
+                count=self.config.candle_count,
+                adjusted=self.config.adjusted,
+            )
+        except TossApiError as exc:
+            if exc.status == 429:
+                fallback = self._stored_candles(symbol, max_age=None)
+                if fallback is not None:
+                    return fallback
+            raise
         candles = self._completed_only(page.candles)
         captured_at = self._now()
         self.cache.set_candles(
@@ -110,9 +129,39 @@ class TossReadOnlyMarketDataProvider:
                     "count": len(candles),
                     "next_before": page.next_before,
                     "source": "toss",
+                    "candles": tuple(_candle_payload(candle) for candle in candles),
                 },
                 captured_at=captured_at,
             )
+        return candles
+
+    def _stored_candles(
+        self,
+        symbol: str,
+        *,
+        max_age: timedelta | None,
+    ) -> tuple[Candle, ...] | None:
+        if self.store is None or not hasattr(self.store, "latest_candles_snapshot"):
+            return None
+        snapshot = self.store.latest_candles_snapshot(
+            symbol,
+            interval=self.config.candle_interval,
+        )
+        if snapshot is None:
+            return None
+        candles, captured_at = snapshot
+        if captured_at is None:
+            return None
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=timezone.utc)
+        if max_age is not None and self._now() - captured_at > max_age:
+            return None
+        self.cache.set_candles(
+            symbol,
+            candles,
+            self.config.candle_interval,
+            updated_at=captured_at,
+        )
         return candles
 
     def get_current_price(self, symbol: str) -> Decimal:
@@ -196,3 +245,18 @@ def _price_from_mapping(payload: Mapping[str, Any]) -> Decimal | None:
         if value is not None:
             return as_decimal(value)
     return None
+
+
+def _candle_payload(candle: Candle) -> dict[str, Any]:
+    return {
+        "timestamp": candle.timestamp.isoformat(),
+        "symbol": candle.symbol,
+        "openPrice": str(candle.open),
+        "highPrice": str(candle.high),
+        "lowPrice": str(candle.low),
+        "closePrice": str(candle.close),
+        "volume": str(candle.volume),
+        "currency": candle.currency,
+        "adjusted": candle.adjusted,
+        "source": candle.source,
+    }

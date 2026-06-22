@@ -193,6 +193,37 @@ def test_toss_live_adapter_marks_server_error_as_unknown_state() -> None:
     assert exc.value.unknown_state is True
 
 
+def test_toss_live_adapter_transforms_ip_not_allowed_error() -> None:
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                403,
+                {},
+                {"error": {"message": "ip adress not allowed"}},
+            ),
+        ]
+    )
+    adapter = TossLiveBrokerAdapter(_client(transport, account_seq=99))
+    intent = OrderIntent(
+        intent_id="intent-1",
+        idempotency_key="idem-1",
+        symbol="005930",
+        side=Side.BUY,
+        quantity=Decimal("1"),
+        order_type=OrderType.MARKET,
+        source="test",
+        reason="server_error",
+    )
+
+    with pytest.raises(LiveBrokerError) as exc:
+        adapter.place_order(intent)
+
+    assert exc.value.unknown_state is False
+    assert "IP allowlist" in str(exc.value)
+    assert "ip adress not allowed" in str(exc.value)
+
+
 def test_toss_live_adapter_accepts_cls_time_in_force() -> None:
     transport = FakeTransport(
         [

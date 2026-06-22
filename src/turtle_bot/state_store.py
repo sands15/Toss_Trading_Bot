@@ -7,7 +7,7 @@ from typing import Any
 import json
 import sqlite3
 
-from .domain import PositionDirection, PositionStatus, TurtleSystem, UnitState, PositionState, as_decimal
+from .domain import Candle, PositionDirection, PositionStatus, TurtleSystem, UnitState, PositionState, as_decimal
 from .watchlist import Watchlist, WatchlistRow
 
 
@@ -801,6 +801,41 @@ class SQLiteStateStore:
             "updated_at": datetime.fromisoformat(row["updated_at"]),
         }
 
+    def list_unresolved_execution_orders(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        placeholders = ",".join("?" for _ in self.unresolved_execution_statuses)
+        sql = f"""
+            SELECT
+                intent_id,
+                idempotency_key,
+                symbol,
+                side,
+                status,
+                broker_order_id,
+                raw,
+                updated_at
+            FROM execution_orders
+            WHERE UPPER(status) IN ({placeholders})
+            ORDER BY updated_at ASC
+            """
+        params: tuple[object, ...] = tuple(self.unresolved_execution_statuses)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (*params, limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "intent_id": row["intent_id"],
+                "idempotency_key": row["idempotency_key"],
+                "symbol": row["symbol"],
+                "side": row["side"],
+                "status": row["status"],
+                "broker_order_id": row["broker_order_id"],
+                "raw": self._json_load(row["raw"]),
+                "updated_at": datetime.fromisoformat(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
     def execution_summary_since(self, since: datetime) -> dict[str, Any]:
         rows = self._conn.execute(
             """
@@ -931,6 +966,39 @@ class SQLiteStateStore:
             return None
         return self._json_load(row["payload"])
 
+    def latest_candles_snapshot(
+        self,
+        symbol: str,
+        *,
+        interval: str = "1d",
+    ) -> tuple[tuple[Candle, ...], datetime | None] | None:
+        row = self._conn.execute(
+            """
+            SELECT payload, captured_at
+            FROM market_data_snapshots
+            WHERE kind = ? AND symbol = ?
+            ORDER BY captured_at DESC, id DESC
+            LIMIT 1
+            """,
+            ("candles", symbol),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = self._json_load(row["payload"])
+        if not payload or str(payload.get("interval") or "1d") != interval:
+            return None
+        raw_candles = payload.get("candles")
+        if not isinstance(raw_candles, list):
+            return None
+        candles = tuple(
+            Candle.from_api(candle)
+            for candle in raw_candles
+            if isinstance(candle, dict)
+        )
+        if not candles:
+            return None
+        return candles, datetime.fromisoformat(row["captured_at"])
+
     def record_broker_snapshot(
         self,
         kind: str,
@@ -969,6 +1037,25 @@ class SQLiteStateStore:
         if row is None:
             return None
         return self._json_load(row["payload"])
+
+    def latest_broker_snapshot_record(self, kind: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """
+            SELECT captured_at, payload
+            FROM broker_snapshots
+            WHERE kind = ?
+            ORDER BY captured_at DESC, id DESC
+            LIMIT 1
+            """,
+            (kind,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "kind": kind,
+            "captured_at": datetime.fromisoformat(row["captured_at"]),
+            "payload": self._json_load(row["payload"]),
+        }
 
     def record_runtime_event(
         self,

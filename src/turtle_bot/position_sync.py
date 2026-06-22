@@ -4,7 +4,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Mapping, Protocol, Sequence
 
-from .domain import PositionState, PositionStatus, as_decimal
+from .domain import (
+    PositionDirection,
+    PositionState,
+    PositionStatus,
+    TurtleSystem,
+    UnitState,
+    as_decimal,
+)
 
 
 UNRESOLVED_BROKER_STATUSES = frozenset(
@@ -32,6 +39,9 @@ CLOSED_BROKER_STATUSES = frozenset(
 
 
 class PositionStore(Protocol):
+    def load_position(self, symbol: str) -> PositionState | None:
+        ...
+
     def list_positions(
         self,
         *,
@@ -39,10 +49,21 @@ class PositionStore(Protocol):
     ) -> list[PositionState]:
         ...
 
+    def save_position(self, position: PositionState) -> None:
+        ...
+
     def record_broker_snapshot(
         self,
         kind: str,
         payload: dict[str, Any],
+    ) -> None:
+        ...
+
+    def record_runtime_event(
+        self,
+        level: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         ...
 
@@ -285,19 +306,39 @@ class TossPositionSync:
         client: ReadOnlyBrokerClient,
         store: PositionStore,
         quantity_tolerance: Decimal = Decimal("0"),
+        sync_live_positions: bool = False,
+        sync_closed_orders: bool = False,
+        closed_order_limit: int = 20,
     ) -> None:
         self.client = client
         self.store = store
         self.quantity_tolerance = quantity_tolerance
+        self.sync_live_positions = sync_live_positions
+        self.sync_closed_orders = sync_closed_orders
+        self.closed_order_limit = closed_order_limit
 
     def reconcile(self) -> ReconcileResult:
         holdings_payload = dict(self.client.get_holdings())
         orders_payload = dict(self.client.get_orders(status="OPEN"))
         self.store.record_broker_snapshot("holdings", holdings_payload)
         self.store.record_broker_snapshot("open_orders", orders_payload)
+        closed_orders_payload = self._sync_closed_order_history()
 
         holdings = normalize_holdings(holdings_payload)
         open_orders = normalize_orders(orders_payload)
+        if self.sync_live_positions:
+            self._sync_live_positions(holdings)
+        self.store.record_runtime_event(
+            "INFO",
+            "broker_account_synced",
+            {
+                "holdings_count": len(holdings),
+                "open_orders_count": len(open_orders),
+                "synced_live_positions": self.sync_live_positions,
+                "closed_orders_count": _orders_count(closed_orders_payload),
+                "synced_closed_orders": self.sync_closed_orders,
+            },
+        )
         local_positions = self.store.list_positions(status=PositionStatus.OPEN)
         return reconcile_positions(
             local_positions=local_positions,
@@ -305,6 +346,90 @@ class TossPositionSync:
             open_orders=open_orders,
             quantity_tolerance=self.quantity_tolerance,
         )
+
+    def _sync_closed_order_history(self) -> Mapping[str, Any] | None:
+        if not self.sync_closed_orders:
+            return None
+        try:
+            payload = dict(
+                self.client.get_orders(
+                    status="CLOSED",
+                    limit=self.closed_order_limit,
+                )
+            )
+        except Exception as exc:
+            self.store.record_runtime_event(
+                "WARN",
+                "broker_order_history_sync_failed",
+                {"error": str(exc)},
+            )
+            return None
+        self.store.record_broker_snapshot("closed_orders", payload)
+        self.store.record_runtime_event(
+            "INFO",
+            "broker_order_history_synced",
+            {"closed_orders_count": _orders_count(payload)},
+        )
+        return payload
+
+    def _sync_live_positions(self, holdings: Sequence[BrokerHolding]) -> None:
+        broker_by_symbol = {holding.symbol: holding for holding in holdings}
+        for holding in holdings:
+            existing = self.store.load_position(holding.symbol)
+            self.store.save_position(_position_from_broker_holding(holding, existing=existing))
+
+        for position in self.store.list_positions(status=PositionStatus.OPEN):
+            if position.symbol in broker_by_symbol:
+                continue
+            self.store.save_position(_closed_position_from_missing_broker_holding(position))
+
+
+def _position_from_broker_holding(
+    holding: BrokerHolding,
+    *,
+    existing: PositionState | None,
+) -> PositionState:
+    avg_price = holding.average_purchase_price or (
+        existing.avg_entry_price if existing is not None else Decimal("0")
+    )
+    entry_n = existing.entry_n if existing is not None else Decimal("0")
+    stop_price = existing.current_stop_price if existing is not None else avg_price
+    system = existing.system if existing is not None else TurtleSystem.MOMENTUM
+    direction = existing.direction if existing is not None else PositionDirection.LONG
+    unit = UnitState(
+        unit_no=1,
+        qty=holding.quantity,
+        entry_price=avg_price,
+        n_at_entry=entry_n,
+        stop_price=stop_price,
+    )
+    return PositionState(
+        symbol=holding.symbol,
+        system=system,
+        status=PositionStatus.OPEN,
+        total_qty=holding.quantity,
+        avg_entry_price=avg_price,
+        entry_n=entry_n,
+        current_stop_price=stop_price,
+        last_unit_entry_price=avg_price,
+        units=(unit,),
+        direction=direction,
+    )
+
+
+def _closed_position_from_missing_broker_holding(position: PositionState) -> PositionState:
+    return PositionState(
+        symbol=position.symbol,
+        system=position.system,
+        status=PositionStatus.CLOSED,
+        total_qty=Decimal("0"),
+        avg_entry_price=position.avg_entry_price,
+        entry_n=position.entry_n,
+        current_stop_price=position.current_stop_price,
+        last_unit_entry_price=position.last_unit_entry_price,
+        units=(),
+        direction=position.direction,
+    )
 
 
 def _items_from_payload(
@@ -324,3 +449,15 @@ def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _orders_count(payload: Mapping[str, Any] | None) -> int:
+    if not isinstance(payload, Mapping):
+        return 0
+    raw = payload.get("orders")
+    if isinstance(raw, list):
+        return len(raw)
+    raw = payload.get("items")
+    if isinstance(raw, list):
+        return len(raw)
+    return 0

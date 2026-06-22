@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from turtle_bot.domain import Candle
 from turtle_bot import PositionDirection, PositionState, PositionStatus, TurtleSystem, UnitState
 from turtle_bot.state_store import SQLiteStateStore
 from turtle_bot.watchlist import Watchlist, WatchlistRow
@@ -66,6 +67,49 @@ def test_latest_watchlist_returns_newest() -> None:
         loaded = store.load_latest_watchlist(name="premarket")
 
     assert loaded == new_watchlist
+
+
+def test_latest_candles_snapshot_roundtrip() -> None:
+    captured_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    candle = Candle(
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        symbol="AAPL",
+        open=Decimal("100"),
+        high=Decimal("110"),
+        low=Decimal("90"),
+        close=Decimal("105"),
+        volume=Decimal("1000"),
+        currency="USD",
+    )
+    with SQLiteStateStore() as store:
+        store.record_market_data_snapshot(
+            "candles",
+            "AAPL",
+            {
+                "interval": "1d",
+                "count": 1,
+                "candles": [
+                    {
+                        "timestamp": candle.timestamp.isoformat(),
+                        "symbol": candle.symbol,
+                        "openPrice": str(candle.open),
+                        "highPrice": str(candle.high),
+                        "lowPrice": str(candle.low),
+                        "closePrice": str(candle.close),
+                        "volume": str(candle.volume),
+                        "currency": candle.currency,
+                        "source": candle.source,
+                    }
+                ],
+            },
+            captured_at=captured_at,
+        )
+        loaded = store.latest_candles_snapshot("AAPL", interval="1d")
+
+    assert loaded is not None
+    candles, loaded_at = loaded
+    assert loaded_at == captured_at
+    assert candles == (candle,)
 
 
 def test_position_roundtrip_with_units() -> None:
@@ -246,6 +290,45 @@ def test_unresolved_client_order_id_blocks_duplicates_until_resolved() -> None:
         assert store.has_unresolved_client_order_id("client-1") is False
 
 
+def test_list_unresolved_execution_orders_excludes_final_statuses() -> None:
+    with SQLiteStateStore() as store:
+        store.record_execution_order(
+            intent_id="intent-ack",
+            idempotency_key="idem-ack",
+            symbol="AAA",
+            side="BUY",
+            status="ACKNOWLEDGED",
+            broker_order_id="broker-ack",
+            raw={"status": "ack"},
+        )
+        store.record_execution_order(
+            intent_id="intent-cancel",
+            idempotency_key="idem-cancel",
+            symbol="AAA",
+            side="BUY",
+            status="PENDING_CANCEL",
+            broker_order_id="broker-cancel",
+            raw={"status": "pending_cancel"},
+        )
+        store.record_execution_order(
+            intent_id="intent-filled",
+            idempotency_key="idem-filled",
+            symbol="AAA",
+            side="BUY",
+            status="FILLED",
+            broker_order_id="broker-filled",
+            raw={"status": "filled"},
+        )
+
+        unresolved = store.list_unresolved_execution_orders()
+
+    assert [order["intent_id"] for order in unresolved] == [
+        "intent-ack",
+        "intent-cancel",
+    ]
+    assert unresolved[0]["raw"] == {"status": "ack"}
+
+
 def test_market_data_snapshot_roundtrip() -> None:
     with SQLiteStateStore() as store:
         store.record_market_data_snapshot(
@@ -271,8 +354,13 @@ def test_broker_snapshot_roundtrip() -> None:
     with SQLiteStateStore() as store:
         store.record_broker_snapshot("holdings", {"items": [{"symbol": "005930"}]})
         snapshot = store.latest_broker_snapshot("holdings")
+        record = store.latest_broker_snapshot_record("holdings")
 
     assert snapshot == {"items": [{"symbol": "005930"}]}
+    assert record is not None
+    assert record["kind"] == "holdings"
+    assert record["payload"] == {"items": [{"symbol": "005930"}]}
+    assert isinstance(record["captured_at"], datetime)
 
 
 def test_runtime_events_recorded_and_listed_newest_first() -> None:

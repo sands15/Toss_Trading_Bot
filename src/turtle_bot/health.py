@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 PayloadProvider = Callable[[], Mapping[str, Any]]
 EventsProvider = Callable[[int | None], list[Mapping[str, Any]]]
 ActionRunner = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
+BrokerSnapshotsProvider = Callable[[], Mapping[str, Any]]
 TOSS_LOGO_ASSET = Path(__file__).with_name("assets") / "toss-symbol.png"
 
 
@@ -264,10 +265,22 @@ def _friendly_blocker_label(blocker: Any) -> str:
         return "시세가 최신인지 확인이 필요합니다."
     if "reconcile" in text:
         return "계좌와 봇 기록을 다시 확인해야 합니다."
+    if "live_consent_ids_not_configured" in text:
+        return "수동 승인 확인 설정이 켜져 있지만 등록된 코드가 없습니다."
+    if "live_consent_id_required" in text:
+        return "수동 승인 확인이 켜져 있어 자동 실행을 막고 있습니다."
+    if "live_consent_id_not_allowed" in text:
+        return "입력한 수동 승인 코드가 등록된 목록에 없습니다."
+    if "consecutive_order_failures" in text:
+        return "실주문 실패가 연속으로 발생해 새 주문을 멈췄습니다."
+    if "unresolved_live_execution" in text or "unresolved execution" in text:
+        return "아직 최종 상태가 확인되지 않은 실주문이 있습니다."
     if "live.emergency_stop" in text:
         return "거래 중지 상태입니다."
     if "toss.live_enabled" in text or "runtime.mode" in text:
         return "실거래 시작 설정이 아직 맞춰지지 않았습니다."
+    if "toss_live_consent_ids" in text or "live consent allowlist is required for live mode" in text:
+        return "수동 승인 확인 설정을 끄거나 승인 코드 목록을 설정해야 합니다."
     return text
 
 
@@ -311,25 +324,46 @@ def _build_live_readiness_payload(
     runtime_mode = str(_settings_value(settings, "runtime", "mode") or status.get("mode") or "idle")
     strategy_kind = str(_settings_value(settings, "strategy_kind") or "unknown")
     live_enabled = bool(_settings_value(settings, "toss", "live_enabled"))
+    client_id_configured = _settings_value(settings, "toss", "client_id_configured")
+    client_secret_configured = _settings_value(settings, "toss", "client_secret_configured")
+    api_configured = (
+        bool(client_id_configured) and bool(client_secret_configured)
+        if client_id_configured is not None or client_secret_configured is not None
+        else not _has_blocker(blockers, "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET")
+    )
     account_configured = bool(_settings_value(settings, "toss", "account_seq_configured"))
+    consent_required = bool(_settings_value(settings, "toss", "require_live_consent"))
+    consent_configured = bool(_settings_value(settings, "toss", "live_consent_ids_configured"))
+    consent_count = int(_settings_value(settings, "toss", "live_consent_ids_count") or 0)
 
-    api_blocked = _has_blocker(blockers, "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET")
-    account_blocked = _has_blocker(blockers, "account_seq")
-    universe_blocked = _has_blocker(blockers, "runtime.symbols", "universe_candidate_symbols", "universe_empty")
-    market_blocked = _has_blocker(blockers, "market_session_not_open", "market_calendar_unknown")
-    reconcile_blocked = _has_blocker(blockers, "reconcile", "price_stale", "stale")
+    effective_blockers = tuple(
+        blocker
+        for blocker in blockers
+        if not (
+            (api_configured and _has_blocker((blocker,), "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET"))
+            or (account_configured and _has_blocker((blocker,), "account_seq"))
+        )
+    )
+    api_blocked = not api_configured or _has_blocker(effective_blockers, "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET")
+    account_blocked = _has_blocker(effective_blockers, "account_seq")
+    universe_blocked = _has_blocker(effective_blockers, "runtime.symbols", "universe_candidate_symbols", "universe_empty")
+    market_blocked = _has_blocker(effective_blockers, "market_session_not_open", "market_calendar_unknown")
+    reconcile_blocked = _has_blocker(effective_blockers, "reconcile", "price_stale", "stale")
     open_order_count = len(snapshot.open_orders)
     event_total = int(events_summary.get("total") or 0)
+    status_ready = bool(status.get("ready")) or not effective_blockers
 
     mode_is_live = runtime_mode == "live"
     live_gate_blocked = (mode_is_live and not live_enabled) or (not mode_is_live and live_enabled)
+    consent_blocked = consent_required and not consent_configured
     can_submit_live_orders = (
         mode_is_live
         and live_enabled
-        and bool(status.get("ready"))
+        and status_ready
         and not api_blocked
         and not account_blocked
         and account_configured
+        and not consent_blocked
         and not universe_blocked
         and not market_blocked
         and not reconcile_blocked
@@ -382,14 +416,27 @@ def _build_live_readiness_payload(
             else "봇은 이 목록 안에서만 주문 후보를 만듭니다.",
         ),
         _readiness_check(
+            "live_consent",
+            "자동매매 확인 방식",
+            "blocked" if consent_blocked else "done",
+            "수동 승인 확인이 켜져 있지만 승인 코드 목록이 비어 있습니다."
+            if consent_blocked
+            else "24시간 자동매매용으로 수동 승인 없이 실행됩니다."
+            if not consent_required
+            else f"수동 승인 코드가 총 {consent_count}개 등록되어 있습니다.",
+            "24시간 자동매매를 원하면 toss.require_live_consent를 false로 두세요."
+            if consent_required
+            else "자동 실행 중에는 주문마다 별도 코드를 다시 입력하지 않습니다.",
+        ),
+        _readiness_check(
             "market_data",
             "시장/시세 상태",
-            "warn" if market_blocked or reconcile_blocked or not status.get("ready") else "done",
+            "warn" if market_blocked or reconcile_blocked or not status_ready else "done",
             "주문 판단 전에 확인할 항목이 있습니다."
-            if market_blocked or reconcile_blocked or not status.get("ready")
+            if market_blocked or reconcile_blocked or not status_ready
             else "시장 상태와 시세 확인이 준비되어 있습니다.",
             "장이 열렸는지, 최근 점검이 정상인지 확인한 뒤 시작하세요."
-            if market_blocked or reconcile_blocked or not status.get("ready")
+            if market_blocked or reconcile_blocked or not status_ready
             else "주문 직전에도 같은 조건을 다시 확인합니다.",
         ),
         _readiness_check(
@@ -458,11 +505,150 @@ def _build_live_readiness_payload(
         "runtime_mode": runtime_mode,
         "strategy_kind": strategy_kind,
         "live_enabled": live_enabled,
+        "live_consent_required": consent_required,
+        "live_consent_configured": consent_configured,
+        "live_consent_count": consent_count,
         "can_submit_live_orders": can_submit_live_orders,
         "submit_disabled_reason": None
         if can_submit_live_orders
-        else "토스 키, 계좌, 거래 종목, 시장 상태, 주문 후보가 준비되어야 합니다.",
+        else (
+            "토스 키, 계좌, 종목, 시장 상태, 주문 후보, 자동매매 확인 방식이 준비되어야 해요."
+            if consent_blocked
+            else "토스 키, 계좌, 거래 종목, 시장 상태, 주문 후보가 준비되어야 합니다."
+        ),
         "checks": checks,
+    }
+
+
+def _latest_event_by_message(
+    events: list[Mapping[str, Any]],
+    *messages: str,
+) -> Mapping[str, Any] | None:
+    wanted = set(messages)
+    for event in events:
+        if str(event.get("message") or "") in wanted:
+            return event
+    return None
+
+
+def _snapshot_order_count(snapshot: Mapping[str, Any] | None) -> int:
+    if not isinstance(snapshot, Mapping):
+        return 0
+    payload = snapshot.get("payload")
+    if not isinstance(payload, Mapping):
+        return 0
+    raw = payload.get("orders")
+    if isinstance(raw, list):
+        return len(raw)
+    raw = payload.get("items")
+    if isinstance(raw, list):
+        return len(raw)
+    return 0
+
+
+def _snapshot_items(snapshot: Mapping[str, Any] | None, *keys: str) -> list[Mapping[str, Any]]:
+    if not isinstance(snapshot, Mapping):
+        return []
+    payload = snapshot.get("payload")
+    if not isinstance(payload, Mapping):
+        return []
+    for key in keys:
+        raw = payload.get(key)
+        if isinstance(raw, list):
+            return [dict(item) for item in raw if isinstance(item, Mapping)]
+    return []
+
+
+def _event_payload(event: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(event, Mapping):
+        return {}
+    payload = event.get("payload")
+    return payload if isinstance(payload, Mapping) else {}
+
+
+def _event_created_at(event: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(event, Mapping):
+        return None
+    return _iso_datetime(event.get("created_at"))
+
+
+def _build_live_monitor_payload(
+    *,
+    events: list[Mapping[str, Any]],
+    snapshot: HealthSnapshot,
+    broker_snapshots: Mapping[str, Any],
+) -> dict[str, Any]:
+    account_sync = _latest_event_by_message(events, "broker_account_synced")
+    order_history_sync = _latest_event_by_message(
+        events,
+        "broker_order_history_synced",
+        "broker_order_history_sync_failed",
+    )
+    status_sync = _latest_event_by_message(
+        events,
+        "live_order_status_synced",
+        "live_order_status_sync_failed",
+    )
+    last_execution = _latest_event_by_message(
+        events,
+        "live_order_execution",
+        "live_order_cancel_after_ack",
+    )
+
+    status_payload = _event_payload(status_sync)
+    execution_payload = _event_payload(last_execution)
+    closed_orders = broker_snapshots.get("closed_orders")
+    holdings = broker_snapshots.get("holdings")
+    open_orders = broker_snapshots.get("open_orders")
+    closed_order_items = _snapshot_items(closed_orders, "orders", "items")
+    latest_closed_items = closed_order_items[:5]
+    order_history_error = None
+    if order_history_sync and order_history_sync.get("message") == "broker_order_history_sync_failed":
+        order_history_error = str(_event_payload(order_history_sync).get("error") or "")
+
+    return {
+        "account_sync": {
+            "last_synced_at": _event_created_at(account_sync)
+            or (holdings.get("captured_at") if isinstance(holdings, Mapping) else None),
+            "holdings_count": _event_payload(account_sync).get("holdings_count"),
+            "open_orders_count": _event_payload(account_sync).get("open_orders_count"),
+            "synced_live_positions": bool(
+                _event_payload(account_sync).get("synced_live_positions")
+            ),
+        },
+        "order_history": {
+            "source": "orders_closed",
+            "source_label": "계좌 주문 목록(status=CLOSED)",
+            "market_trades_are_account_history": False,
+            "last_synced_at": _event_created_at(order_history_sync)
+            or (closed_orders.get("captured_at") if isinstance(closed_orders, Mapping) else None),
+            "closed_orders_count": _snapshot_order_count(closed_orders),
+            "error": order_history_error,
+            "items": latest_closed_items,
+        },
+        "order_status_tracking": {
+            "last_synced_at": _event_created_at(status_sync),
+            "checked": status_payload.get("checked"),
+            "updated": status_payload.get("updated"),
+            "failed": status_payload.get("failed"),
+            "remaining_unresolved": status_payload.get("remaining_unresolved"),
+        },
+        "current": {
+            "positions_count": len(snapshot.positions),
+            "open_orders_count": len(snapshot.open_orders)
+            or _snapshot_order_count(open_orders),
+            "unresolved_execution_count": status_payload.get("remaining_unresolved"),
+        },
+        "last_execution": {
+            "message": last_execution.get("message") if isinstance(last_execution, Mapping) else None,
+            "created_at": _event_created_at(last_execution),
+            "symbol": execution_payload.get("symbol"),
+            "side": execution_payload.get("side"),
+            "quantity": execution_payload.get("quantity"),
+            "status": execution_payload.get("status"),
+            "broker_order_id": execution_payload.get("broker_order_id"),
+            "safety": execution_payload.get("safety"),
+        },
     }
 
 
@@ -662,6 +848,12 @@ def dashboard_html() -> str:
       width: 18px;
       height: 18px;
       stroke-width: 2.4;
+    }
+
+    .btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.72;
+      box-shadow: none;
     }
 
     .shell {
@@ -1316,7 +1508,7 @@ def dashboard_html() -> str:
       gap: 12px;
     }
 
-    .live-disabled-box .btn {
+    .live-disabled-box .btn:disabled {
       justify-content: center;
       cursor: not-allowed;
       opacity: 0.72;
@@ -1443,6 +1635,22 @@ def dashboard_html() -> str:
       font-size: 13px;
       font-weight: 800;
       line-height: 1.3;
+    }
+
+    .field-help {
+      margin-left: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      color: #475569;
+      font-size: 11px;
+      font-weight: 900;
+      cursor: help;
     }
 
     .settings-helper {
@@ -2558,17 +2766,35 @@ def dashboard_html() -> str:
                   <div class="pilot-item"><span>최대 수량</span><strong data-pilot-field="quantity">-</strong></div>
                   <div class="pilot-item"><span>하루 주문</span><strong data-pilot-field="daily-orders">-</strong></div>
                   <div class="pilot-item"><span>하루 금액</span><strong data-pilot-field="daily-amount">-</strong></div>
+                  <div class="pilot-item"><span>실패 퓨즈</span><strong data-pilot-field="failure-fuse">-</strong></div>
                   <div class="pilot-item"><span>현재 상태</span><strong data-pilot-field="state">-</strong></div>
                 </div>
                 <button type="button" class="btn primary" id="safe-pilot-button">안전 파일럿 시작</button>
                 <button type="button" class="btn" id="live-stop-button">거래 중지</button>
                 <p id="safe-pilot-result" class="panel-copy"></p>
-                <strong>1회만 시험 실행</strong>
-                <p class="panel-copy">자동으로 계속 돌리지 않고 한 번만 확인할 때 사용합니다.</p>
-                <span class="confirmation-token" id="live-once-confirmation-token">LIVE PILOT 실행</span>
-                <input id="live-once-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="위 문구를 그대로 입력" aria-describedby="live-once-confirmation-token" />
-                <button type="button" class="btn primary" id="live-once-button">1회 실행</button>
+              <strong>1회만 시험 실행</strong>
+              <p class="panel-copy">자동으로 계속 돌리지 않고 한 번만 확인할 때 사용합니다.</p>
+              <p class="panel-copy">24시간 자동매매는 시작 버튼을 누른 뒤 정해둔 한도 안에서 계속 점검합니다. 주문마다 코드를 다시 입력하지 않습니다.</p>
+              <label for="live-operator-id" class="settings-label">
+                누가 눌렀는지 메모(선택)
+                <span
+                  class="field-help"
+                  title="내부 기록용 메모입니다. 자동매매 허용 조건에는 쓰지 않습니다."
+                  aria-label="누가 눌렀는지 메모용도 설명"
+                >?</span>
+              </label>
+              <p class="panel-copy">누가 버튼을 눌렀는지 남기는 표시값입니다. 실거래 허용 판단에는 사용되지 않습니다.</p>
+              <input id="live-operator-id" class="settings-input" type="text" autocomplete="off" placeholder="예: friend-a" />
+              <span class="confirmation-token" id="live-once-confirmation-token">LIVE PILOT 실행</span>
+              <input id="live-once-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="위 문구를 그대로 입력" aria-describedby="live-once-confirmation-token" />
+              <button type="button" class="btn primary" id="live-once-button">1회 실행</button>
                 <p id="live-once-result" class="panel-copy"></p>
+              <strong>실주문 연결 테스트</strong>
+              <p class="panel-copy">전략 신호를 기다리지 않고 허용 종목 1주를 낮은 제한가로 주문한 뒤, 접수되면 바로 취소합니다.</p>
+              <span class="confirmation-token" id="live-smoke-confirmation-token">실주문 테스트</span>
+              <input id="live-smoke-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="위 문구를 그대로 입력" aria-describedby="live-smoke-confirmation-token" />
+              <button type="button" class="btn danger" id="live-smoke-test-button">실주문 연결 테스트</button>
+              <p id="live-smoke-test-result" class="panel-copy"></p>
                 <ul>
                   <li>안전 파일럿은 선택된 종목 1주, 하루 1건, 소액 한도로만 움직입니다</li>
                   <li>거래 중지를 누르면 새 주문을 막고 자동 실행을 멈춥니다</li>
@@ -2579,8 +2805,19 @@ def dashboard_html() -> str:
             <article class="card data-panel live-panel live-wide">
               <div class="panel-heading">
                 <div>
+                  <p class="eyebrow">실사용 모니터</p>
+                  <h2>계좌·주문 동기화</h2>
+                </div>
+                <span id="live-monitor-status" class="status-pill">확인 중</span>
+              </div>
+              <div id="live-monitor-grid" class="pilot-summary"></div>
+              <div id="live-monitor-history" class="data-table"></div>
+            </article>
+            <article class="card data-panel live-panel live-wide">
+              <div class="panel-heading">
+                <div>
                   <p class="eyebrow">체크리스트</p>
-                  <h2>운영자가 확인할 항목</h2>
+                  <h2>확인할 것들</h2>
                 </div>
                 <span id="live-check-count" class="status-pill">0개</span>
               </div>
@@ -2633,6 +2870,7 @@ def dashboard_html() -> str:
                 <div class="pilot-item"><span>최대 수량</span><strong data-pilot-field="quantity">-</strong></div>
                 <div class="pilot-item"><span>하루 주문</span><strong data-pilot-field="daily-orders">-</strong></div>
                 <div class="pilot-item"><span>하루 금액</span><strong data-pilot-field="daily-amount">-</strong></div>
+                <div class="pilot-item"><span>실패 퓨즈</span><strong data-pilot-field="failure-fuse">-</strong></div>
                 <div class="pilot-item"><span>현재 상태</span><strong data-pilot-field="state">-</strong></div>
               </div>
               <ul id="settings-onboarding-list" class="action-list"></ul>
@@ -2684,6 +2922,10 @@ def dashboard_html() -> str:
                     <p class="settings-helper"><strong>키/계좌를 바꿨다면</strong> 이 확인 문구를 입력하고 아래의 설정 저장을 눌러야 적용됩니다.</p>
                   </div>
                 </div>
+                <div class="settings-actions">
+                  <button id="toss-settings-save-button" type="button" class="btn primary" disabled>토스 설정 저장</button>
+                  <p id="toss-settings-save-status" class="settings-status" role="status" aria-live="polite"></p>
+                </div>
               </section>
             </article>
             <article class="card data-panel">
@@ -2700,6 +2942,7 @@ def dashboard_html() -> str:
                 <div class="settings-actions">
                   <button type="button" class="btn" id="notification-enable-button">브라우저 알림 켜기</button>
                   <button type="button" class="btn" id="notification-test-button">테스트 알림</button>
+                  <button type="button" class="btn" id="discord-notification-test-button">Discord 테스트 전송</button>
                 </div>
               </div>
             </article>
@@ -2843,6 +3086,13 @@ def dashboard_html() -> str:
       paper_service_market_closed: "시장 휴장/대기",
       premarket_watchlist_blocked: "관심 종목 생성 일부 실패",
       premarket_watchlist_generated: "관심 종목 생성 완료",
+      paper_market_data_blocked: "시세 조회 확인 필요",
+      market_data_rate_limit_paused: "시세 조회 잠시 대기",
+      broker_account_synced: "토스 계좌 동기화",
+      broker_order_history_synced: "토스 주문 히스토리 동기화",
+      broker_order_history_sync_failed: "토스 주문 히스토리 확인 실패",
+      live_order_status_synced: "주문 상태 추적",
+      live_order_status_sync_failed: "주문 상태 확인 실패",
       universe_generated: "후보 종목 필터링 완료",
       paper_reconcile_blocked: "계좌 확인 필요",
       paper_order_guard: "주문 안전 조건 확인",
@@ -3058,18 +3308,30 @@ def dashboard_html() -> str:
     function eventDetail(entry) {
       const payload = entry && entry.payload && typeof entry.payload === "object" ? entry.payload : {};
       if (Array.isArray(payload.blockers) && payload.blockers.length) {
-        return uniqueValues(payload.blockers.map(blockerLabel)).join(" ");
+        const labels = uniqueValues(payload.blockers.map(blockerLabel));
+        const visible = labels.slice(0, 3).join(" ");
+        return labels.length > 3 ? `${visible} 외 ${labels.length - 3}건` : visible;
       }
       if (payload.market_session && payload.market_session.status) {
         return `시장 상태: ${payload.market_session.status}`;
       }
       if (payload.symbol) {
+        if (payload.error) return `종목 ${payload.symbol}: ${payload.error}`;
         return `종목 ${payload.symbol}${payload.side ? ` / ${payload.side}` : ""}`;
       }
       if (payload.count != null) {
         return `${payload.count}건`;
       }
-      return "추가 확인 사항은 없습니다.";
+      if (payload.holdings_count != null || payload.open_orders_count != null) {
+        return `보유 ${payload.holdings_count || 0}개 / 미체결 ${payload.open_orders_count || 0}개`;
+      }
+      if (payload.closed_orders_count != null) {
+        return `종료 주문 ${payload.closed_orders_count || 0}개`;
+      }
+      if (payload.remaining_unresolved != null) {
+        return `확인 ${payload.checked || 0}개 / 미완료 ${payload.remaining_unresolved || 0}개`;
+      }
+      return "";
     }
 
     function statusText(kind) {
@@ -3160,6 +3422,62 @@ def dashboard_html() -> str:
       }
     }
 
+    function renderLiveMonitor(monitor) {
+      const data = monitor || {};
+      const status = document.getElementById("live-monitor-status");
+      const grid = document.getElementById("live-monitor-grid");
+      const history = document.getElementById("live-monitor-history");
+      const account = data.account_sync || {};
+      const historySync = data.order_history || {};
+      const tracking = data.order_status_tracking || {};
+      const current = data.current || {};
+      const last = data.last_execution || {};
+      const unresolved = Number(current.unresolved_execution_count ?? tracking.remaining_unresolved ?? 0);
+      const historyError = historySync.error;
+      const ok = !historyError && unresolved === 0;
+
+      if (status) {
+        status.className = `status-pill ${ok ? "done" : "warn"}`;
+        status.textContent = ok ? "정상 추적" : "확인 필요";
+      }
+      if (grid) {
+        const cards = [
+          ["계좌 동기화", shortTimestamp(account.last_synced_at), `보유 ${account.holdings_count ?? "-"} / 미체결 ${account.open_orders_count ?? "-"}`],
+          ["주문 히스토리", shortTimestamp(historySync.last_synced_at), historyError ? "확인 실패" : `종료 주문 ${historySync.closed_orders_count ?? 0}개`],
+          ["주문 상태 추적", shortTimestamp(tracking.last_synced_at), `확인 ${tracking.checked ?? 0} / 미완료 ${tracking.remaining_unresolved ?? 0}`],
+          ["현재 실주문", last.status || "-", [last.symbol, last.side, last.quantity ? `${last.quantity}주` : ""].filter(Boolean).join(" ") || "최근 주문 없음"],
+          ["히스토리 기준", historySync.source_label || "계좌 주문 목록", historySync.market_trades_are_account_history === false ? "시장 체결 틱 제외" : "확인 필요"],
+        ];
+        grid.innerHTML = cards.map(([label, value, helper]) => `
+          <div class="pilot-item">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value || "-")}</strong>
+            <span>${escapeHtml(helper || "")}</span>
+          </div>`).join("");
+      }
+      if (history) {
+        const rows = Array.isArray(historySync.items) ? historySync.items : [];
+        if (historyError) {
+          history.innerHTML = emptyState("주문 히스토리를 확인하지 못했습니다", historyError);
+          return;
+        }
+        if (!rows.length) {
+          history.innerHTML = emptyState("최근 종료 주문이 없습니다", "토스 계좌 주문 히스토리가 비어 있거나 아직 동기화 전입니다.");
+          return;
+        }
+        const compactRows = rows.map((row) => ({
+          symbol: row.symbol,
+          side: row.side,
+          status: row.status,
+          quantity: row.quantity,
+          filled_quantity: row.execution && row.execution.filledQuantity,
+          price: row.price || (row.execution && row.execution.averageFilledPrice),
+          updated_at: row.orderedAt || row.canceledAt || (row.execution && row.execution.filledAt),
+        }));
+        renderTable("live-monitor-history", compactRows, ["symbol", "side", "status", "quantity", "filled_quantity", "price", "updated_at"], "최근 종료 주문이 없습니다");
+      }
+    }
+
     function uniqueValues(items) {
       return [...new Set(items.filter((item) => item != null && item !== ""))];
     }
@@ -3172,6 +3490,50 @@ def dashboard_html() -> str:
     }
 
     async function postJson(path, payload) {
+      const toActionErrorMessage = (errorPayload, fallback, pathName) => {
+        if (!errorPayload || typeof errorPayload !== "object") return fallback;
+        const raw = String(errorPayload.error || errorPayload.message || "").trim();
+        const normalized = raw.toLowerCase();
+
+        if (
+          normalized.includes("live consent is enabled but no allowed_live_consent_ids is configured") ||
+          normalized.includes("live_consent_ids_not_configured") ||
+          normalized.includes("consent allowlist is required")
+        ) {
+          return "수동 승인 확인이 켜져 있습니다. 24시간 자동매매를 쓰려면 설정에서 toss.require_live_consent를 false로 바꿔 주세요.";
+        }
+        if (
+          normalized.includes("consent_id is required") ||
+          normalized.includes("live_consent_id_required")
+        ) {
+          return "수동 승인 확인이 켜져 있어 자동 실행을 막고 있습니다. 24시간 자동매매에는 이 설정을 끄는 것이 맞습니다.";
+        }
+        if (
+          normalized.includes("consent_id is not authorized") ||
+          normalized.includes("live_consent_id_not_allowed")
+        ) {
+          return "수동 승인 코드가 등록된 목록과 맞지 않습니다. 자동매매용이면 수동 승인 확인을 끄세요.";
+        }
+        if (normalized.includes("confirmation must be")) {
+          return pathName === "/dashboard/actions/live-smoke-test"
+            ? "실주문 연결 테스트 확인 문구를 정확히 입력해야 합니다. 문구: 실주문 테스트"
+            : "1회 실행 확인 문구를 정확히 입력해야 합니다. 문구: LIVE PILOT 실행";
+        }
+        if (normalized.includes("live once action is already running")) {
+          return "현재 1회 실행이 진행 중입니다. 잠시 후 다시 시도하세요.";
+        }
+        if (normalized.includes("live smoke test action is already running")) {
+          return "실주문 연결 테스트가 진행 중입니다. 잠시 후 다시 시도하세요.";
+        }
+        if (normalized.includes("dashboard actions require --config")) {
+          return "대시보드 실행 권한이 없습니다. 설정 파일 모드로 실행하세요.";
+        }
+        if (pathName === "/dashboard/actions/live-once" && normalized.includes("required for live execution")) {
+          return "수동 승인 확인 설정이 실거래 실행을 막고 있습니다.";
+        }
+        return raw || fallback;
+      };
+
       const response = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3179,7 +3541,7 @@ def dashboard_html() -> str:
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error || `${path} failed: ${response.status}`);
+        throw new Error(toActionErrorMessage(data, `${path} failed: ${response.status}`, path));
       }
       return data;
     }
@@ -3188,11 +3550,16 @@ def dashboard_html() -> str:
       const input = document.getElementById("live-once-confirmation");
       const button = document.getElementById("live-once-button");
       const result = document.getElementById("live-once-result");
+      const operatorIdInput = document.getElementById("live-operator-id");
       const confirmation = input ? input.value.trim() : "";
+      const operatorId = operatorIdInput ? operatorIdInput.value.trim() : "";
       if (button) button.disabled = true;
       if (result) result.textContent = "1회 실행 요청 중...";
       try {
-        const payload = await postJson("/dashboard/actions/live-once", { confirmation });
+        const payload = await postJson("/dashboard/actions/live-once", {
+          confirmation,
+          operator_id: operatorId,
+        });
         if (result) {
           const status = payload && payload.snapshot ? payload.snapshot.status : payload.status;
           result.textContent = `실행 완료: ${status || "completed"}`;
@@ -3208,10 +3575,14 @@ def dashboard_html() -> str:
     async function applySafePilot(buttonId = "safe-pilot-button", resultId = "safe-pilot-result") {
       const button = document.getElementById(buttonId);
       const result = document.getElementById(resultId);
+      const operatorIdInput = document.getElementById("live-operator-id");
+      const operatorId = operatorIdInput ? operatorIdInput.value.trim() : "";
       if (button) button.disabled = true;
       if (result) result.textContent = "안전 파일럿을 준비하고 자동 실행을 시작하는 중입니다...";
       try {
-        const payload = await postJson("/dashboard/actions/apply-safe-pilot", {});
+        const payload = await postJson("/dashboard/actions/apply-safe-pilot", {
+          operator_id: operatorId,
+        });
         const pilot = payload.safe_pilot || {};
         if (result) {
           const symbol = pilot.symbol || "선택 종목";
@@ -3222,6 +3593,40 @@ def dashboard_html() -> str:
         await refresh();
       } catch (error) {
         if (result) result.textContent = `시작 실패: ${error.message}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function runLiveSmokeTest() {
+      const input = document.getElementById("live-smoke-confirmation");
+      const button = document.getElementById("live-smoke-test-button");
+      const result = document.getElementById("live-smoke-test-result");
+      const confirmation = input ? input.value.trim() : "";
+      if (button) button.disabled = true;
+      if (result) result.textContent = "실주문 연결 테스트 요청 중...";
+      try {
+        const payload = await postJson("/dashboard/actions/live-smoke-test", { confirmation });
+        const execution = payload.execution || {};
+        const cancel = payload.cancel || {};
+        if (result) {
+          result.textContent = cancel.status
+            ? `테스트 완료: ${payload.symbol} 1주 접수 ${execution.status || "-"} / 취소 ${cancel.status}`
+            : `테스트 결과: ${payload.symbol || "종목"} 1주 ${execution.status || payload.status || "확인 필요"}`;
+        }
+        const symbol = payload.symbol || execution.symbol || "종목";
+        const executionStatus = tradeStatusLabel(execution.status || payload.status);
+        const cancelStatus = cancel.status ? tradeStatusLabel(cancel.status) : "";
+        const body = cancelStatus
+          ? `1주 / ${executionStatus} / ${cancelStatus}`
+          : `1주 / ${executionStatus || "확인 필요"}`;
+        showToast(`실주문 테스트 · ${symbol}`, body, "info");
+        notifyBrowser(`실주문 테스트 · ${symbol}`, body);
+        await refresh();
+      } catch (error) {
+        if (result) result.textContent = `테스트 실패: ${error.message}`;
+        showToast("실주문 테스트 실패", error.message, "error");
+        notifyBrowser("실주문 테스트 실패", error.message);
       } finally {
         if (button) button.disabled = false;
       }
@@ -3254,14 +3659,28 @@ def dashboard_html() -> str:
       const missingSymbol = blockers.some((blocker) => String(blocker).includes("종목"));
       const missingApi = blockers.some((blocker) => String(blocker).includes("토스 API"));
       const missingAccount = blockers.some((blocker) => String(blocker).includes("계좌"));
+      const consentRequired = Boolean(toss.require_live_consent);
+      const consentConfigured = Boolean(toss.live_consent_ids_configured);
+      const consentCount = Number(toss.live_consent_ids_count || 0);
+      const consentMissing = consentRequired && !consentConfigured;
       const accountReady = Boolean(toss[SETTINGS_KEYS.accountReady]);
-      const ready = Boolean(toss.client_id_configured && toss.client_secret_configured && accountReady && !missingSymbol && !missingApi && !missingAccount);
+      const ready = Boolean(
+        toss.client_id_configured
+          && toss.client_secret_configured
+          && accountReady
+          && !missingSymbol
+          && !missingApi
+          && !missingAccount
+          && !consentRequired
+      );
       const reason = !toss.client_id_configured || !toss.client_secret_configured || missingApi
-        ? "Toss API 키 필요"
-        : !accountReady || missingAccount
-          ? "계좌 연결 필요"
-          : missingSymbol
-            ? "거래 심볼 필요"
+            ? "Toss API 키 필요"
+            : !accountReady || missingAccount
+              ? "계좌 연결 필요"
+              : missingSymbol
+                ? "거래 심볼 필요"
+              : consentRequired
+                ? `수동 승인 확인 끄기 필요${consentMissing ? ` (등록 코드 ${consentCount}개)` : ""}`
             : "시작 가능";
       return { ready, reason };
     }
@@ -3326,6 +3745,7 @@ def dashboard_html() -> str:
       const quantity = pilot.max_quantity ? `최대 ${pilot.max_quantity}주` : "최대 1주";
       const dailyOrders = pilot.daily_orders ? `하루 ${pilot.daily_orders}건` : "하루 1건";
       const dailyAmount = pilot.daily_amount ? `${pilot.daily_amount}` : "소액 제한";
+      const failureFuse = pilot.failure_fuse != null ? `연속 실패 ${pilot.failure_fuse}회 중지` : "꺼짐";
       const state = pilot.stop_active ? "거래 중지 상태" : "시작 가능";
       document.querySelectorAll("[data-pilot-summary]").forEach((box) => {
         const values = {
@@ -3333,6 +3753,7 @@ def dashboard_html() -> str:
           quantity,
           "daily-orders": dailyOrders,
           "daily-amount": dailyAmount,
+          "failure-fuse": failureFuse,
           state,
         };
         Object.entries(values).forEach(([key, value]) => {
@@ -3576,7 +3997,7 @@ def dashboard_html() -> str:
         const level = String(entry.level || "INFO").toUpperCase();
         const dot = level === "WARN" ? "warn" : level === "ERROR" ? "warn" : "ok";
         const detail = eventDetail(entry);
-        const label = detail === "추가 확인 사항은 없습니다." ? eventLabel(entry.message) : `${eventLabel(entry.message)}: ${detail}`;
+        const label = detail ? `${eventLabel(entry.message)}: ${detail}` : eventLabel(entry.message);
         return `<li class="event-line"><span class="event-dot ${dot}"></span><strong>${escapeHtml(levelLabel(level))}</strong><span>${escapeHtml(label)}</span><span class="helper-text">${escapeHtml(shortTimestamp(entry.created_at))}</span></li>`;
       }).join("");
     }
@@ -3631,9 +4052,11 @@ def dashboard_html() -> str:
     let currentTossAccountAlias = "";
     let newestSeenEventId = null;
     let browserNotificationsEnabled = localStorage.getItem("turtleBrowserNotifications") === "enabled";
+    let discordWebhookConfigured = false;
 
     const TRADE_NOTIFICATION_EVENTS = new Set([
       "live_order_execution",
+      "live_order_cancel_after_ack",
     ]);
 
     const FAILURE_NOTIFICATION_EVENTS = new Set([
@@ -3642,6 +4065,12 @@ def dashboard_html() -> str:
       "live_service_blocked",
       "live_trading_loop_failed",
       "paper_service_blocked",
+    ]);
+
+    const WATCHLIST_NOTIFICATION_EVENTS = new Set([
+      "premarket_watchlist_blocked",
+      "paper_market_data_blocked",
+      "market_data_rate_limit_paused",
     ]);
 
     function toFiniteNumber(value, fallback) {
@@ -3741,19 +4170,26 @@ def dashboard_html() -> str:
       return Notification.permission;
     }
 
-    function updateNotificationStatus() {
+    function updateNotificationStatus(settings) {
+      if (settings && settings.notifications) {
+        discordWebhookConfigured = Boolean(settings.notifications.discord_webhook_configured);
+      }
       const status = document.getElementById("notification-status");
       const button = document.getElementById("notification-enable-button");
+      const discordButton = document.getElementById("discord-notification-test-button");
       const permission = browserNotificationPermission();
       if (status) {
+        const discordText = discordWebhookConfigured
+          ? "Discord 웹훅도 감지됐습니다."
+          : "Discord 웹훅은 아직 이 서버에서 감지되지 않았습니다.";
         if (permission === "unsupported") {
-          status.textContent = "이 브라우저는 시스템 알림을 지원하지 않습니다. 화면 안 알림은 계속 표시됩니다.";
+          status.textContent = `이 브라우저는 시스템 알림을 지원하지 않습니다. 화면 안 알림은 계속 표시됩니다. ${discordText}`;
         } else if (permission === "granted" && browserNotificationsEnabled) {
-          status.textContent = "브라우저 알림이 켜져 있습니다. 주문 수량과 실패만 골라서 알려드립니다.";
+          status.textContent = `브라우저 알림이 켜져 있습니다. 주문 수량과 실패만 골라서 알려드립니다. ${discordText}`;
         } else if (permission === "denied") {
-          status.textContent = "브라우저에서 알림이 차단되어 있습니다. 브라우저 설정에서 허용해야 켤 수 있습니다.";
+          status.textContent = `브라우저에서 알림이 차단되어 있습니다. 브라우저 설정에서 허용해야 켤 수 있습니다. ${discordText}`;
         } else {
-          status.textContent = "주문 수량과 실패는 화면 안 알림으로 보여드립니다. 원하면 브라우저 알림도 켤 수 있습니다.";
+          status.textContent = `주문 수량과 실패는 화면 안 알림으로 보여드립니다. 원하면 브라우저 알림도 켤 수 있습니다. ${discordText}`;
         }
       }
       if (button) {
@@ -3761,6 +4197,12 @@ def dashboard_html() -> str:
         button.textContent = permission === "granted" && browserNotificationsEnabled
           ? "브라우저 알림 켜짐"
           : "브라우저 알림 켜기";
+      }
+      if (discordButton) {
+        discordButton.disabled = !discordWebhookConfigured;
+        discordButton.textContent = discordWebhookConfigured
+          ? "Discord 테스트 전송"
+          : "Discord 웹훅 없음";
       }
     }
 
@@ -3802,6 +4244,7 @@ def dashboard_html() -> str:
       const message = String(entry.message || "");
       if (TRADE_NOTIFICATION_EVENTS.has(message)) return true;
       if (FAILURE_NOTIFICATION_EVENTS.has(message)) return true;
+      if (WATCHLIST_NOTIFICATION_EVENTS.has(message)) return true;
       if (level === "ERROR") return true;
       return level === "WARN" && (
         message.includes("blocked") ||
@@ -3848,9 +4291,29 @@ def dashboard_html() -> str:
           body: `${qtyText}${status ? ` / 상태 ${status}` : ""}`,
         };
       }
+      const detail = eventDetail(entry) || eventLabel(message);
+      if (WATCHLIST_NOTIFICATION_EVENTS.has(message)) {
+        const isRateLimit = message === "market_data_rate_limit_paused"
+          || String(payload.error || "").includes("요청 제한")
+          || String(payload.error || "").includes("rate-limit");
+        return {
+          title: isRateLimit
+            ? "시세 조회 잠시 대기"
+            : message === "paper_market_data_blocked"
+              ? "시세 조회 확인 필요"
+              : "관심 종목 생성 일부 실패",
+          body: detail,
+        };
+      }
+      if (message === "live_trading_loop_failed") {
+        return {
+          title: "자동매매 루프 실패",
+          body: detail,
+        };
+      }
       return {
         title: "거래 실패/차단",
-        body: `${accountAlias} · ${symbol}: ${eventDetail(entry)}`,
+        body: `${accountAlias} · ${symbol}: ${detail}`,
       };
     }
 
@@ -3896,12 +4359,32 @@ def dashboard_html() -> str:
         localStorage.removeItem("turtleBrowserNotifications");
         showToast("알림 대기", "브라우저 알림 권한이 허용되지 않았습니다.", "warn");
       }
-      updateNotificationStatus();
+      updateNotificationStatus(dashboard.settings || {});
     }
 
     function testNotification() {
       showToast("정훈 미국주식 계좌 · SPCX 매수", "1주 / 상태 접수", "info");
       notifyBrowser("정훈 미국주식 계좌 · SPCX 매수", "1주 / 상태 접수");
+    }
+
+    async function sendDiscordTestNotification() {
+      const button = document.getElementById("discord-notification-test-button");
+      if (button) button.disabled = true;
+      try {
+        const payload = await postJson("/dashboard/actions/test-discord-alert", {});
+        if (payload.status === "sent") {
+          showToast("Discord 테스트 전송", "웹훅으로 테스트 메시지를 보냈습니다.", "info");
+        } else if (payload.status === "not_configured") {
+          showToast("Discord 웹훅 없음", "DISCORD_TRADE_ALERT_WEBHOOK_URL을 설정하고 서버를 다시 시작하세요.", "warn");
+        } else {
+          showToast("Discord 전송 실패", payload.error || "웹훅 응답을 확인하지 못했습니다.", "warn");
+        }
+        await refresh();
+      } catch (error) {
+        showToast("Discord 전송 실패", error.message, "error");
+      } finally {
+        if (button) button.disabled = !discordWebhookConfigured;
+      }
     }
 
     function setTossSettings(settings) {
@@ -3925,20 +4408,39 @@ def dashboard_html() -> str:
       setPillState("toss-account-status", "연결값 있음", "미연결", Boolean(toss[SETTINGS_KEYS.accountReady] || toss[SETTINGS_KEYS.accountValue]));
     }
 
+    function settingsSaveButtons() {
+      return ["settings-save-button", "toss-settings-save-button"]
+        .map((id) => document.getElementById(id))
+        .filter(Boolean);
+    }
+
+    function settingsSaveStatuses() {
+      return ["settings-save-status", "toss-settings-save-status"]
+        .map((id) => document.getElementById(id))
+        .filter(Boolean);
+    }
+
+    function setSettingsStatus(text, className = "settings-status") {
+      settingsSaveStatuses().forEach((status) => {
+        status.textContent = text;
+        status.className = className;
+      });
+    }
+
     function setSettingsWritable(enabled) {
       settingsWritable = Boolean(enabled);
-      const saveButton = document.getElementById("settings-save-button");
-      const status = document.getElementById("settings-save-status");
+      const saveButtons = settingsSaveButtons();
       const hint = document.getElementById("settings-save-hint");
-      if (saveButton) saveButton.disabled = !settingsWritable;
+      saveButtons.forEach((button) => {
+        button.disabled = !settingsWritable;
+      });
       if (hint) {
         hint.textContent = settingsWritable
           ? ""
           : "현재는 --config 경로가 없어 저장이 비활성입니다. config 파일 경로로 대시보드를 실행해야 저장이 가능합니다.";
       }
-      if (status && !settingsWritable) {
-        status.textContent = "저장 비활성 상태";
-        status.className = "settings-status";
+      if (!settingsWritable) {
+        setSettingsStatus("저장 비활성 상태");
       }
     }
 
@@ -3957,17 +4459,13 @@ def dashboard_html() -> str:
       const tossAccountSeq = document.getElementById("toss-account-seq");
       const tossAccountAlias = document.getElementById("toss-account-alias");
       const tossIdentityConfirmation = document.getElementById("toss-identity-confirmation");
-      const saveButton = document.getElementById("settings-save-button");
-      const status = document.getElementById("settings-save-status");
+      const saveButtons = settingsSaveButtons();
 
       if (!settingsWritable) {
-        if (status) {
-          status.textContent = "저장할 수 없습니다. --config 경로를 확인하세요.";
-          status.className = "settings-status error";
-        }
+        setSettingsStatus("저장할 수 없습니다. --config 경로를 확인하세요.", "settings-status error");
         return;
       }
-      if (!saveButton || !status) {
+      if (!saveButtons.length) {
         return;
       }
 
@@ -3994,18 +4492,22 @@ def dashboard_html() -> str:
       if (clientId) tossPayload.client_id = clientId;
       if (clientSecret) tossPayload.client_secret = clientSecret;
       if (Object.keys(tossPayload).length) {
-        if (identityConfirmation !== "토스 연결 승인") {
-          status.textContent = "토스 API나 계좌 연결값을 저장하려면 본인 확인 문구를 먼저 입력하세요.";
-          status.className = "settings-status error";
+        const connectionKeys = ["account_seq", "client_id", "client_secret", "client_id_env", "client_secret_env"];
+        const connectionChangeRequested = connectionKeys.some((key) => Object.prototype.hasOwnProperty.call(tossPayload, key));
+        if (connectionChangeRequested && identityConfirmation !== "토스 연결 승인") {
+          setSettingsStatus("토스 API 키나 계좌 번호를 저장하려면 본인 확인 문구를 먼저 입력하세요.", "settings-status error");
           return;
         }
-        tossPayload.identity_confirmation = identityConfirmation;
+        if (connectionChangeRequested) {
+          tossPayload.identity_confirmation = identityConfirmation;
+        }
         payload.toss = tossPayload;
       }
 
-      saveButton.disabled = true;
-      status.textContent = "저장 중입니다...";
-      status.className = "settings-status";
+      saveButtons.forEach((button) => {
+        button.disabled = true;
+      });
+      setSettingsStatus("저장 중입니다...");
       try {
         const response = await fetch("/dashboard/settings", {
           method: "POST",
@@ -4018,8 +4520,7 @@ def dashboard_html() -> str:
         if (!response.ok) {
           throw new Error(body.error || `저장 실패 (${response.status})`);
         }
-        status.textContent = "저장 완료";
-        status.className = "settings-status ok";
+        setSettingsStatus("저장 완료", "settings-status ok");
         if (body.settings) {
           if (body.settings.momentum) {
             setMomentumSettings(body.settings.momentum);
@@ -4027,17 +4528,18 @@ def dashboard_html() -> str:
           setTossSettings(body.settings);
         }
       } catch (error) {
-        status.textContent = `저장 실패: ${error.message}`;
-        status.className = "settings-status error";
+        setSettingsStatus(`저장 실패: ${error.message}`, "settings-status error");
       } finally {
-        saveButton.disabled = !settingsWritable;
+        saveButtons.forEach((button) => {
+          button.disabled = !settingsWritable;
+        });
       }
     }
 
     function bindSettingsInteractions() {
       const slider = document.getElementById("momentum-cash-reserve-percent-slider");
       const input = document.getElementById("momentum-cash-reserve-percent");
-      const saveButton = document.getElementById("settings-save-button");
+      const saveButtons = settingsSaveButtons();
       if (slider && input) {
         if (!settingsInputsBound) {
           slider.addEventListener("input", () => {
@@ -4051,10 +4553,12 @@ def dashboard_html() -> str:
           settingsInputsBound = true;
         }
       }
-      if (saveButton && !saveButton.dataset.bound) {
-        saveButton.dataset.bound = "true";
-        saveButton.addEventListener("click", saveMomentumSettings);
-      }
+      saveButtons.forEach((saveButton) => {
+        if (!saveButton.dataset.bound) {
+          saveButton.dataset.bound = "true";
+          saveButton.addEventListener("click", saveMomentumSettings);
+        }
+      });
     }
 
     function renderOnboarding(blockers, events, settings, settingsWriteEnabled) {
@@ -4133,12 +4637,13 @@ def dashboard_html() -> str:
       renderWatchSummary(watchRows);
       renderPositionSummary(positionRows);
       renderLiveReadiness(dashboard.live_readiness || {});
+      renderLiveMonitor(dashboard.live_monitor || {});
       renderTable("dashboard-open-orders-table", orderRows, null, "미체결 주문이 없습니다", "페이퍼 모드에서 주문 후보가 생기면 여기에 표시됩니다.", "#events");
       renderTimeline("dashboard-events-timeline", eventRows);
       renderBotSummary(status, summary, watchRows, orderRows);
       renderLogLines(eventRows);
       notifyImportantEvents(eventRows);
-      updateNotificationStatus();
+      updateNotificationStatus(dashboard.settings || {});
 
       setCountBadge("watchlist-count-badge", watchRows.length);
       setCountBadge("positions-count-badge", positionRows.length);
@@ -4173,6 +4678,8 @@ def dashboard_html() -> str:
       if (button) button.addEventListener("click", () => refresh().catch(console.error));
       const liveOnceButton = document.getElementById("live-once-button");
       if (liveOnceButton) liveOnceButton.addEventListener("click", () => runLiveOnce().catch(console.error));
+      const liveSmokeButton = document.getElementById("live-smoke-test-button");
+      if (liveSmokeButton) liveSmokeButton.addEventListener("click", () => runLiveSmokeTest().catch(console.error));
       const safePilotButton = document.getElementById("safe-pilot-button");
       if (safePilotButton) safePilotButton.addEventListener("click", () => applySafePilot().catch(console.error));
       const onboardingSafePilotButton = document.getElementById("onboarding-safe-pilot-button");
@@ -4196,6 +4703,10 @@ def dashboard_html() -> str:
       const notificationTestButton = document.getElementById("notification-test-button");
       if (notificationTestButton) {
         notificationTestButton.addEventListener("click", testNotification);
+      }
+      const discordNotificationTestButton = document.getElementById("discord-notification-test-button");
+      if (discordNotificationTestButton) {
+        discordNotificationTestButton.addEventListener("click", () => sendDiscordTestNotification().catch(console.error));
       }
     }
 
@@ -5498,6 +6009,7 @@ class HealthServer:
         snapshot_provider: PayloadProvider | HealthSnapshot,
         *,
         events_provider: EventsProvider | None = None,
+        broker_snapshots_provider: BrokerSnapshotsProvider | None = None,
         settings: Mapping[str, Any] | None = None,
         settings_updater: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         action_runner: ActionRunner | None = None,
@@ -5511,6 +6023,9 @@ class HealthServer:
             else lambda: snapshot_provider
         )
         self._events_provider = events_provider if events_provider is not None else (lambda *_: [])
+        self._broker_snapshots_provider = (
+            broker_snapshots_provider if broker_snapshots_provider is not None else lambda: {}
+        )
         self._settings = dict(settings or {})
         self._settings_updater = settings_updater
         self._action_runner = action_runner
@@ -5569,9 +6084,17 @@ class HealthServer:
                     pass
         return _summarize_events(events)
 
+    def _broker_snapshots(self) -> Mapping[str, Any]:
+        try:
+            snapshots = self._broker_snapshots_provider()
+        except Exception:
+            return {}
+        return snapshots if isinstance(snapshots, Mapping) else {}
+
     def _dashboard_payload(self) -> dict[str, Any]:
         snapshot = self._snapshot()
         events = self._events()
+        broker_snapshots = self._broker_snapshots()
         first = _first_day_event(events)
         raw_status = snapshot.status_payload()
         status = _friendly_status_payload(raw_status)
@@ -5593,6 +6116,12 @@ class HealthServer:
                 "items": _coerce_events_payload(events),
             },
             "runtime_summary": runtime_summary,
+            "broker_snapshots": dict(broker_snapshots),
+            "live_monitor": _build_live_monitor_payload(
+                events=events,
+                snapshot=snapshot,
+                broker_snapshots=broker_snapshots,
+            ),
             "settings": self._settings,
             "settings_write_enabled": self._settings_updater is not None,
             "live_readiness": _build_live_readiness_payload(
@@ -5634,8 +6163,10 @@ class HealthServer:
         normalized = path.lower()
         if normalized not in {
             "/dashboard/actions/live-once",
+            "/dashboard/actions/live-smoke-test",
             "/dashboard/actions/apply-safe-pilot",
             "/dashboard/actions/stop-trading",
+            "/dashboard/actions/test-discord-alert",
         }:
             raise ValueError(f"unsupported action path: {path}")
         if self._action_runner is None:

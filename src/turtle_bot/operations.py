@@ -22,7 +22,8 @@ from .notifier import DiscordTradeNotifier, MemoryNotifier
 from .paper_runtime import PaperOrderIntent, PaperRuntimeConfig, PaperTradingRuntime
 from .position_sync import TossPositionSync
 from .state_store import SQLiteStateStore
-from .toss_client import TOSS_BASE_URL, TossClient, TossCredentials, TossTransport
+from .rate_limit import RateLimitQueue
+from .toss_client import TOSS_BASE_URL, TossApiError, TossClient, TossCredentials, TossTransport
 from .toss_live_adapter import TossLiveBrokerAdapter
 from .live_execution import LiveOrderOrchestrator
 from .live_order import OrderIntent, OrderType
@@ -260,6 +261,7 @@ def build_dashboard_server(
     port: int = 8765,
     start_server: bool = False,
     env: Mapping[str, str] | None = None,
+    transport: TossTransport | None = None,
 ) -> HealthServer:
     watchlist_name = "premarket"
     default_blockers: Sequence[str] = DEFAULT_DASHBOARD_BLOCKERS
@@ -269,7 +271,7 @@ def build_dashboard_server(
     config_created = False
     if config_path is not None:
         config_path, config_created = ensure_local_config(config_path)
-        env_values = env if env is not None else environ
+        env_values = _dashboard_env_values(env)
         config = load_config(config_path)
         watchlist_name = config.runtime.watchlist_name
         default_blockers = _paper_service_config_blockers(
@@ -301,6 +303,7 @@ def build_dashboard_server(
         loop_lock = Lock()
         loop_stop_event: Event | None = None
         loop_thread: Thread | None = None
+        loop_live_consent: Mapping[str, str] | None = None
 
         def refresh_dashboard_state() -> None:
             nonlocal config, default_blockers, settings_payload, watchlist_name
@@ -314,13 +317,16 @@ def build_dashboard_server(
                 config_created=False,
             )
 
-        def start_dashboard_trading_loop() -> str:
-            nonlocal loop_stop_event, loop_thread
+        def start_dashboard_trading_loop(
+            live_consent: Mapping[str, str] | None = None
+        ) -> str:
+            nonlocal loop_stop_event, loop_thread, loop_live_consent
             with loop_lock:
                 if loop_thread is not None and loop_thread.is_alive():
                     return "already_running"
                 loop_stop_event = Event()
                 active_stop_event = loop_stop_event
+                loop_live_consent = dict(live_consent) if live_consent else None
                 active_config = load_config(config_path)
 
                 def interruptible_sleep(seconds: float) -> None:
@@ -330,6 +336,7 @@ def build_dashboard_server(
                         raise DashboardTradingLoopStopped("dashboard emergency stop is active")
 
                 def run_loop() -> None:
+                    local_consent = loop_live_consent
                     discord_notifier = DiscordTradeNotifier(env=env_values)
                     with SQLiteStateStore(state_db) as loop_store:
                         loop_store.record_runtime_event(
@@ -343,6 +350,7 @@ def build_dashboard_server(
                             state_db=state_db,
                             log_dir=active_config.runtime.log_dir,
                             interval_seconds=active_config.runtime.interval_seconds,
+                            live_consent=local_consent,
                             once=False,
                             sleep=interruptible_sleep,
                             env=env_values,
@@ -379,9 +387,13 @@ def build_dashboard_server(
         def action_runner(path: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
             nonlocal config, default_blockers, settings_payload, watchlist_name, loop_stop_event
             if path == "/dashboard/actions/apply-safe-pilot":
+                consent_context = _extract_live_consent_context(
+                    payload=payload,
+                    config=config,
+                )
                 result = apply_safe_pilot_settings(config_path, state_db=state_db)
                 refresh_dashboard_state()
-                loop_status = start_dashboard_trading_loop()
+                loop_status = start_dashboard_trading_loop(live_consent=consent_context)
                 return {
                     "status": "started" if loop_status == "started" else "already_running",
                     "loop": loop_status,
@@ -404,6 +416,62 @@ def build_dashboard_server(
                     "open_orders": open_orders,
                     "settings": settings_payload,
                 }
+            if path == "/dashboard/actions/test-discord-alert":
+                discord_notifier = DiscordTradeNotifier(env=env_values)
+                if not discord_notifier.enabled:
+                    return {
+                        "status": "not_configured",
+                        "webhook_configured": False,
+                    }
+                alert_payload = {
+                    "source": "dashboard",
+                    "account_alias": _account_alias_from_config_path(config_path),
+                }
+                sent = discord_notifier.notify(
+                    "discord_alert_test",
+                    level="info",
+                    payload=alert_payload,
+                )
+                with SQLiteStateStore(state_db) as store:
+                    event_payload: dict[str, Any] = {
+                        "source": "dashboard",
+                        "webhook_configured": True,
+                        "account_alias": alert_payload["account_alias"],
+                    }
+                    if not sent and discord_notifier.last_error:
+                        event_payload["error"] = discord_notifier.last_error
+                    store.record_runtime_event(
+                        "INFO" if sent else "WARN",
+                        "discord_alert_test_sent"
+                        if sent
+                        else "discord_alert_test_failed",
+                        event_payload,
+                    )
+                result = {
+                    "status": "sent" if sent else "failed",
+                    "webhook_configured": True,
+                }
+                if not sent and discord_notifier.last_error:
+                    result["error"] = discord_notifier.last_error
+                return result
+            if path == "/dashboard/actions/live-smoke-test":
+                confirmation = str(payload.get("confirmation") or "").strip()
+                if confirmation != "실주문 테스트":
+                    raise ValueError("confirmation must be 실주문 테스트")
+                if not action_lock.acquire(blocking=False):
+                    raise RuntimeError("live smoke test action is already running")
+                try:
+                    config = load_config(config_path)
+                    result = run_live_smoke_test(
+                        config_path=config_path,
+                        state_db=state_db,
+                        env=env_values,
+                        transport=transport,
+                    )
+                    refresh_dashboard_state()
+                    return result
+                finally:
+                    action_lock.release()
             if path != "/dashboard/actions/live-once":
                 raise ValueError(f"unsupported action: {path}")
             confirmation = str(payload.get("confirmation") or "").strip()
@@ -413,13 +481,19 @@ def build_dashboard_server(
                 raise RuntimeError("live once action is already running")
             try:
                 config = load_config(config_path)
+                consent_context = _extract_live_consent_context(
+                    payload=payload,
+                    config=config,
+                )
                 snapshot = run_paper_service(
                     config_path=config_path,
                     state_db=state_db,
                     log_dir=config.runtime.log_dir,
                     interval_seconds=config.runtime.interval_seconds,
+                    live_consent=consent_context,
                     once=True,
                     env=env_values,
+                    transport=transport,
                 )
                 watchlist_name = config.runtime.watchlist_name
                 default_blockers = _paper_service_config_blockers(config, env_values)
@@ -437,9 +511,22 @@ def build_dashboard_server(
         with SQLiteStateStore(state_db) as store:
             events = store.list_runtime_events(limit=100)
             latest = _latest_health_event_payload(events)
+            current_mode = _runtime_mode(config) if config_path is not None else None
             if latest is None:
                 return paper_service_health(
                     store,
+                    mode=current_mode or "paper",
+                    blockers=default_blockers,
+                    ready=not default_blockers,
+                    watchlist_name=watchlist_name,
+                )
+            if (
+                current_mode is not None
+                and str(latest.get("mode") or "").strip().lower() != current_mode
+            ):
+                return paper_service_health(
+                    store,
+                    mode=current_mode,
                     blockers=default_blockers,
                     ready=not default_blockers,
                     watchlist_name=watchlist_name,
@@ -454,9 +541,24 @@ def build_dashboard_server(
         with SQLiteStateStore(state_db) as store:
             return store.list_runtime_events(limit=limit)
 
+    def broker_snapshots_provider() -> dict[str, Any]:
+        with SQLiteStateStore(state_db) as store:
+            return {
+                "holdings": _broker_snapshot_record_payload(
+                    store.latest_broker_snapshot_record("holdings")
+                ),
+                "open_orders": _broker_snapshot_record_payload(
+                    store.latest_broker_snapshot_record("open_orders")
+                ),
+                "closed_orders": _broker_snapshot_record_payload(
+                    store.latest_broker_snapshot_record("closed_orders")
+                ),
+            }
+
     return HealthServer(
         snapshot_provider,
         events_provider=events_provider,
+        broker_snapshots_provider=broker_snapshots_provider,
         host=host,
         port=port,
         start_server=start_server,
@@ -464,6 +566,48 @@ def build_dashboard_server(
         settings_updater=settings_updater,
         action_runner=action_runner,
     )
+
+
+def _broker_snapshot_record_payload(record: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(record, Mapping):
+        return None
+    captured_at = record.get("captured_at")
+    if isinstance(captured_at, datetime):
+        captured = captured_at.isoformat()
+    elif captured_at is None:
+        captured = None
+    else:
+        captured = str(captured_at)
+    payload = record.get("payload")
+    return {
+        "captured_at": captured,
+        "payload": dict(payload) if isinstance(payload, Mapping) else payload,
+    }
+
+
+def _dashboard_env_values(env: Mapping[str, str] | None = None) -> Mapping[str, str]:
+    if env is not None:
+        return env
+    values = dict(environ)
+    webhook_env = DiscordTradeNotifier.DEFAULT_WEBHOOK_ENV
+    if not values.get(webhook_env):
+        user_value = _windows_user_environment_value(webhook_env)
+        if user_value:
+            values[webhook_env] = user_value
+    return values
+
+
+def _windows_user_environment_value(name: str) -> str:
+    if sys.platform != "win32":
+        return ""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+            return str(value or "").strip()
+    except Exception:
+        return ""
 
 
 def _dashboard_settings_payload(
@@ -506,6 +650,7 @@ def _dashboard_settings_payload(
         },
         "toss": {
             "live_enabled": config.live_enabled,
+            "require_live_consent": config.toss.require_live_consent,
             "account_seq_configured": bool(config.toss.account_seq),
             "account_seq": config.toss.account_seq or "",
             "account_alias": account_alias,
@@ -513,6 +658,14 @@ def _dashboard_settings_payload(
             "client_secret_configured": bool(
                 client_secret_env and env_values.get(client_secret_env)
             ),
+            "live_consent_ids_configured": bool(config.toss.allowed_live_consent_ids),
+            "live_consent_ids_count": len(config.toss.allowed_live_consent_ids),
+        },
+        "notifications": {
+            "discord_webhook_configured": bool(
+                env_values.get(DiscordTradeNotifier.DEFAULT_WEBHOOK_ENV)
+            ),
+            "discord_webhook_env": DiscordTradeNotifier.DEFAULT_WEBHOOK_ENV,
         },
         "live": {
             "emergency_stop": config.live.emergency_stop,
@@ -538,6 +691,7 @@ def _dashboard_settings_payload(
             "block_unresolved_orders": config.live.block_unresolved_orders,
             "confirm_high_value_order": config.live.confirm_high_value_order,
             "cancel_after_ack": config.live.cancel_after_ack,
+            "max_consecutive_order_failures": config.live.max_consecutive_order_failures,
         },
         "pilot": {
             "symbol": str(pilot_symbol).upper() if pilot_symbol else None,
@@ -550,6 +704,7 @@ def _dashboard_settings_payload(
             "daily_amount": str(pilot_amount) if pilot_amount is not None else None,
             "stop_active": config.live.emergency_stop,
             "cancel_after_ack": config.live.cancel_after_ack,
+            "failure_fuse": config.live.max_consecutive_order_failures,
         },
         "momentum": {
             "cash_reserve_pct": str(config.momentum_cash_reserve_pct),
@@ -781,6 +936,7 @@ def apply_safe_pilot_settings(
             "block_unresolved_orders": True,
             "confirm_high_value_order": False,
             "cancel_after_ack": True,
+            "max_consecutive_order_failures": 3,
         }
     )
 
@@ -1015,6 +1171,75 @@ def _health_snapshot_from_payload(
     )
 
 
+def _coerce_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return text
+
+
+def _mask_secret(value: str) -> str:
+    text = _coerce_text(value)
+    if not text:
+        return ""
+    if len(text) <= 4:
+        return "*" * len(text)
+    return "*" * (len(text) - 4) + text[-4:]
+
+
+def _extract_live_consent_context(
+    *,
+    payload: Mapping[str, Any],
+    config,
+) -> dict[str, str] | None:
+    if not getattr(config.toss, "require_live_consent", False):
+        return None
+    if not config.toss.allowed_live_consent_ids:
+        raise ValueError(
+            "live consent is enabled but no allowed_live_consent_ids is configured"
+        )
+    consent_id = _coerce_text(payload.get("consent_id"))
+    if not consent_id:
+        raise ValueError("consent_id is required for live execution")
+    if not any(consent_id == _coerce_text(item) for item in config.toss.allowed_live_consent_ids):
+        raise ValueError("consent_id is not authorized")
+    context: dict[str, str] = {"consent_id": consent_id}
+    operator_id = _coerce_text(payload.get("operator_id"))
+    if operator_id:
+        context["operator_id"] = operator_id
+    return context
+
+
+def _live_consent_blocker(
+    *,
+    config,
+    live_consent: Mapping[str, str] | None,
+) -> str | None:
+    if not config.toss.require_live_consent:
+        return None
+    if not config.toss.allowed_live_consent_ids:
+        return "live_consent_ids_not_configured"
+    consent_id = _coerce_text(live_consent.get("consent_id") if live_consent else None)
+    if not consent_id:
+        return "live_consent_id_required"
+    if consent_id not in {_coerce_text(item) for item in config.toss.allowed_live_consent_ids}:
+        return "live_consent_id_not_allowed"
+    return None
+
+
+def _live_consent_event_metadata(
+    live_consent: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    if not live_consent:
+        return {}
+    consent_id = _coerce_text(live_consent.get("consent_id"))
+    operator_id = _coerce_text(live_consent.get("operator_id"))
+    output: dict[str, Any] = {}
+    if operator_id:
+        output["operator_id"] = operator_id
+    if consent_id:
+        output["consent_id_mask"] = _mask_secret(consent_id)
+    return output
+
+
 def run_paper_service(
     *,
     config_path: str | Path,
@@ -1025,6 +1250,7 @@ def run_paper_service(
     sleep: Callable[[float], None] = time.sleep,
     env: Mapping[str, str] | None = None,
     transport: TossTransport | None = None,
+    live_consent: Mapping[str, str] | None = None,
     now=lambda: datetime.now(timezone.utc),
 ) -> HealthSnapshot:
     config = load_config(config_path)
@@ -1041,11 +1267,14 @@ def run_paper_service(
     )
 
     env_values = env if env is not None else environ
+    rate_limits = RateLimitQueue(now=now)
     snapshot = _paper_service_iteration(
         config_path=config_path,
         store=store,
         env=env_values,
+        live_consent=live_consent,
         transport=transport,
+        rate_limits=rate_limits,
         now=now,
     )
     if once:
@@ -1061,7 +1290,9 @@ def run_paper_service(
             config_path=config_path,
             store=store,
             env=env_values,
+            live_consent=live_consent,
             transport=transport,
+            rate_limits=rate_limits,
             now=now,
         )
         store.record_runtime_event(
@@ -1123,12 +1354,21 @@ def _paper_service_iteration(
     store: SQLiteStateStore,
     env: Mapping[str, str],
     transport: TossTransport | None,
+    rate_limits: RateLimitQueue | None = None,
+    live_consent: Mapping[str, str] | None = None,
     now,
 ) -> HealthSnapshot:
     config = load_config(config_path)
     account_alias = _account_alias_from_config_path(config_path)
     service_mode = _runtime_mode(config)
     blockers = _paper_service_config_blockers(config, env)
+    if service_mode == "live":
+        live_consent_blocker = _live_consent_blocker(
+            config=config,
+            live_consent=live_consent,
+        )
+        if live_consent_blocker is not None:
+            blockers = blockers + (live_consent_blocker,)
     if blockers:
         snapshot = paper_service_health(
             store,
@@ -1152,6 +1392,7 @@ def _paper_service_iteration(
         account_seq=config.toss.account_seq,
         base_url=config.toss.base_url or TOSS_BASE_URL,
         transport=transport,
+        rate_limits=rate_limits,
         now=now,
     )
     market_data = TossReadOnlyMarketDataProvider(
@@ -1290,7 +1531,12 @@ def _paper_service_iteration(
             momentum_use_market_filter=config.momentum_use_market_filter,
         ),
         market_data=market_data,
-        position_sync=TossPositionSync(client=client, store=store),
+        position_sync=TossPositionSync(
+            client=client,
+            store=store,
+            sync_live_positions=service_mode == "live",
+            sync_closed_orders=service_mode == "live",
+        ),
         store=store,
         notifier=MemoryNotifier(),
         now=now,
@@ -1305,6 +1551,7 @@ def _paper_service_iteration(
             market_open=bool(session is None or session.is_open),
             notifier=DiscordTradeNotifier(env=env),
             account_alias=account_alias,
+            live_consent=live_consent,
         )
     return _with_latest_watchlist(
         runtime.health_snapshot(),
@@ -1351,6 +1598,7 @@ def _build_toss_readiness_checks(
     mode = str(config.runtime.mode or "").strip().lower()
     has_symbols = bool(config.runtime.symbols or config.runtime.universe_candidate_symbols)
     mode_is_supported = mode in {"paper", "shadow", "live"}
+    consent_required = bool(mode == "live" and config.toss.require_live_consent)
 
     return (
         OperationsCheck(
@@ -1402,6 +1650,13 @@ def _build_toss_readiness_checks(
             if account_seq
             else "toss.account_seq is not configured",
         ),
+        OperationsCheck(
+            "toss_live_consent_ids",
+            not consent_required or bool(config.toss.allowed_live_consent_ids),
+            "live consent allowlist is configured"
+            if (not consent_required or bool(config.toss.allowed_live_consent_ids))
+            else "live consent allowlist is required for live mode",
+        ),
     )
 
 
@@ -1414,9 +1669,15 @@ def _submit_live_intents(
     market_open: bool,
     notifier: DiscordTradeNotifier | None = None,
     account_alias: str | None = None,
+    live_consent: Mapping[str, str] | None = None,
 ) -> None:
     if not result.intents:
         return
+    consent_metadata = _live_consent_event_metadata(live_consent)
+    sync_summary = _sync_unresolved_live_execution_orders(
+        client=client,
+        store=store,
+    )
     currency = "USD" if str(config.runtime.market).strip().upper() == "US" else "KRW"
     try:
         buying_power = client.get_buying_power(currency)
@@ -1441,6 +1702,7 @@ def _submit_live_intents(
                 require_market_open=config.live.require_market_open,
                 require_clean_reconcile=config.live.require_clean_reconcile,
                 block_unresolved_orders=config.live.block_unresolved_orders,
+                max_consecutive_order_failures=config.live.max_consecutive_order_failures,
             )
         ),
         broker=TossLiveBrokerAdapter(
@@ -1450,6 +1712,10 @@ def _submit_live_intents(
         store=store,
     )
     daily_summary = store.execution_summary_since(_start_of_local_day(config.runtime.timezone_name))
+    consecutive_order_failures = _consecutive_live_order_failures(
+        store,
+        since=_start_of_local_day(config.runtime.timezone_name),
+    )
     for paper_intent in result.intents:
         live_intent = _live_order_intent_from_paper(paper_intent)
         position = store.load_position(live_intent.symbol)
@@ -1469,6 +1735,9 @@ def _submit_live_intents(
                 "daily_order_count": int(daily_summary["count"]),
                 "daily_notional": str(daily_summary["notional"]),
                 "unresolved_order_exists": unresolved_order_exists,
+                "consecutive_order_failures": consecutive_order_failures,
+                "max_consecutive_order_failures": config.live.max_consecutive_order_failures,
+                "live_consent": consent_metadata,
             },
         )
         final_guard_blockers = _live_final_guard_blockers(
@@ -1477,6 +1746,8 @@ def _submit_live_intents(
             position_qty=position.total_qty if position is not None else Decimal("0"),
             unresolved_order_exists=unresolved_order_exists,
             daily_summary=daily_summary,
+            consecutive_order_failures=consecutive_order_failures,
+            unresolved_execution_count=int(sync_summary["remaining_unresolved"]),
         )
         if final_guard_blockers:
             payload = {
@@ -1492,6 +1763,10 @@ def _submit_live_intents(
                 "daily_order_count": int(daily_summary["count"]),
                 "daily_notional": str(daily_summary["notional"]),
                 "unresolved_order_exists": unresolved_order_exists,
+                "consecutive_order_failures": consecutive_order_failures,
+                "max_consecutive_order_failures": config.live.max_consecutive_order_failures,
+                "unresolved_execution_count": int(sync_summary["remaining_unresolved"]),
+                "live_consent": consent_metadata,
             }
             store.record_runtime_event("WARN", "live_order_final_guard_blocked", payload)
             if notifier is not None:
@@ -1507,12 +1782,17 @@ def _submit_live_intents(
                 current_position_qty=position.total_qty if position is not None else Decimal("0"),
                 daily_order_count=int(daily_summary["count"]),
                 daily_notional=daily_summary["notional"],
+                consecutive_order_failures=consecutive_order_failures,
+                unresolved_execution_count=int(sync_summary["remaining_unresolved"]),
             ),
         )
         if execution.status.value not in {"REJECTED", "FAILED", "UNKNOWN"}:
             daily_summary["count"] += 1
             if live_intent.notional is not None:
                 daily_summary["notional"] += live_intent.notional
+            consecutive_order_failures = 0
+        elif execution.safety_decision.passed:
+            consecutive_order_failures += 1
         execution_level = (
             "INFO"
             if execution.status.value not in {"REJECTED", "FAILED", "UNKNOWN"}
@@ -1529,6 +1809,7 @@ def _submit_live_intents(
             "quantity": str(live_intent.quantity),
             "notional": str(live_intent.notional) if live_intent.notional is not None else None,
             "account_alias": account_alias or "",
+            "live_consent": consent_metadata,
         }
         store.record_runtime_event(
             execution_level,
@@ -1564,6 +1845,248 @@ def _submit_live_intents(
             )
 
 
+def run_live_smoke_test(
+    *,
+    config_path: str | Path,
+    state_db: str | Path,
+    env: Mapping[str, str] | None = None,
+    transport: TossTransport | None = None,
+    now=lambda: datetime.now(timezone.utc),
+) -> dict[str, Any]:
+    """Submit one tiny live test order and cancel it immediately after ACK."""
+
+    config = load_config(config_path)
+    env_values = env if env is not None else environ
+    blockers = _paper_service_config_blockers(config, env_values)
+    if blockers:
+        raise ValueError("; ".join(blockers))
+    if _runtime_mode(config) != "live" or not config.live_enabled:
+        raise ValueError("실주문 테스트는 live 모드와 toss.live_enabled=true에서만 가능합니다.")
+    if config.live.emergency_stop:
+        raise ValueError("거래 중지 상태입니다. 실주문 테스트를 하려면 먼저 거래 중지를 해제하세요.")
+    if not config.live.cancel_after_ack:
+        raise ValueError("실주문 테스트는 접수 즉시 취소 설정(cancel_after_ack=true)이 필요합니다.")
+
+    symbol = (
+        config.live.allowed_symbols[0]
+        if config.live.allowed_symbols
+        else config.runtime.symbols[0]
+        if config.runtime.symbols
+        else ""
+    ).strip().upper()
+    if not symbol:
+        raise ValueError("실주문 테스트에 사용할 종목이 없습니다.")
+
+    credentials = TossCredentials(
+        client_id=env_values[config.toss.client_id_env],
+        client_secret=env_values[config.toss.client_secret_env],
+    )
+    client = TossClient(
+        credentials=credentials,
+        account_seq=config.toss.account_seq,
+        base_url=config.toss.base_url or TOSS_BASE_URL,
+        transport=transport,
+        rate_limits=RateLimitQueue(now=now),
+        now=now,
+    )
+
+    with SQLiteStateStore(state_db) as store:
+        session = None
+        if config.runtime.use_market_calendar:
+            session = MarketCalendarGate(
+                client=client,
+                config=MarketCalendarConfig(
+                    market=config.runtime.market,
+                    timezone_name=config.runtime.timezone_name,
+                ),
+                now=now,
+            ).current_session()
+            store.record_runtime_event(
+                "INFO" if session.is_open else "WARN",
+                "market_session_state",
+                session.as_payload(),
+            )
+            if config.live.require_market_open and not session.is_open:
+                raise ValueError(f"시장 시간이 아닙니다: {session.status}")
+
+        market_data = TossReadOnlyMarketDataProvider(
+            client=client,
+            config=TossMarketDataConfig(
+                candle_interval=config.runtime.candle_interval,
+                candle_count=config.runtime.candle_count,
+                local_timezone=config.runtime.timezone_name,
+                exclude_current_session=config.runtime.exclude_current_session,
+            ),
+            store=store,
+            now=now,
+        )
+        current_price = market_data.get_current_price(symbol)
+        limit_price = max(
+            Decimal("0.01"),
+            (current_price * Decimal("0.90")).quantize(Decimal("0.01")),
+        )
+
+        reconcile = TossPositionSync(
+            client=client,
+            store=store,
+            sync_live_positions=True,
+            sync_closed_orders=True,
+        ).reconcile()
+        currency = "USD" if str(config.runtime.market).strip().upper() == "US" else "KRW"
+        buying_power = client.get_buying_power(currency)
+        available_cash = _available_cash_from_buying_power(buying_power)
+        position = store.load_position(symbol)
+        daily_summary = store.execution_summary_since(
+            _start_of_local_day(config.runtime.timezone_name)
+        )
+        sync_summary = _sync_unresolved_live_execution_orders(
+            client=client,
+            store=store,
+        )
+        consecutive_order_failures = _consecutive_live_order_failures(
+            store,
+            since=_start_of_local_day(config.runtime.timezone_name),
+        )
+        unresolved_order_exists = any(
+            order.symbol == symbol for order in reconcile.open_orders
+        )
+
+        intent_id = f"live-smoke-{now().strftime('%Y%m%d%H%M%S')}-{symbol}"
+        intent = OrderIntent(
+            intent_id=intent_id,
+            idempotency_key=_live_client_order_id(intent_id),
+            symbol=symbol,
+            side=Side.BUY,
+            quantity=Decimal("1"),
+            order_type=OrderType.LIMIT,
+            limit_price=limit_price,
+            source="dashboard:live-smoke-test",
+            reason="manual_live_connection_test",
+            created_at=now(),
+            metadata={
+                "current_price": str(current_price),
+                "test_limit_price_ratio": "0.90",
+                "cancel_after_ack": True,
+            },
+        )
+
+        store.record_runtime_event(
+            "INFO",
+            "live_smoke_test_started",
+            {
+                "symbol": symbol,
+                "side": intent.side.value,
+                "quantity": str(intent.quantity),
+                "current_price": str(current_price),
+                "limit_price": str(limit_price),
+            },
+        )
+
+        orchestrator = LiveOrderOrchestrator(
+            safety=PreTradeSafety(
+                PreTradeSafetyConfig(
+                    live_enabled=config.live_enabled,
+                    emergency_stop=config.live.emergency_stop,
+                    allowed_symbols=config.live.allowed_symbols,
+                    max_order_quantity=config.live.max_order_quantity,
+                    max_order_notional=config.live.max_order_notional,
+                    daily_order_count_limit=config.live.daily_order_count_limit,
+                    daily_notional_limit=config.live.daily_notional_limit,
+                    require_market_open=config.live.require_market_open,
+                    require_clean_reconcile=config.live.require_clean_reconcile,
+                    block_unresolved_orders=config.live.block_unresolved_orders,
+                    max_consecutive_order_failures=config.live.max_consecutive_order_failures,
+                )
+            ),
+            broker=TossLiveBrokerAdapter(
+                client,
+                confirm_high_value_order=config.live.confirm_high_value_order,
+            ),
+            store=store,
+        )
+        execution = orchestrator.submit(
+            intent,
+            context=PreTradeSafetyContext(
+                market_open=bool(session is None or session.is_open),
+                reconcile_clean=reconcile.clean,
+                unresolved_order_exists=unresolved_order_exists,
+                available_cash=available_cash,
+                current_position_qty=position.total_qty if position is not None else Decimal("0"),
+                daily_order_count=int(daily_summary["count"]),
+                daily_notional=daily_summary["notional"],
+                consecutive_order_failures=consecutive_order_failures,
+                unresolved_execution_count=int(sync_summary["remaining_unresolved"]),
+            ),
+        )
+        execution_payload = {
+            "intent_id": execution.intent_id,
+            "status": execution.status.value,
+            "broker_order_id": execution.broker_order_id,
+            "message": execution.message,
+            "safety": execution.safety_decision.as_payload(),
+            "symbol": intent.symbol,
+            "side": intent.side.value,
+            "quantity": str(intent.quantity),
+            "notional": str(intent.notional) if intent.notional is not None else None,
+            "limit_price": str(intent.limit_price),
+            "account_alias": _account_alias_from_config_path(config_path),
+            "test_order": True,
+        }
+        discord_notifier = DiscordTradeNotifier(env=env_values)
+        store.record_runtime_event(
+            "INFO" if execution.accepted else "WARN",
+            "live_order_execution",
+            execution_payload,
+        )
+        discord_notifier.notify(
+            "live_order_execution",
+            level="info" if execution.accepted else "warn",
+            payload=execution_payload,
+        )
+
+        cancel_payload: dict[str, Any] | None = None
+        if execution.status.value == "ACKNOWLEDGED" and execution.broker_order_id is not None:
+            cancel_execution = orchestrator.cancel_acknowledged(
+                intent,
+                broker_order_id=execution.broker_order_id,
+            )
+            cancel_payload = {
+                "intent_id": cancel_execution.intent_id,
+                "status": cancel_execution.status.value,
+                "broker_order_id": cancel_execution.broker_order_id,
+                "message": cancel_execution.message,
+                "test_order": True,
+                "symbol": intent.symbol,
+                "side": intent.side.value,
+                "quantity": str(intent.quantity),
+                "account_alias": _account_alias_from_config_path(config_path),
+            }
+            store.record_runtime_event(
+                "INFO"
+                if cancel_execution.status.value == "PENDING_CANCEL"
+                else "WARN",
+                "live_order_cancel_after_ack",
+                cancel_payload,
+            )
+            discord_notifier.notify(
+                "live_order_cancel_after_ack",
+                level="info"
+                if cancel_execution.status.value == "PENDING_CANCEL"
+                else "warn",
+                payload=cancel_payload,
+            )
+
+    return {
+        "status": "completed" if execution.accepted else "blocked",
+        "symbol": symbol,
+        "quantity": str(intent.quantity),
+        "current_price": str(current_price),
+        "limit_price": str(limit_price),
+        "execution": execution_payload,
+        "cancel": cancel_payload,
+    }
+
+
 def _live_final_guard_blockers(
     *,
     config,
@@ -1571,6 +2094,8 @@ def _live_final_guard_blockers(
     position_qty: Decimal,
     unresolved_order_exists: bool,
     daily_summary: Mapping[str, Any],
+    consecutive_order_failures: int = 0,
+    unresolved_execution_count: int = 0,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     allowed_symbols = {str(symbol).upper() for symbol in config.live.allowed_symbols}
@@ -1581,6 +2106,103 @@ def _live_final_guard_blockers(
     if allowed_symbols and live_intent.symbol.upper() not in allowed_symbols:
         blockers.append("symbol_not_allowlisted")
     return tuple(blockers)
+
+
+def _sync_unresolved_live_execution_orders(
+    *,
+    client: TossClient,
+    store: SQLiteStateStore,
+    limit: int = 20,
+) -> dict[str, Any]:
+    unresolved = store.list_unresolved_execution_orders(limit=limit)
+    adapter = TossLiveBrokerAdapter(client)
+    checked = 0
+    updated = 0
+    failed = 0
+    skipped = 0
+    for order in unresolved:
+        broker_order_id = order.get("broker_order_id")
+        if not broker_order_id:
+            skipped += 1
+            continue
+        checked += 1
+        try:
+            state = adapter.query_order(str(broker_order_id))
+        except Exception as exc:
+            failed += 1
+            store.record_runtime_event(
+                "WARN",
+                "live_order_status_sync_failed",
+                {
+                    "intent_id": order["intent_id"],
+                    "broker_order_id": broker_order_id,
+                    "status": order["status"],
+                    "error": str(exc),
+                },
+            )
+            continue
+        state_payload = state.as_payload()
+        store.record_execution_order(
+            intent_id=order["intent_id"],
+            idempotency_key=order["idempotency_key"],
+            symbol=order["symbol"],
+            side=order["side"],
+            status=state.status.value,
+            broker_order_id=state.broker_order_id,
+            raw={
+                "order_state": state_payload,
+                "previous_status": order["status"],
+                "previous_raw": order.get("raw"),
+            },
+        )
+        store.record_execution_event(
+            intent_id=order["intent_id"],
+            event_type="broker_status_sync",
+            status=state.status.value,
+            payload=state_payload,
+        )
+        updated += 1
+
+    remaining = store.list_unresolved_execution_orders(limit=limit)
+    summary = {
+        "checked": checked,
+        "updated": updated,
+        "failed": failed,
+        "skipped": skipped,
+        "remaining_unresolved": len(remaining),
+    }
+    store.record_runtime_event(
+        "INFO" if not remaining and not failed else "WARN",
+        "live_order_status_synced",
+        summary,
+    )
+    return summary
+
+
+def _consecutive_live_order_failures(
+    store: SQLiteStateStore,
+    *,
+    since: datetime,
+    scan_limit: int = 100,
+) -> int:
+    count = 0
+    for event in store.list_runtime_events(limit=scan_limit):
+        if event["created_at"] < since:
+            break
+        if event["message"] != "live_order_execution":
+            continue
+        payload = event.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            continue
+        status = str(payload.get("status") or "").upper()
+        safety = payload.get("safety") if isinstance(payload.get("safety"), Mapping) else {}
+        safety_passed = bool(safety.get("passed")) if safety else False
+        if status in {"FAILED", "UNKNOWN"} or (status == "REJECTED" and safety_passed):
+            count += 1
+            continue
+        if status in {"ACKNOWLEDGED", "FILLED", "PARTIALLY_FILLED", "PENDING_CANCEL", "CANCELLED"}:
+            break
+    return count
 
 
 def _live_order_intent_from_paper(intent: PaperOrderIntent) -> OrderIntent:
@@ -1658,6 +2280,10 @@ def _build_and_save_watchlist(
     for symbol in symbols or config.runtime.symbols:
         try:
             symbol_candles[symbol] = tuple(provider.get_completed_candles(symbol))
+        except TossApiError as exc:
+            blocked.append(f"{symbol} watchlist candles unavailable: {exc}")
+            if exc.status == 429:
+                break
         except Exception as exc:
             blocked.append(f"{symbol} watchlist candles unavailable: {exc}")
 

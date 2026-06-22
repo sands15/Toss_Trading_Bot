@@ -20,6 +20,7 @@ class PreTradeSafetyConfig:
     require_market_open: bool = True
     require_clean_reconcile: bool = True
     block_unresolved_orders: bool = True
+    max_consecutive_order_failures: int | None = None
 
     def __post_init__(self) -> None:
         if self.max_order_quantity is not None:
@@ -44,6 +45,8 @@ class PreTradeSafetyContext:
     current_position_qty: Decimal = Decimal("0")
     daily_order_count: int = 0
     daily_notional: Decimal = Decimal("0")
+    consecutive_order_failures: int = 0
+    unresolved_execution_count: int = 0
 
     def __post_init__(self) -> None:
         if self.available_cash is not None:
@@ -88,6 +91,19 @@ class PreTradeSafety:
             return self._block("RECONCILE_DIRTY", "reconciliation is not clean")
         if config.block_unresolved_orders and context.unresolved_order_exists:
             return self._block("UNRESOLVED_ORDER", "unresolved broker order exists")
+        if config.block_unresolved_orders and context.unresolved_execution_count > 0:
+            return self._block(
+                "UNRESOLVED_EXECUTION",
+                "unresolved live execution exists",
+            )
+        if (
+            config.max_consecutive_order_failures is not None
+            and context.consecutive_order_failures >= config.max_consecutive_order_failures
+        ):
+            return self._block(
+                "CONSECUTIVE_ORDER_FAILURES",
+                "consecutive live order failure limit reached",
+            )
         if intent.quantity <= Decimal("0"):
             return self._block("BAD_QUANTITY", "order quantity must be positive")
         if config.max_order_quantity is not None and intent.quantity > config.max_order_quantity:
@@ -114,4 +130,3 @@ class PreTradeSafety:
     @staticmethod
     def _block(code: str, message: str) -> PreTradeDecision:
         return PreTradeDecision(False, code, message)
-

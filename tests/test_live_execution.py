@@ -81,6 +81,61 @@ def test_live_orchestrator_blocks_when_live_disabled() -> None:
     assert events[0]["payload"]["code"] == "LIVE_DISABLED"
 
 
+def test_live_orchestrator_blocks_after_consecutive_order_failures() -> None:
+    broker = FakeBrokerAdapter()
+    with SQLiteStateStore() as store:
+        orchestrator = LiveOrderOrchestrator(
+            safety=PreTradeSafety(
+                PreTradeSafetyConfig(
+                    live_enabled=True,
+                    max_consecutive_order_failures=3,
+                )
+            ),
+            broker=broker,
+            store=store,
+        )
+
+        result = orchestrator.submit(
+            _intent(),
+            context=PreTradeSafetyContext(
+                market_open=True,
+                reconcile_clean=True,
+                available_cash=Decimal("1000"),
+                current_position_qty=Decimal("0"),
+                consecutive_order_failures=3,
+            ),
+        )
+
+    assert result.status == ExecutionStatus.REJECTED
+    assert result.safety_decision.code == "CONSECUTIVE_ORDER_FAILURES"
+    assert broker.placed == []
+
+
+def test_live_orchestrator_blocks_unresolved_live_execution() -> None:
+    broker = FakeBrokerAdapter()
+    with SQLiteStateStore() as store:
+        orchestrator = LiveOrderOrchestrator(
+            safety=PreTradeSafety(PreTradeSafetyConfig(live_enabled=True)),
+            broker=broker,
+            store=store,
+        )
+
+        result = orchestrator.submit(
+            _intent(),
+            context=PreTradeSafetyContext(
+                market_open=True,
+                reconcile_clean=True,
+                available_cash=Decimal("1000"),
+                current_position_qty=Decimal("0"),
+                unresolved_execution_count=1,
+            ),
+        )
+
+    assert result.status == ExecutionStatus.REJECTED
+    assert result.safety_decision.code == "UNRESOLVED_EXECUTION"
+    assert broker.placed == []
+
+
 def test_live_orchestrator_records_acknowledged_order() -> None:
     broker = FakeBrokerAdapter()
     with SQLiteStateStore() as store:
@@ -133,4 +188,3 @@ def test_live_orchestrator_blocks_duplicate_unresolved_idempotency_key() -> None
     assert second_order is not None
     assert second_order["status"] == "REJECTED"
     assert second_events[0]["payload"]["code"] == "DUPLICATE_IDEMPOTENCY_KEY"
-

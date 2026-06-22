@@ -39,6 +39,27 @@ TERMINAL_ERROR_CODES = frozenset(
 CLIENT_ORDER_ID_PATTERN = re.compile(r"[^a-zA-Z0-9\-_]")
 
 
+_IP_NOT_ALLOWED_TOKENS = (
+    "ip adress not allowed",
+    "ip address not allowed",
+    "address is not allowed",
+    "not allowed ip",
+    "not allowed address",
+)
+
+
+def _decorate_api_error_message(message: str) -> str:
+    normalized = message.lower()
+    if any(token in normalized for token in _IP_NOT_ALLOWED_TOKENS):
+        return (
+            "Toss API rejected request: outbound public IP is not in the Toss IP allowlist. "
+            "Please add the current public IP to your Toss Open API app allowlist, "
+            "then retry. "
+            f"Original: {message}"
+        )
+    return message
+
+
 @dataclass(frozen=True)
 class ModifyOrderRequest:
     order_type: OrderType
@@ -240,7 +261,7 @@ def _decimal_from_mapping(
 
 def _broker_error_from_toss(exc: TossApiError) -> LiveBrokerError:
     code = exc.code or ""
-    message = str(exc)
+    message = _decorate_api_error_message(str(exc))
     unknown_state = exc.status >= 500 or exc.status == 429 or not code
     if code in TERMINAL_ERROR_CODES or 400 <= exc.status < 500 and exc.status != 429:
         unknown_state = False

@@ -43,9 +43,11 @@ class FakeReadOnlyClient:
         *,
         holdings: Mapping[str, Any],
         orders: Mapping[str, Any],
+        closed_orders: Mapping[str, Any] | Exception | None = None,
     ) -> None:
         self.holdings = holdings
         self.orders = orders
+        self.closed_orders = closed_orders
         self.calls: list[str] = []
 
     def get_holdings(self, *, symbol: str | None = None) -> Mapping[str, Any]:
@@ -63,6 +65,10 @@ class FakeReadOnlyClient:
         limit: int = 20,
     ) -> Mapping[str, Any]:
         self.calls.append(f"get_orders:{status}")
+        if status == "CLOSED" and self.closed_orders is not None:
+            if isinstance(self.closed_orders, Exception):
+                raise self.closed_orders
+            return self.closed_orders
         return self.orders
 
 
@@ -207,3 +213,119 @@ def test_toss_position_sync_fetches_read_only_payloads_and_records_snapshots():
             "nextCursor": None,
             "hasNext": False,
         }
+        events = store.list_runtime_events(limit=1)
+        assert events[0]["message"] == "broker_account_synced"
+        assert events[0]["payload"] == {
+            "holdings_count": 1,
+            "open_orders_count": 0,
+            "synced_live_positions": False,
+            "closed_orders_count": 0,
+            "synced_closed_orders": False,
+        }
+
+
+def test_toss_position_sync_can_record_closed_order_history_snapshot():
+    client = FakeReadOnlyClient(
+        holdings={"items": []},
+        orders={"orders": [], "nextCursor": None, "hasNext": False},
+        closed_orders={
+            "orders": [
+                {
+                    "orderId": "closed-1",
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "status": "FILLED",
+                    "quantity": Decimal("1"),
+                }
+            ],
+            "nextCursor": None,
+            "hasNext": False,
+        },
+    )
+
+    with SQLiteStateStore() as store:
+        result = TossPositionSync(
+            client=client,
+            store=store,
+            sync_closed_orders=True,
+        ).reconcile()
+        closed_snapshot = store.latest_broker_snapshot("closed_orders")
+        events = store.list_runtime_events(limit=2)
+
+    assert result.clean is True
+    assert client.calls == ["get_holdings", "get_orders:OPEN", "get_orders:CLOSED"]
+    assert closed_snapshot == {
+        "orders": [
+            {
+                "orderId": "closed-1",
+                "symbol": "AAPL",
+                "side": "BUY",
+                "status": "FILLED",
+                "quantity": "1",
+            }
+        ],
+        "nextCursor": None,
+        "hasNext": False,
+    }
+    assert [event["message"] for event in events] == [
+        "broker_account_synced",
+        "broker_order_history_synced",
+    ]
+    assert events[0]["payload"]["closed_orders_count"] == 1
+
+
+def test_toss_position_sync_keeps_reconcile_running_when_closed_order_history_fails():
+    client = FakeReadOnlyClient(
+        holdings={"items": []},
+        orders={"orders": [], "nextCursor": None, "hasNext": False},
+        closed_orders=RuntimeError("order history unavailable"),
+    )
+
+    with SQLiteStateStore() as store:
+        result = TossPositionSync(
+            client=client,
+            store=store,
+            sync_closed_orders=True,
+        ).reconcile()
+        events = store.list_runtime_events(limit=2)
+
+    assert result.clean is True
+    assert [event["message"] for event in events] == [
+        "broker_account_synced",
+        "broker_order_history_sync_failed",
+    ]
+    assert events[1]["payload"]["error"] == "order history unavailable"
+
+
+def test_toss_position_sync_can_refresh_live_positions_from_broker_holdings():
+    client = FakeReadOnlyClient(
+        holdings={
+            "items": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": Decimal("2"),
+                    "averagePurchasePrice": Decimal("150"),
+                }
+            ]
+        },
+        orders={"orders": [], "nextCursor": None, "hasNext": False},
+    )
+
+    with SQLiteStateStore() as store:
+        store.save_position(_position("MSFT", "1"))
+        result = TossPositionSync(
+            client=client,
+            store=store,
+            sync_live_positions=True,
+        ).reconcile()
+        aapl = store.load_position("AAPL")
+        msft = store.load_position("MSFT")
+
+    assert result.clean is True
+    assert aapl is not None
+    assert aapl.status == PositionStatus.OPEN
+    assert aapl.total_qty == Decimal("2")
+    assert aapl.avg_entry_price == Decimal("150")
+    assert msft is not None
+    assert msft.status == PositionStatus.CLOSED
+    assert msft.total_qty == Decimal("0")

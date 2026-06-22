@@ -278,6 +278,36 @@ def test_paper_runtime_market_data_error_blocks_symbol():
     assert notifier.snapshot()[0].message == "paper_runtime_blocked"
 
 
+def test_paper_runtime_rate_limit_pause_stops_symbol_scan():
+    class RateLimitedMarketData(FakeMarketData):
+        def get_completed_candles(self, symbol: str) -> Sequence[Candle]:
+            self.calls.append(f"candles:{symbol}")
+            raise RuntimeError("market 요청 제한 대기 중입니다.")
+
+    notifier = MemoryNotifier()
+    market_data = RateLimitedMarketData(candles={}, prices={})
+    with SQLiteStateStore() as store:
+        runtime = PaperTradingRuntime(
+            config=PaperRuntimeConfig(symbols=("AAA", "BBB", "CCC")),
+            market_data=market_data,
+            position_sync=FakePositionSync(_clean_reconcile()),
+            store=store,
+            notifier=notifier,
+        )
+        result = runtime.run_once()
+        events = store.list_runtime_events(limit=10)
+
+    assert result.ready is False
+    assert result.blockers == (
+        "AAA market data unavailable: market 요청 제한 대기 중입니다.",
+    )
+    assert market_data.calls == ["candles:AAA"]
+    assert [event["message"] for event in events[:3]] == [
+        "market_data_rate_limit_paused",
+        "paper_market_data_blocked",
+    ]
+
+
 def test_paper_report_export_preserves_intent_and_guard_payloads(tmp_path):
     market_data = FakeMarketData(
         candles={"TEST": _history("TEST")},

@@ -424,6 +424,24 @@ class TossClient:
         account_required: bool = False,
         group: str = "default",
     ) -> Any:
+        if self.rate_limits.is_group_paused(group):
+            wait_seconds = int(self.rate_limits.seconds_until_resumed(group))
+            raise TossApiError(
+                429,
+                code="rate-limit-paused",
+                message=(
+                    f"{group} 요청 제한 대기 중입니다."
+                    + (f" 약 {wait_seconds}초 뒤 다시 시도하세요." if wait_seconds else "")
+                ),
+                payload={
+                    "error": {
+                        "code": "rate-limit-paused",
+                        "message": "request group is paused by local rate-limit guard",
+                        "group": group,
+                        "retryAfterSeconds": wait_seconds,
+                    }
+                },
+            )
         response = self._send(
             method,
             path,
@@ -440,6 +458,9 @@ class TossClient:
                 account_required=account_required,
                 group=group,
             )
+        if response.status == 429:
+            retry_after = _retry_after_seconds(response.headers) or 60.0
+            self.rate_limits.pause_group(group, seconds=retry_after)
         self._raise_for_error(response)
         return _normalize_decimal_payload(_unwrap_result(response.payload))
 
@@ -518,6 +539,19 @@ def _with_query(url: str, query: Mapping[str, Any] | None) -> str:
         if value is not None
     }
     return f"{url}?{parse.urlencode(filtered)}"
+
+
+def _retry_after_seconds(headers: Mapping[str, str] | None) -> float | None:
+    if not headers:
+        return None
+    normalized = {str(key).lower(): value for key, value in headers.items()}
+    raw = normalized.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return max(0.0, float(str(raw).strip()))
+    except ValueError:
+        return None
 
 
 def _query_value(value: Any) -> str:

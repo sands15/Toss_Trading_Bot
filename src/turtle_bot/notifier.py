@@ -6,7 +6,7 @@ from os import environ
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol
-from urllib import request
+from urllib import error, request
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,7 @@ class DiscordTradeNotifier:
         self.webhook_url = (webhook_url or self.env.get(webhook_url_env) or "").strip()
         self.timeout_seconds = timeout_seconds
         self.sender = sender if sender is not None else self._post_json
+        self.last_error: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -109,17 +110,22 @@ class DiscordTradeNotifier:
         *,
         level: str = "info",
         payload: Mapping[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
+        self.last_error = None
         if not self.enabled:
-            return
+            self.last_error = f"{self.webhook_url_env} is not configured"
+            return False
         content = self._content_for(message, level=level, payload=payload or {})
         if not content:
-            return
+            self.last_error = f"message is not a Discord trade alert: {message}"
+            return False
         body = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
         try:
             self.sender(self.webhook_url, body, self.timeout_seconds)
-        except Exception:
-            return
+        except Exception as exc:
+            self.last_error = self._safe_error_message(exc)
+            return False
+        return True
 
     @classmethod
     def _post_json(cls, url: str, body: bytes, timeout_seconds: float) -> None:
@@ -134,6 +140,18 @@ class DiscordTradeNotifier:
         )
         with request.urlopen(req, timeout=timeout_seconds) as response:
             response.read()
+
+    @staticmethod
+    def _safe_error_message(exc: Exception) -> str:
+        if isinstance(exc, error.HTTPError):
+            reason = getattr(exc, "reason", None) or exc.msg or "HTTP error"
+            return f"HTTP {exc.code}: {reason}"
+        if isinstance(exc, error.URLError):
+            return f"URL error: {exc.reason}"
+        text = str(exc).strip()
+        if not text:
+            text = exc.__class__.__name__
+        return text
 
     @classmethod
     def _content_for(
@@ -156,6 +174,16 @@ class DiscordTradeNotifier:
                 reason = payload.get("message") or status_label
                 return f"[거래 실패] {account_label} · {symbol} {side} {quantity}주 - {reason}"
             return f"[거래 알림] {account_label} · {symbol} {side} {quantity}주 - {status_label}"
+        if text == "live_order_cancel_after_ack":
+            status = str(payload.get("status") or "").upper()
+            account_label = cls._account_label(payload)
+            status_label = cls._status_label(status)
+            symbol = str(payload.get("symbol") or "종목 확인 필요").upper()
+            quantity = payload.get("quantity") or payload.get("qty") or "수량 확인 필요"
+            return f"[거래 알림] {account_label} · {symbol} {quantity}주 - {status_label}"
+        if text == "discord_alert_test":
+            account_label = cls._account_label(payload)
+            return f"[거래 알림 테스트] {account_label} · Discord 연결 확인"
         if text in {
             "live_order_final_guard_blocked",
             "live_buying_power_unavailable",

@@ -14,6 +14,7 @@ from turtle_bot.config import load_config
 from turtle_bot.domain import Candle
 from turtle_bot.operations import (
     LaunchdServiceConfig,
+    _sync_unresolved_live_execution_orders,
     _tailscale_profile_name,
     apply_safe_pilot_settings,
     build_dashboard_server,
@@ -27,7 +28,7 @@ from turtle_bot.operations import (
     update_momentum_settings,
 )
 from turtle_bot.state_store import SQLiteStateStore
-from turtle_bot.toss_client import TossHttpResponse
+from turtle_bot.toss_client import TossClient, TossCredentials, TossHttpResponse
 
 
 @dataclass
@@ -103,6 +104,7 @@ def _write_config(
     live_daily_order_count_limit: int | None = 1,
     live_daily_notional_limit: str | None = None,
     live_cancel_after_ack: bool = False,
+    live_max_consecutive_order_failures: int | None = 3,
     symbols: tuple[str, ...] = (),
     account_seq: str | None = None,
     universe_enabled: bool = False,
@@ -140,6 +142,7 @@ def _write_config(
                 "  block_unresolved_orders: true",
                 "  confirm_high_value_order: false",
                 f"  cancel_after_ack: {str(live_cancel_after_ack).lower()}",
+                f"  max_consecutive_order_failures: {live_max_consecutive_order_failures if live_max_consecutive_order_failures is not None else ''}",
                 "runtime:",
                 f"  mode: {runtime_mode}",
                 "  market: KR",
@@ -184,6 +187,16 @@ def _write_config(
 
 def _token_payload() -> dict[str, Any]:
     return {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
+
+
+def _toss_client(transport: FakeTransport, *, account_seq: int | str | None = 7) -> TossClient:
+    return TossClient(
+        credentials=TossCredentials("id", "secret"),
+        account_seq=account_seq,
+        base_url="https://example.test",
+        transport=transport,
+        now=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
 
 
 def _api_candle(day: int) -> dict[str, Any]:
@@ -680,6 +693,7 @@ def test_live_service_submits_order_through_toss_adapter_and_records_ledger(
             ),
             TossHttpResponse(200, {}, {"items": []}),
             TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None, "hasNext": False}),
             TossHttpResponse(
                 200,
                 {},
@@ -772,6 +786,7 @@ def test_live_service_blocks_second_order_by_daily_count_limit(
             TossHttpResponse(200, {}, {"candles": [_api_candle(day) for day in range(21)]}),
             TossHttpResponse(200, {}, {"items": []}),
             TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None, "hasNext": False}),
             TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
             TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
             TossHttpResponse(200, {}, {"result": {"orderId": "live-order-1"}}),
@@ -781,10 +796,23 @@ def test_live_service_blocks_second_order_by_daily_count_limit(
         [
             TossHttpResponse(200, {}, _token_payload()),
             TossHttpResponse(200, {}, {"isOpen": True}),
-            TossHttpResponse(200, {}, {"candles": [_api_candle(day) for day in range(21)]}),
             TossHttpResponse(200, {}, {"items": []}),
             TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None, "hasNext": False}),
             TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": {
+                        "orderId": "live-order-1",
+                        "symbol": "TEST",
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "quantity": "1",
+                    }
+                },
+            ),
             TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
         ]
     )
@@ -815,7 +843,93 @@ def test_live_service_blocks_second_order_by_daily_count_limit(
     assert latest_execution is not None
     assert latest_execution["status"] == "REJECTED"
     assert latest_execution["raw"]["code"] == "DAILY_ORDER_LIMIT"
-    assert len(second_transport.requests) == 7
+    assert len(second_transport.requests) == 8
+
+
+def test_live_service_blocks_new_order_when_previous_execution_is_unresolved(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        live_daily_order_count_limit=None,
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+    first_transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"candles": [_api_candle(day) for day in range(21)]}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None, "hasNext": False}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
+            TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
+            TossHttpResponse(200, {}, {"result": {"orderId": "live-order-1"}}),
+        ]
+    )
+    second_transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None, "hasNext": False}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": {
+                        "orderId": "live-order-1",
+                        "symbol": "TEST",
+                        "side": "BUY",
+                        "status": "ACKNOWLEDGED",
+                        "quantity": "1",
+                    }
+                },
+            ),
+            TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
+        ]
+    )
+
+    first = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=first_transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+    second = run_paper_service(
+        config_path=config_path,
+        state_db=state_db,
+        log_dir=log_dir,
+        once=True,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=second_transport,
+        now=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    store = SQLiteStateStore(state_db)
+    latest_execution = store.load_execution_order(second.open_orders[0]["intent_id"])
+    assert first.ready is True
+    assert second.ready is True
+    assert latest_execution is not None
+    assert latest_execution["status"] == "REJECTED"
+    assert latest_execution["raw"]["code"] == "UNRESOLVED_EXECUTION"
+    assert all(
+        not (request.method == "POST" and request.url.endswith("/api/v1/orders"))
+        for request in second_transport.requests
+    )
 
 
 def test_live_service_can_cancel_immediately_after_ack_for_pilot(
@@ -841,6 +955,7 @@ def test_live_service_can_cancel_immediately_after_ack_for_pilot(
             TossHttpResponse(200, {}, {"candles": [_api_candle(day) for day in range(21)]}),
             TossHttpResponse(200, {}, {"items": []}),
             TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None, "hasNext": False}),
             TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
             TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
             TossHttpResponse(200, {}, {"result": {"orderId": "live-order-1"}}),
@@ -896,6 +1011,223 @@ def test_dashboard_live_once_action_requires_confirmation(tmp_path: Path) -> Non
         raise AssertionError("live once action accepted a wrong confirmation")
 
 
+def test_sync_unresolved_live_execution_orders_queries_broker_and_updates_ledger(
+    tmp_path: Path,
+) -> None:
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": {
+                        "orderId": "broker-1",
+                        "symbol": "TEST",
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "quantity": "1",
+                        "execution": {
+                            "filledQuantity": "1",
+                            "averageFilledPrice": "105",
+                        },
+                    }
+                },
+            ),
+        ]
+    )
+    client = _toss_client(transport)
+
+    with SQLiteStateStore(state_db) as store:
+        store.record_execution_order(
+            intent_id="intent-1",
+            idempotency_key="intent-1",
+            symbol="TEST",
+            side="BUY",
+            status="ACKNOWLEDGED",
+            broker_order_id="broker-1",
+            raw={"request": {"quantity": "1"}},
+        )
+
+        summary = _sync_unresolved_live_execution_orders(client=client, store=store)
+        order = store.load_execution_order("intent-1")
+        events = store.list_execution_events(intent_id="intent-1", limit=1)
+        runtime_events = store.list_runtime_events(limit=1)
+
+    assert summary == {
+        "checked": 1,
+        "updated": 1,
+        "failed": 0,
+        "skipped": 0,
+        "remaining_unresolved": 0,
+    }
+    assert order is not None
+    assert order["status"] == "FILLED"
+    assert order["raw"]["order_state"]["filled_quantity"] == "1"
+    assert events[0]["event_type"] == "broker_status_sync"
+    assert runtime_events[0]["message"] == "live_order_status_synced"
+    assert transport.requests[-1].method == "GET"
+    assert transport.requests[-1].url == "https://example.test/api/v1/orders/broker-1"
+
+
+def test_dashboard_reports_discord_webhook_configuration(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    _write_config(config_path, account_seq="7")
+
+    server = build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        env={
+            "TOSS_CLIENT_ID": "id",
+            "TOSS_CLIENT_SECRET": "secret",
+            "DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook",
+        },
+    )
+
+    payload = server.payload_for_path("/dashboard")
+
+    assert payload["settings"]["notifications"]["discord_webhook_configured"] is True
+
+
+def test_dashboard_discord_alert_action_reports_missing_webhook(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    _write_config(config_path, account_seq="7")
+
+    server = build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+    )
+
+    result = server.action_for_path("/dashboard/actions/test-discord-alert", {})
+
+    assert result == {"status": "not_configured", "webhook_configured": False}
+
+
+def test_dashboard_live_smoke_test_submits_and_cancels_acknowledged_order(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        live_max_order_notional="300",
+        live_daily_notional_limit="300",
+        live_cancel_after_ack=True,
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None, "hasNext": False}),
+            TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
+            TossHttpResponse(200, {}, {"result": {"orderId": "live-order-1"}}),
+            TossHttpResponse(200, {}, {"result": {"orderId": "cancel-order-1"}}),
+        ]
+    )
+    server = build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+    )
+
+    result = server.action_for_path(
+        "/dashboard/actions/live-smoke-test",
+        {"confirmation": "실주문 테스트"},
+    )
+
+    store = SQLiteStateStore(state_db)
+    messages = [event["message"] for event in store.list_runtime_events(limit=10)]
+    execution_order = store.load_execution_order(result["execution"]["intent_id"])
+    assert result["status"] == "completed"
+    assert result["symbol"] == "TEST"
+    assert result["limit_price"] == "94.50"
+    assert result["execution"]["status"] == "ACKNOWLEDGED"
+    assert result["cancel"]["status"] == "PENDING_CANCEL"
+    assert execution_order is not None
+    assert execution_order["status"] == "PENDING_CANCEL"
+    assert transport.requests[-2].method == "POST"
+    assert transport.requests[-2].url == "https://example.test/api/v1/orders"
+    assert transport.requests[-2].json_body["symbol"] == "TEST"
+    assert transport.requests[-2].json_body["quantity"] == "1"
+    assert transport.requests[-2].json_body["price"] == "94.50"
+    assert transport.requests[-1].url == "https://example.test/api/v1/orders/live-order-1/cancel"
+    assert "live_smoke_test_started" in messages
+    assert "live_order_execution" in messages
+    assert "live_order_cancel_after_ack" in messages
+
+
+def test_dashboard_live_smoke_test_blocks_after_consecutive_order_failures(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    _write_config(
+        config_path,
+        live_enabled=True,
+        live_emergency_stop=False,
+        live_allowed_symbols=("TEST",),
+        live_daily_order_count_limit=None,
+        live_daily_notional_limit="300",
+        live_cancel_after_ack=True,
+        symbols=("TEST",),
+        account_seq="7",
+        runtime_mode="live",
+    )
+    with SQLiteStateStore(state_db) as store:
+        for index in range(3):
+            store.record_runtime_event(
+                "WARN",
+                "live_order_execution",
+                {
+                    "intent_id": f"failed-{index}",
+                    "status": "FAILED",
+                    "symbol": "TEST",
+                    "safety": {"passed": True, "code": "PASSED"},
+                },
+            )
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"isOpen": True}),
+            TossHttpResponse(200, {}, {"prices": [{"symbol": "TEST", "lastPrice": "105"}]}),
+            TossHttpResponse(200, {}, {"items": []}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None}),
+            TossHttpResponse(200, {}, {"orders": [], "nextCursor": None, "hasNext": False}),
+            TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
+        ]
+    )
+    server = build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+    )
+
+    result = server.action_for_path(
+        "/dashboard/actions/live-smoke-test",
+        {"confirmation": "실주문 테스트"},
+    )
+
+    assert result["status"] == "blocked"
+    assert result["execution"]["status"] == "REJECTED"
+    assert result["execution"]["safety"]["code"] == "CONSECUTIVE_ORDER_FAILURES"
+    assert all("/orders" not in request.url or request.method == "GET" for request in transport.requests)
+
+
 def test_apply_safe_pilot_settings_enables_small_live_loop_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config" / "local.yaml"
     _write_config(
@@ -924,6 +1256,7 @@ def test_apply_safe_pilot_settings_enables_small_live_loop_config(tmp_path: Path
     assert config.live.require_clean_reconcile is True
     assert config.live.block_unresolved_orders is True
     assert config.live.cancel_after_ack is True
+    assert config.live.max_consecutive_order_failures == 3
 
 
 def test_stop_live_trading_settings_persists_emergency_stop(tmp_path: Path) -> None:

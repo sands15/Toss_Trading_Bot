@@ -83,3 +83,13 @@ def test_paused_group_requests_wait_until_resume() -> None:
     ready_request = queue.dequeue_ready()
     assert ready_request is not None
     assert ready_request.request_id == "low"
+
+
+def test_pause_group_sets_manual_cooldown() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    queue = RateLimitQueue(now=lambda: now)
+
+    snapshot = queue.pause_group("market", seconds=90, now=now)
+
+    assert snapshot.paused_until == now + timedelta(seconds=90)
+    assert queue.is_group_paused("market", now=now) is True

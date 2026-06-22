@@ -207,6 +207,31 @@ class RateLimitQueue:
         remaining = max(0, remaining - amount)
         self._groups[group] = replace(state, remaining=remaining)
 
+    def pause_group(
+        self,
+        group: str,
+        *,
+        seconds: float,
+        now: datetime | None = None,
+    ) -> RateLimitHeaderSnapshot:
+        now = now or self._now()
+        state = self._ensure_group(group)
+        candidate = now + timedelta(seconds=max(0.0, seconds))
+        paused_until = (
+            candidate
+            if state.paused_until is None
+            else max(state.paused_until, candidate)
+        )
+        state = replace(state, paused_until=paused_until)
+        self._groups[group] = state
+        return RateLimitHeaderSnapshot(
+            group=group,
+            limit=state.rate_limit,
+            remaining=state.remaining,
+            reset_at=state.reset_at,
+            paused_until=state.paused_until,
+        )
+
     def enqueue(
         self,
         group: str,

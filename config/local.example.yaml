@@ -3,6 +3,8 @@ toss:
   account_seq: ''
   client_id_env: TOSS_CLIENT_ID
   client_secret_env: TOSS_CLIENT_SECRET
+  require_live_consent: false
+  allowed_live_consent_ids: []
 live:
   emergency_stop: true
   allowed_symbols: []
@@ -15,6 +17,7 @@ live:
   block_unresolved_orders: true
   confirm_high_value_order: false
   cancel_after_ack: false
+  max_consecutive_order_failures: 3
 ai:
   enabled: false
   provider: openai_compatible
