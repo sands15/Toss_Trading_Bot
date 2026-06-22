@@ -205,6 +205,33 @@ def test_keychain_secret_store_uses_security_without_public_secret_echo(monkeypa
     assert any(call[0][1] == "delete-generic-password" for call in calls)
 
 
+def test_keychain_secret_store_reports_headless_keychain_access(monkeypatch) -> None:
+    gateway = _load_gateway_module()
+
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "/usr/bin/security" if name == "security" else None)
+
+    def fake_run(args, **_kwargs):
+        raise gateway.subprocess.CalledProcessError(
+            36,
+            args,
+            stderr="security: SecKeychainSearchCopyNext: User interaction is not allowed.\n",
+        )
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    store = gateway.KeychainSecretStore("test-service")
+
+    try:
+        store.get_user_credentials("alice")
+    except gateway.SecretStoreUnavailable as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("headless Keychain access unexpectedly passed")
+
+    assert "macOS Keychain is not available" in message
+    assert "not from SSH/nohup" in message
+    assert "SECRET_BACKEND=file" in message
+
+
 def test_secret_store_imports_existing_env_and_rewrites_placeholder(tmp_path: Path) -> None:
     gateway = _load_gateway_module()
 

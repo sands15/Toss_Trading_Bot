@@ -5,10 +5,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date as date_cls, datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import ipaddress
 from pathlib import Path
 from threading import Thread
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import parse_qs, urlparse
+from urllib.request import urlopen
 
 
 PayloadProvider = Callable[[], Mapping[str, Any]]
@@ -16,10 +18,43 @@ EventsProvider = Callable[[int | None], list[Mapping[str, Any]]]
 ActionRunner = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
 BrokerSnapshotsProvider = Callable[[], Mapping[str, Any]]
 TOSS_LOGO_ASSET = Path(__file__).with_name("assets") / "toss-symbol.png"
+PUBLIC_IP_SERVICES = (
+    "https://api.ipify.org?format=json",
+    "https://ifconfig.me/ip",
+)
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def public_ip_payload(*, timeout_seconds: float = 4.0) -> dict[str, Any]:
+    errors: list[str] = []
+    for url in PUBLIC_IP_SERVICES:
+        try:
+            with urlopen(url, timeout=timeout_seconds) as response:
+                raw = response.read(512).decode("utf-8", errors="replace").strip()
+            data: Any = json.loads(raw) if raw.startswith("{") else raw
+            candidate = data.get("ip") if isinstance(data, Mapping) else data
+            ip_text = str(candidate or "").strip()
+            ipaddress.ip_address(ip_text)
+            return {
+                "status": "ok",
+                "public_ip": ip_text,
+                "source": url,
+                "checked_at": _now_utc().isoformat(),
+                "message": "Toss OpenAPI allowlist must include this outbound public IP.",
+            }
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+    return {
+        "status": "unavailable",
+        "public_ip": "",
+        "source": "",
+        "checked_at": _now_utc().isoformat(),
+        "message": "Unable to detect outbound public IP from this runtime.",
+        "errors": errors,
+    }
 
 
 @dataclass
@@ -2795,6 +2830,11 @@ def dashboard_html() -> str:
               <input id="live-smoke-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="위 문구를 그대로 입력" aria-describedby="live-smoke-confirmation-token" />
               <button type="button" class="btn danger" id="live-smoke-test-button">실주문 연결 테스트</button>
               <p id="live-smoke-test-result" class="panel-copy"></p>
+              <strong>Toss 허용 IP 확인</strong>
+              <p class="panel-copy">맥북 컨테이너에서 실제 Toss로 나가는 공개 IP입니다. Toss 개발자센터 앱의 허용 IP에 이 값을 추가해야 실주문 요청이 통과합니다.</p>
+              <button type="button" class="btn" id="live-public-ip-check-button">현재 공개 IP 확인</button>
+              <button type="button" class="btn" id="live-public-ip-copy-button" disabled>IP 복사</button>
+              <p id="live-public-ip-result" class="panel-copy"></p>
                 <ul>
                   <li>안전 파일럿은 선택된 종목 1주, 하루 1건, 소액 한도로만 움직입니다</li>
                   <li>거래 중지를 누르면 새 주문을 막고 자동 실행을 멈춥니다</li>
@@ -2926,6 +2966,15 @@ def dashboard_html() -> str:
                   <button id="toss-settings-save-button" type="button" class="btn primary" disabled>토스 설정 저장</button>
                   <p id="toss-settings-save-status" class="settings-status" role="status" aria-live="polite"></p>
                 </div>
+              </section>
+              <section class="settings-form">
+                <h3>Toss 허용 IP</h3>
+                <p class="settings-helper">맥북 운영 환경은 윈도우 테스트와 달리 컨테이너에서 주문을 보냅니다. 아래 IP가 Toss 개발자센터 앱의 허용 IP에 들어 있어야 합니다.</p>
+                <div class="settings-actions">
+                  <button type="button" class="btn" id="settings-public-ip-check-button">현재 공개 IP 확인</button>
+                  <button type="button" class="btn" id="settings-public-ip-copy-button" disabled>IP 복사</button>
+                </div>
+                <p id="settings-public-ip-result" class="settings-status" role="status" aria-live="polite"></p>
               </section>
             </article>
             <article class="card data-panel">
@@ -3514,6 +3563,16 @@ def dashboard_html() -> str:
         ) {
           return "수동 승인 코드가 등록된 목록과 맞지 않습니다. 자동매매용이면 수동 승인 확인을 끄세요.";
         }
+        if (
+          normalized.includes("ip adress not allowed") ||
+          normalized.includes("ip address not allowed") ||
+          normalized.includes("outbound public ip is not in the toss ip allowlist") ||
+          normalized.includes("address is not allowed") ||
+          normalized.includes("not allowed ip") ||
+          normalized.includes("not allowed address")
+        ) {
+          return `Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다. '현재 공개 IP 확인' 버튼으로 나온 IP를 Toss 개발자센터 앱 허용 IP에 추가한 뒤 다시 실행하세요. 원문: ${raw}`;
+        }
         if (normalized.includes("confirmation must be")) {
           return pathName === "/dashboard/actions/live-smoke-test"
             ? "실주문 연결 테스트 확인 문구를 정확히 입력해야 합니다. 문구: 실주문 테스트"
@@ -3629,6 +3688,56 @@ def dashboard_html() -> str:
         notifyBrowser("실주문 테스트 실패", error.message);
       } finally {
         if (button) button.disabled = false;
+      }
+    }
+
+    let latestTossPublicIp = "";
+
+    function setPublicIpCopyButtons(enabled) {
+      ["live-public-ip-copy-button", "settings-public-ip-copy-button"].forEach((id) => {
+        const button = document.getElementById(id);
+        if (button) button.disabled = !enabled;
+      });
+    }
+
+    function updatePublicIpResults(message) {
+      ["live-public-ip-result", "settings-public-ip-result"].forEach((id) => {
+        const target = document.getElementById(id);
+        if (target) target.textContent = message;
+      });
+    }
+
+    async function checkTossPublicIp(buttonId = "settings-public-ip-check-button") {
+      const button = document.getElementById(buttonId);
+      if (button) button.disabled = true;
+      setPublicIpCopyButtons(false);
+      updatePublicIpResults("현재 공개 IP 확인 중...");
+      try {
+        const payload = await getJson("/dashboard/network/public-ip");
+        latestTossPublicIp = payload.public_ip || "";
+        if (!latestTossPublicIp) {
+          throw new Error(payload.message || "공개 IP를 확인하지 못했습니다.");
+        }
+        setPublicIpCopyButtons(true);
+        updatePublicIpResults(`현재 공개 IP: ${latestTossPublicIp} · Toss 개발자센터 앱 허용 IP에 추가하세요.`);
+      } catch (error) {
+        latestTossPublicIp = "";
+        updatePublicIpResults(`IP 확인 실패: ${error.message}`);
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function copyTossPublicIp() {
+      if (!latestTossPublicIp) {
+        updatePublicIpResults("먼저 현재 공개 IP 확인을 눌러 주세요.");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(latestTossPublicIp);
+        updatePublicIpResults(`복사됨: ${latestTossPublicIp}`);
+      } catch (error) {
+        updatePublicIpResults(`복사 실패: ${latestTossPublicIp} 값을 직접 선택해서 복사해 주세요.`);
       }
     }
 
@@ -4696,6 +4805,14 @@ def dashboard_html() -> str:
       if (settingsLiveStopButton) {
         settingsLiveStopButton.addEventListener("click", () => stopTrading("settings-live-stop-button", "settings-live-stop-result").catch(console.error));
       }
+      ["live-public-ip-check-button", "settings-public-ip-check-button"].forEach((id) => {
+        const ipButton = document.getElementById(id);
+        if (ipButton) ipButton.addEventListener("click", () => checkTossPublicIp(id).catch(console.error));
+      });
+      ["live-public-ip-copy-button", "settings-public-ip-copy-button"].forEach((id) => {
+        const copyButton = document.getElementById(id);
+        if (copyButton) copyButton.addEventListener("click", () => copyTossPublicIp().catch(console.error));
+      });
       const notificationEnableButton = document.getElementById("notification-enable-button");
       if (notificationEnableButton) {
         notificationEnableButton.addEventListener("click", () => enableBrowserNotifications().catch(console.error));
@@ -6157,6 +6274,8 @@ class HealthServer:
             return self._events_summary(query)
         if normalized == "/dashboard":
             return self._dashboard_payload()
+        if normalized == "/dashboard/network/public-ip":
+            return public_ip_payload()
         raise ValueError(f"unsupported read-only path: {path}")
 
     def action_for_path(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -6229,6 +6348,7 @@ class HealthServer:
                     "/events",
                     "/events/summary",
                     "/dashboard",
+                    "/dashboard/network/public-ip",
                 }:
                     payload = server_ref.payload_for_path(path, query)
                     body = json.dumps(payload).encode("utf-8")

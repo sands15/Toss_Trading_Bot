@@ -77,6 +77,10 @@ echo "Installing/updating local package..."
 "$python_bin" -m pip install -U pip >/dev/null
 "$python_bin" -m pip install -e "." >/dev/null
 
+image_name="${TOSS_DASHBOARD_IMAGE:-toss-trading-bot:local}"
+echo "Rebuilding dashboard container image ${image_name}..."
+docker build -t "$image_name" .
+
 mkdir -p "$repo_root/.local/users"
 
 standby_log="$repo_root/.local/users/gateway-update-standby.log"
@@ -115,6 +119,14 @@ if kill -0 "$standby_pid" >/dev/null 2>&1; then
   kill "$standby_pid" >/dev/null 2>&1 || true
 fi
 standby_pid=""
+
+echo "Replacing existing user dashboard containers so they use the rebuilt image..."
+docker ps -a --filter 'name=^/toss-dashboard-' --format '{{.Names}}' | while read -r container_name; do
+  if [ -n "$container_name" ]; then
+    docker rm -f "$container_name" >/dev/null
+    echo "  replaced ${container_name}"
+  fi
+done
 
 cat <<EOF
 

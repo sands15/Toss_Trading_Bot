@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from turtle_bot.health import HealthServer, HealthSnapshot, TOSS_LOGO_ASSET, dashboard_html
+import turtle_bot.health as health_module
+from turtle_bot.health import HealthServer, HealthSnapshot, TOSS_LOGO_ASSET, dashboard_html, public_ip_payload
 from turtle_bot.notifier import DiscordTradeNotifier, MemoryNotifier
 
 
@@ -356,8 +357,14 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "/dashboard/actions/live-smoke-test" in html
     assert "/dashboard/actions/apply-safe-pilot" in html
     assert "/dashboard/actions/stop-trading" in html
+    assert "/dashboard/network/public-ip" in html
     assert 'id="live-once-confirmation-token"' in html
     assert 'id="live-smoke-test-button"' in html
+    assert 'id="live-public-ip-check-button"' in html
+    assert 'id="settings-public-ip-check-button"' in html
+    assert "현재 공개 IP 확인" in html
+    assert "Toss 개발자센터 앱 허용 IP" in html
+    assert "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다" in html
     assert "LIVE PILOT 실행" in html
     assert "실주문 테스트" in html
     assert 'placeholder="위 문구를 그대로 입력"' in html
@@ -449,3 +456,37 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "grid-template-columns: minmax(68px, 84px) minmax(0, 1fr) minmax(72px, 94px)" in html
     assert ".event-line > *" in html
     assert "overflow-wrap: anywhere;" in html
+
+
+def test_public_ip_payload_reads_json_service(monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return b'{"ip":"203.0.113.7"}'
+
+    monkeypatch.setattr(health_module, "urlopen", lambda url, timeout: Response())
+
+    payload = public_ip_payload()
+
+    assert payload["status"] == "ok"
+    assert payload["public_ip"] == "203.0.113.7"
+    assert "allowlist" in payload["message"]
+
+
+def test_health_server_exposes_public_ip_endpoint(monkeypatch) -> None:
+    monkeypatch.setattr(
+        health_module,
+        "public_ip_payload",
+        lambda: {"status": "ok", "public_ip": "203.0.113.8"},
+    )
+    server = HealthServer(lambda: HealthSnapshot())
+
+    assert server.payload_for_path("/dashboard/network/public-ip") == {
+        "status": "ok",
+        "public_ip": "203.0.113.8",
+    }

@@ -469,6 +469,23 @@ class FileSecretStore(SecretStore):
             pass
 
 
+class SecretStoreUnavailable(RuntimeError):
+    pass
+
+
+def keychain_unavailable_message(exc: subprocess.CalledProcessError) -> str:
+    stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+    detail = stderr.strip() or f"security exited with status {exc.returncode}"
+    guidance = (
+        "macOS Keychain is not available to this gateway process. "
+        "Start the gateway from the logged-in Mac desktop with ops/run-multi-user-gateway.command, "
+        "not from SSH/nohup. For local development only, set SECRET_BACKEND=file."
+    )
+    if exc.returncode == 36 or "User interaction is not allowed" in detail:
+        return guidance
+    return f"{guidance} Keychain error: {detail}"
+
+
 class KeychainSecretStore(SecretStore):
     backend_name = "keychain"
 
@@ -482,38 +499,44 @@ class KeychainSecretStore(SecretStore):
 
     def put(self, user_slug: str, name: str, value: str) -> None:
         cleaned = clean_env_value(value)
-        subprocess.run(
-            [
-                "security",
-                "add-generic-password",
-                "-a",
-                self.account_name(user_slug, name),
-                "-s",
-                self.service,
-                "-w",
-                cleaned,
-                "-U",
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            subprocess.run(
+                [
+                    "security",
+                    "add-generic-password",
+                    "-a",
+                    self.account_name(user_slug, name),
+                    "-s",
+                    self.service,
+                    "-w",
+                    cleaned,
+                    "-U",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise SecretStoreUnavailable(keychain_unavailable_message(exc)) from exc
 
     def get(self, user_slug: str, name: str) -> str:
-        result = subprocess.run(
-            [
-                "security",
-                "find-generic-password",
-                "-a",
-                self.account_name(user_slug, name),
-                "-s",
-                self.service,
-                "-w",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "security",
+                    "find-generic-password",
+                    "-a",
+                    self.account_name(user_slug, name),
+                    "-s",
+                    self.service,
+                    "-w",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise SecretStoreUnavailable(keychain_unavailable_message(exc)) from exc
         return result.stdout.rstrip("\r\n")
 
     def delete(self, user_slug: str, name: str) -> None:

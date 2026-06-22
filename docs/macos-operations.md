@@ -220,6 +220,22 @@ stores Toss API values in Keychain and leaves `.env` as a non-secret placeholder
 On Windows or when `SECRET_BACKEND=file` is selected, `.env` is plaintext local
 development storage. Secret storage details are in `docs/secret-storage-plan.md`.
 
+The macOS Keychain backend must run from the logged-in desktop session. Do not
+restart the gateway with SSH `nohup` when `SECRET_BACKEND=auto` or `keychain` is
+selected; `security find-generic-password -w` can fail with `User interaction is
+not allowed`, and user containers will not receive Toss credentials. Use:
+
+```bash
+open ops/run-multi-user-gateway.command
+```
+
+For Windows tests or disposable local development only, use `SECRET_BACKEND=file`.
+
+The updater rebuilds the `toss-trading-bot:local` dashboard image and replaces
+existing `toss-dashboard-*` containers. This is intentional: the gateway can be
+on the latest Git commit while a user's Docker container still serves older
+dashboard HTML until the container is recreated.
+
 User containers are bound to `127.0.0.1:<internal-port>` on the Mac. Only the
 gateway is exposed on the Tailscale address.
 

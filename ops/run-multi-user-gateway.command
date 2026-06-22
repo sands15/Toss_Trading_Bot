@@ -27,6 +27,14 @@ secret_backend="${SECRET_BACKEND:-auto}"
 keychain_service="${KEYCHAIN_SERVICE:-toss-trading-bot}"
 enable_tailscale_serve="${TAILSCALE_SERVE:-1}"
 
+if [ "$(uname -s)" = "Darwin" ] && { [ "$secret_backend" = "auto" ] || [ "$secret_backend" = "keychain" ]; } && [ -n "${SSH_CONNECTION:-}" ]; then
+  echo "SECRET_BACKEND=$secret_backend uses macOS Keychain, which is not reliable from SSH/headless sessions." >&2
+  echo "Start this gateway from the logged-in Mac desktop with:" >&2
+  echo "  open ops/run-multi-user-gateway.command" >&2
+  echo "For local development only, use SECRET_BACKEND=file." >&2
+  exit 1
+fi
+
 if [ "$gateway_host" != "127.0.0.1" ] && [ "$gateway_host" != "localhost" ]; then
   echo "For Tailscale identity headers, bind the gateway to 127.0.0.1 and expose it with tailscale serve." >&2
   echo "Set GATEWAY_HOST=127.0.0.1 or leave it unset." >&2
