@@ -269,6 +269,30 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     assert "raw_links" not in dashboard
 
 
+def test_events_payload_rewrites_toss_ip_allowlist_error() -> None:
+    snapshot = HealthSnapshot(mode="live", ready=False)
+    events = [
+        {
+            "id": 1,
+            "level": "ERROR",
+            "message": "live_trading_loop_failed",
+            "payload": {"source": "dashboard", "error": "IP address not allowed"},
+            "created_at": datetime(2026, 6, 22, 18, 14, tzinfo=timezone.utc),
+        }
+    ]
+    server = HealthServer(snapshot, events_provider=lambda limit: events[:limit] if limit else events)
+
+    events_payload = server.payload_for_path("/events")
+    error = events_payload["items"][0]["payload"]["error"]
+    assert "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다" in error
+    assert "Toss 개발자센터 앱 허용 IP" in error
+    assert "IP address not allowed" not in error
+
+    dashboard = server.payload_for_path("/dashboard")
+    dashboard_error = dashboard["runtime_events"]["items"][0]["payload"]["error"]
+    assert dashboard_error == error
+
+
 def test_dashboard_live_readiness_can_report_submit_ready_state() -> None:
     snapshot = HealthSnapshot(
         mode="live",

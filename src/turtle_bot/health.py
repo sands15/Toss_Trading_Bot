@@ -170,6 +170,27 @@ def _extract_event_blockers(payload: Any) -> tuple[str, ...]:
     return tuple(str(item) for item in raw)
 
 
+def _friendly_runtime_error_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    normalized = raw.lower()
+    if any(
+        marker in normalized
+        for marker in (
+            "ip adress not allowed",
+            "ip address not allowed",
+            "outbound public ip is not in the toss ip allowlist",
+            "address is not allowed",
+            "not allowed ip",
+            "not allowed address",
+        )
+    ):
+        return (
+            "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다. "
+            "현재 공개 IP 확인 버튼으로 나온 IP를 Toss 개발자센터 앱 허용 IP에 추가한 뒤 다시 실행하세요."
+        )
+    return raw
+
+
 def _coerce_events_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for item in items:
@@ -184,6 +205,8 @@ def _coerce_events_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any
             blockers = payload.get("blockers")
             if isinstance(blockers, Iterable) and not isinstance(blockers, (str, bytes)):
                 payload["blockers"] = [_friendly_blocker_label(blocker) for blocker in blockers]
+            if "error" in payload:
+                payload["error"] = _friendly_runtime_error_label(payload.get("error"))
 
         output.append(
             {
