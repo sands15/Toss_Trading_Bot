@@ -18,6 +18,8 @@ PRICE_KEYS = (
     "tradePrice",
     "closePrice",
 )
+MIN_CANDLE_COUNT = 1
+MAX_CANDLE_COUNT = 200
 
 
 class ReadOnlyMarketDataClient(Protocol):
@@ -103,7 +105,7 @@ class TossReadOnlyMarketDataProvider:
             page = self.client.get_candles(
                 symbol,
                 interval=self.config.candle_interval,
-                count=self.config.candle_count,
+                count=_toss_candle_count(self.config.candle_count),
                 adjusted=self.config.adjusted,
             )
         except TossApiError as exc:
@@ -206,6 +208,10 @@ def extract_price(payload: Any, symbol: str) -> Decimal:
         elif candidate is not None:
             return as_decimal(candidate)
     raise ValueError(f"price not found for {symbol}")
+
+
+def _toss_candle_count(count: int) -> int:
+    return min(max(int(count), MIN_CANDLE_COUNT), MAX_CANDLE_COUNT)
 
 
 def _price_candidates(payload: Any, symbol: str) -> tuple[Any, ...]:

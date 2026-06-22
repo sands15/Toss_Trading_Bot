@@ -34,6 +34,7 @@ class FakeReadOnlyMarketClient:
     def __post_init__(self) -> None:
         self.candle_calls = 0
         self.price_calls = 0
+        self.last_candle_count: int | None = None
 
     def get_candles(
         self,
@@ -45,6 +46,7 @@ class FakeReadOnlyMarketClient:
         adjusted: bool = True,
     ) -> CandlePage:
         self.candle_calls += 1
+        self.last_candle_count = count
         return CandlePage(
             candles=self.candles_payload,
             next_before=None,
@@ -145,6 +147,23 @@ def test_toss_market_data_provider_uses_persistent_candle_cache() -> None:
 
     assert candles == tuple(_c(day) for day in range(3))
     assert client.candle_calls == 0
+
+
+def test_toss_market_data_provider_clamps_candle_count_to_toss_limit() -> None:
+    now = datetime(2026, 1, 25, tzinfo=timezone.utc)
+    client = FakeReadOnlyMarketClient(
+        candles_payload=tuple(_c(day) for day in range(5)),
+        prices_payload={},
+    )
+    provider = TossReadOnlyMarketDataProvider(
+        client=client,
+        config=TossMarketDataConfig(candle_count=320),
+        now=lambda: now,
+    )
+
+    provider.get_completed_candles("TEST")
+
+    assert client.last_candle_count == 200
 
 
 def test_toss_market_data_provider_falls_back_to_stale_cache_on_rate_limit() -> None:
