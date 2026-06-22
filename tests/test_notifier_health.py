@@ -345,6 +345,10 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'getJson("/positions")' in html
     assert 'getJson("/orders/open")' in html
     assert 'getJson("/watchlist")' in html
+    assert "/dashboard/actions/build-watchlist" in html
+    assert 'id="build-watchlist-button"' in html
+    assert "관심종목 생성" in html
+    assert "판단 근거" in html
     assert 'getJson("/events/summary?limit=50")' in html
     assert "never submits" in html
     assert "EVENT_LABELS" in html

@@ -1573,6 +1573,40 @@ def test_paper_service_builds_watchlist_but_blocks_during_preopen(
     ]
 
 
+def test_dashboard_build_watchlist_action_generates_explanations(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    _write_config(config_path, symbols=("TEST",), account_seq="7")
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                200,
+                {},
+                {"candles": [_api_candle(day) for day in range(56)]},
+            ),
+        ]
+    )
+    server = build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+        transport=transport,
+    )
+
+    result = server.action_for_path("/dashboard/actions/build-watchlist", {})
+
+    assert result["status"] == "generated"
+    assert result["count"] == 1
+    assert result["watchlist"][0]["symbol"] == "TEST"
+    assert "돌파선" in result["watchlist"][0]["reason"]
+    with SQLiteStateStore(state_db) as store:
+        loaded = store.load_latest_watchlist(name="premarket")
+    assert loaded is not None
+    assert loaded.rows[0].reason == result["watchlist"][0]["reason"]
+
+
 def test_paper_service_blocks_when_market_calendar_is_closed(
     tmp_path: Path,
 ) -> None:

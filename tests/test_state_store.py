@@ -22,6 +22,7 @@ def _watchlist(now_iso: str) -> Watchlist:
                 distance_to_20=Decimal("9.5"),
                 distance_to_55=Decimal("10.5"),
                 nearest_distance=Decimal("9.5"),
+                reason="20일 돌파선 근접",
                 is_new=True,
             ),
             WatchlistRow(
@@ -32,6 +33,7 @@ def _watchlist(now_iso: str) -> Watchlist:
                 distance_to_20=Decimal("6.75"),
                 distance_to_55=Decimal("5.75"),
                 nearest_distance=Decimal("5.75"),
+                reason="55일 돌파선 근접",
                 is_new=False,
             ),
         ),

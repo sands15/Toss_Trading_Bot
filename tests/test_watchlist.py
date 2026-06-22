@@ -52,6 +52,8 @@ def test_builder_excludes_current_candle_for_levels_by_default() -> None:
     assert row.entry_high_55 == Decimal("100")
     assert row.current_price == Decimal("95")
     assert row.nearest_distance == Decimal("5")
+    assert "20일 돌파선" in row.reason
+    assert "현재가 95" in row.reason
 
 
 def test_watchlist_marks_new_symbols() -> None:
@@ -64,8 +66,10 @@ def test_watchlist_marks_new_symbols() -> None:
     rows = WatchlistBuilder(top_n=10).build(symbols, previous_watchlist=("AAA",)).rows
 
     by_symbol = {row.symbol: row.is_new for row in rows}
+    by_reason = {row.symbol: row.reason for row in rows}
     assert by_symbol["AAA"] is False
     assert by_symbol["BBB"] is True
+    assert by_reason["BBB"].startswith("새 후보.")
 
 
 def test_watchlist_ranks_by_distance_to_breakouts() -> None:

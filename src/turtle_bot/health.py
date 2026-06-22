@@ -2768,6 +2768,10 @@ def dashboard_html() -> str:
                 </div>
                 <span id="watchlist-count-badge" class="status-pill">0개</span>
               </div>
+              <div class="settings-actions">
+                <button type="button" class="btn primary" id="build-watchlist-button">관심종목 생성</button>
+                <p id="build-watchlist-result" class="panel-copy" role="status" aria-live="polite"></p>
+              </div>
               <div id="watchlist-table" class="data-table"></div>
             </article>
           </div>
@@ -3191,13 +3195,14 @@ def dashboard_html() -> str:
       stop_price: "손절가",
       entry_price: "진입가",
       nearest_distance: "진입선 거리",
+      current_price: "현재가",
       created_at: "생성 시각",
       updated_at: "갱신 시각",
-      reason: "사유"
+      reason: "판단 근거"
     };
 
     const TABLE_COLUMNS = {
-      watchlist: ["symbol", "name", "nearest_distance", "status", "updated_at"],
+      watchlist: ["symbol", "current_price", "nearest_distance", "reason"],
       positions: ["symbol", "status", "quantity", "average_price", "stop_price", "updated_at"],
       orders: ["symbol", "side", "quantity", "price", "status", "created_at"]
     };
@@ -3667,6 +3672,22 @@ def dashboard_html() -> str:
         await refresh();
       } catch (error) {
         if (result) result.textContent = `시작 실패: ${error.message}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function buildWatchlist() {
+      const button = document.getElementById("build-watchlist-button");
+      const result = document.getElementById("build-watchlist-result");
+      if (button) button.disabled = true;
+      if (result) result.textContent = "관심종목을 계산하는 중입니다...";
+      try {
+        const payload = await postJson("/dashboard/actions/build-watchlist", {});
+        if (result) result.textContent = `관심종목 ${payload.count || 0}개를 새로 만들었습니다.`;
+        await refresh();
+      } catch (error) {
+        if (result) result.textContent = `생성 실패: ${error.message}`;
       } finally {
         if (button) button.disabled = false;
       }
@@ -4712,6 +4733,9 @@ def dashboard_html() -> str:
       renderPositionSummary(positionRows);
       renderLiveReadiness(dashboard.live_readiness || {});
       renderLiveMonitor(dashboard.live_monitor || {});
+      renderTable("watchlist-table", watchRows, TABLE_COLUMNS.watchlist, "관심 종목이 없습니다", "필요할 때 관심종목 생성을 눌러 최신 후보를 계산하세요.", "#watchlist");
+      renderTable("positions-table", positionRows, TABLE_COLUMNS.positions, "보유 포지션이 없습니다", "포지션이 생기면 이곳에 표시됩니다.", "#positions");
+      renderTable("orders-table", orderRows, TABLE_COLUMNS.orders, "미체결 주문이 없습니다", "실주문 또는 페이퍼 주문 후보가 생기면 이곳에 표시됩니다.", "#orders");
       renderTable("dashboard-open-orders-table", orderRows, null, "미체결 주문이 없습니다", "페이퍼 모드에서 주문 후보가 생기면 여기에 표시됩니다.", "#events");
       renderTimeline("dashboard-events-timeline", eventRows);
       renderBotSummary(status, summary, watchRows, orderRows);
@@ -4769,6 +4793,10 @@ def dashboard_html() -> str:
       const settingsLiveStopButton = document.getElementById("settings-live-stop-button");
       if (settingsLiveStopButton) {
         settingsLiveStopButton.addEventListener("click", () => stopTrading("settings-live-stop-button", "settings-live-stop-result").catch(console.error));
+      }
+      const buildWatchlistButton = document.getElementById("build-watchlist-button");
+      if (buildWatchlistButton) {
+        buildWatchlistButton.addEventListener("click", () => buildWatchlist().catch(console.error));
       }
       const notificationEnableButton = document.getElementById("notification-enable-button");
       if (notificationEnableButton) {
@@ -6242,6 +6270,7 @@ class HealthServer:
             "/dashboard/actions/live-smoke-test",
             "/dashboard/actions/apply-safe-pilot",
             "/dashboard/actions/stop-trading",
+            "/dashboard/actions/build-watchlist",
             "/dashboard/actions/test-discord-alert",
         }:
             raise ValueError(f"unsupported action path: {path}")

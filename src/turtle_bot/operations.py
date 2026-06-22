@@ -454,6 +454,48 @@ def build_dashboard_server(
                 if not sent and discord_notifier.last_error:
                     result["error"] = discord_notifier.last_error
                 return result
+            if path == "/dashboard/actions/build-watchlist":
+                if not action_lock.acquire(blocking=False):
+                    raise RuntimeError("watchlist generation is already running")
+                try:
+                    config = load_config(config_path)
+                    client = _toss_client_from_config(config, env=env_values, transport=transport)
+                    with SQLiteStateStore(state_db) as store:
+                        market_data = TossReadOnlyMarketDataProvider(
+                            client=client,
+                            config=TossMarketDataConfig(
+                                candle_interval=config.runtime.candle_interval,
+                                candle_count=config.runtime.candle_count,
+                                local_timezone=config.runtime.timezone_name,
+                                exclude_current_session=config.runtime.exclude_current_session,
+                            ),
+                            store=store,
+                            now=lambda: datetime.now(timezone.utc),
+                        )
+                        universe = _build_universe(
+                            config,
+                            client=client,
+                            market_data=market_data,
+                            store=store,
+                            now=lambda: datetime.now(timezone.utc),
+                        )
+                        symbols = universe.symbols() if universe is not None else config.runtime.symbols
+                        watchlist = _build_and_save_watchlist(
+                            config,
+                            market_data=market_data,
+                            client=client,
+                            store=store,
+                            now=lambda: datetime.now(timezone.utc),
+                            symbols=symbols,
+                        )
+                        rows = [] if watchlist is None else [_watchlist_row_payload(row) for row in watchlist.rows]
+                    return {
+                        "status": "generated",
+                        "count": len(rows),
+                        "watchlist": rows,
+                    }
+                finally:
+                    action_lock.release()
             if path == "/dashboard/actions/live-smoke-test":
                 confirmation = str(payload.get("confirmation") or "").strip()
                 if confirmation != "실주문 테스트":
@@ -1578,6 +1620,28 @@ def _paper_service_config_blockers(config, env: Mapping[str, str]) -> tuple[str,
     return tuple(blockers)
 
 
+def _toss_client_from_config(
+    config,
+    *,
+    env: Mapping[str, str],
+    transport: TossTransport | None = None,
+    rate_limits: RateLimitQueue | None = None,
+    now=lambda: datetime.now(timezone.utc),
+) -> TossClient:
+    credentials = TossCredentials(
+        client_id=env[config.toss.client_id_env],
+        client_secret=env[config.toss.client_secret_env],
+    )
+    return TossClient(
+        credentials=credentials,
+        account_seq=config.toss.account_seq,
+        base_url=config.toss.base_url or TOSS_BASE_URL,
+        transport=transport,
+        rate_limits=rate_limits or RateLimitQueue(now=now),
+        now=now,
+    )
+
+
 def _runtime_mode(config) -> str:
     mode = str(config.runtime.mode or "").strip().lower()
     return mode or "paper"
@@ -2367,6 +2431,7 @@ def _watchlist_row_payload(row: WatchlistRow) -> dict[str, Any]:
         "distance_to_20": str(row.distance_to_20) if row.distance_to_20 is not None else None,
         "distance_to_55": str(row.distance_to_55) if row.distance_to_55 is not None else None,
         "nearest_distance": str(row.nearest_distance),
+        "reason": row.reason,
         "is_new": row.is_new,
     }
 

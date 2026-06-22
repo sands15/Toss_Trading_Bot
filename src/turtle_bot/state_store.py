@@ -105,12 +105,14 @@ class SQLiteStateStore:
                   distance_to_20 TEXT,
                   distance_to_55 TEXT,
                   nearest_distance TEXT NOT NULL,
+                  reason TEXT NOT NULL DEFAULT '',
                   is_new INTEGER NOT NULL,
                   FOREIGN KEY (watchlist_id) REFERENCES watchlists(id) ON DELETE CASCADE,
                   UNIQUE (watchlist_id, symbol)
                 )
                 """
             )
+            self._ensure_column("watchlist_items", "reason", "TEXT NOT NULL DEFAULT ''")
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS positions (
@@ -335,9 +337,10 @@ class SQLiteStateStore:
                         distance_to_20,
                         distance_to_55,
                         nearest_distance,
+                        reason,
                         is_new
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         watchlist_id,
@@ -349,6 +352,7 @@ class SQLiteStateStore:
                         self._to_str(row.distance_to_20),
                         self._to_str(row.distance_to_55),
                         self._to_str(row.nearest_distance),
+                        row.reason,
                         self._bool_to_db(row.is_new),
                     ),
                 )
@@ -379,6 +383,7 @@ class SQLiteStateStore:
                 distance_to_20,
                 distance_to_55,
                 nearest_distance,
+                reason,
                 is_new
             FROM watchlist_items
             WHERE watchlist_id = ?
@@ -396,6 +401,7 @@ class SQLiteStateStore:
                 distance_to_20=self._from_str(item["distance_to_20"]),
                 distance_to_55=self._from_str(item["distance_to_55"]),
                 nearest_distance=self._from_str(item["nearest_distance"]),
+                reason=str(item["reason"] or ""),
                 is_new=self._bool_from_db(item["is_new"]),
             )
             for item in item_rows

@@ -18,6 +18,7 @@ class WatchlistRow:
     distance_to_20: Decimal | None
     distance_to_55: Decimal | None
     nearest_distance: Decimal
+    reason: str = ""
     is_new: bool = False
 
 
@@ -84,6 +85,15 @@ class WatchlistBuilder:
                 continue
 
             nearest = min(distances)
+            reason = _watchlist_reason(
+                current_price=current_price,
+                entry_high_20=entry_high_20,
+                entry_high_55=entry_high_55,
+                distance_to_20=distance_to_20,
+                distance_to_55=distance_to_55,
+                nearest_distance=nearest,
+                is_new=symbol not in previous,
+            )
             rows.append(
                 WatchlistRow(
                     symbol=symbol,
@@ -93,6 +103,7 @@ class WatchlistBuilder:
                     distance_to_20=distance_to_20,
                     distance_to_55=distance_to_55,
                     nearest_distance=nearest,
+                    reason=reason,
                     is_new=symbol not in previous,
                 )
             )
@@ -102,3 +113,29 @@ class WatchlistBuilder:
             generated_at=generated_at or datetime.now(timezone.utc),
             rows=tuple(rows[: self.top_n]),
         )
+
+
+def _watchlist_reason(
+    *,
+    current_price: Decimal,
+    entry_high_20: Decimal | None,
+    entry_high_55: Decimal | None,
+    distance_to_20: Decimal | None,
+    distance_to_55: Decimal | None,
+    nearest_distance: Decimal,
+    is_new: bool,
+) -> str:
+    candidates: list[tuple[str, Decimal, Decimal]] = []
+    if entry_high_20 is not None and distance_to_20 is not None:
+        candidates.append(("20일 돌파선", entry_high_20, distance_to_20))
+    if entry_high_55 is not None and distance_to_55 is not None:
+        candidates.append(("55일 돌파선", entry_high_55, distance_to_55))
+    if not candidates:
+        return "돌파선 계산값 부족"
+
+    label, level, distance = min(candidates, key=lambda item: item[2])
+    prefix = "새 후보. " if is_new else ""
+    return (
+        f"{prefix}현재가 {current_price}가 {label} {level}에 가장 가깝습니다. "
+        f"거리 {distance}, 최근접 거리 {nearest_distance} 기준으로 정렬됐습니다."
+    )
