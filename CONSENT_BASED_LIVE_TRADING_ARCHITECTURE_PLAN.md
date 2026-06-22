@@ -1,5 +1,11 @@
 # Toss Trading Bot (코드네임: 이블린) ─ 동의 기반 실거래 아키텍처 구성안
 
+> 2026-06-23 정정: 공개된 토스증권 Open API 문서와 사용자 사례 기준으로
+> 개인 사용자의 실거래에 사업자/IP 등록이 보편적으로 필수라는 근거는 확인되지
+> 않았다. live 실행의 정상 선결조건은 앱 ID/비밀키, OAuth 토큰, 계좌 헤더,
+> 봇 자체 안전 가드이며, Toss 개발자센터 IP 등록을 요구하는 로컬 preflight는
+> 두지 않는다.
+
 ## 1) 목적/전제
 - 전제
   - 대상 사용자는 **본인 계정/타인 계정 API 키를 사용해 실거래**를 할 수 있다.
@@ -35,7 +41,8 @@
 
 3. Guard/Policy Layer (정책 + 허용 조건)
    - 기존 `live_safety` 규칙 + 동의 기반 규칙을 OR가 아닌 AND로 결합.
-   - 동의 미승인/만료/IP 미등록/키 mismatch/위험 점수 초과는 즉시 live abort.
+   - 동의 미승인/만료/키 mismatch/위험 점수 초과는 즉시 live abort.
+   - Toss가 실제로 네트워크 경로를 거절한 경우에도 live 선결조건이 아니라 장애 진단으로만 다룬다.
 
 4. Audit & Forensics Layer (감사/사후조사 레이어)
    - 주문 시도/승인/실패/완료 모두 append-only 로그.
@@ -82,10 +89,9 @@
 - `account_alias`
 - `toss_client_id_secret_ref`
 - `account_seq`
-- `ip_allowlist_id` 또는 허용 IP 목록
 - `status` (active/suspended/revoked)
 - `last_health_check_at`
-- `health` (api_key_valid, ip_allowed, permission_ok)
+- `health` (api_key_valid, permission_ok)
 
 ## 5) 동의/실행 플로우 설계
 
@@ -104,7 +110,7 @@
    - `operator_user_id in allowed_operators`
    - `runtime.mode == live`
    - `account_binding.status == active`
-   - `ip_allowlist ok` (현재 송신 IP vs 계정 허용 IP)
+   - Toss가 네트워크 경로를 거절한 이력이 있으면 VPN/프록시/클라우드 경로를 장애로 조사
 4. 통과 시 Execution Context 생성 후 `operations`로 넘김
 5. 주문 전/후 이벤트를 `LiveExecutionLog`에 append
 6. 실패 시 즉시 감사 로그 + 메시지(원인코드 포함)
@@ -137,16 +143,16 @@
   - `_submit_live_intents`에서 실행 전 policy guard 체인 강화
   - 실패 사유를 `block_reason`으로 남김
 - `src/turtle_bot/toss_live_adapter.py`
-  - 실행 실패 시 `error_code`, `error_message`, `ip_allowlist_recommendation` 포함 구조화
+  - 실행 실패 시 `error_code`, `error_message`, `network_path_diagnostic` 포함 구조화
 - `src/turtle_bot/live_safety.py`
   - 기존 금액/수량/시점 규칙과 동의 규칙 AND 결합
 - `src/turtle_bot/config.py`
   - `ConsentConfig`, `AccountBindingConfig`, `require_consent_for_live` 옵션 추가
 - `src/turtle_bot/health.py`
-  - 라이브 시작 가능 조건에 `ip_allowlist synced`, `consent_active`, `account_binding healthy` 항목 표시
+  - 라이브 시작 가능 조건에 `consent_active`, `account_binding healthy` 항목 표시
 - `tests/`
   - 동의 미존재/만료/해지 케이스
-  - 미일치 IP 차단 케이스
+  - Toss 네트워크 거절 응답 진단/표시 케이스
   - 감사 로그 append 불변성 테스트
 
 ### 6-3) 운영 파일
@@ -162,8 +168,9 @@
 - 동의 만료
   - 기본 만료 1~7일 권장.
   - 기간 도래 24시간 전 알림(옵션), 만료 후 자동 live_block.
-- IP 허용
-  - 실행 계정별 허용 IP 태그(공개 IP) 정합성 점검을 precheck로 강제.
+- 네트워크 진단
+  - Toss 개발자센터 IP 등록을 정상 실거래 준비 단계로 요구하지 않는다.
+  - Toss가 실제로 IP/주소 거절 응답을 반환했을 때만 VPN, 프록시, 클라우드 경로 여부를 장애로 조사한다.
 - 롤백/중지
   - 동의 해지/키 회수 시 실시간 자동 정지.
   - 계정 단위와 consent 단위를 동시에 검사.
@@ -190,7 +197,7 @@
 1. 실행 전 consent_required 플래그 추가
 2. consent_id 없으면 live 시작 금지
 3. 로그에 consent/operator/account_seq 필수 기록
-4. IP allowlist 실패 사유를 블로킹 정책으로 명시
+4. Toss 네트워크 거절 응답은 원문 코드/메시지를 기록하되 정상 준비 조건으로 승격하지 않음
 
 ### Phase 1 (기능 완성, 3~5일)
 1. ConsentStorage + ConsentValidator 추가
@@ -206,7 +213,8 @@
 ## 10) 리스크 및 한계
 - API 키/동의는 **계정 소유자-운영자 간 신뢰 관계**가 핵심.
 - 기술적으로는 실거래 통제가 가능해도, 법적 책임 분리는 결국 운영 프로세스와 기록 증빙이 같이 가야 함.
-- 라이브 계정마다 IP 정책 차이가 클 수 있어 네트워크 egress 고정화가 필수.
+- 특정 네트워크, VPN, 프록시, 클라우드 egress에서 Toss가 edge 차단을 할 수 있으므로,
+  실패 시 컨테이너 내부 공개 IP와 요청 경로를 확인해야 한다.
 
 ## 11) 이번 단계 기준 결론
 - 지금 구조는 “기술적 실거래 실행”은 준비돼 있으나,

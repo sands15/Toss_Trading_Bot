@@ -269,7 +269,7 @@ def test_dashboard_and_events_payloads_are_read_only_aggregates() -> None:
     assert "raw_links" not in dashboard
 
 
-def test_events_payload_rewrites_toss_ip_allowlist_error() -> None:
+def test_events_payload_rewrites_toss_network_rejection_error() -> None:
     snapshot = HealthSnapshot(mode="live", ready=False)
     events = [
         {
@@ -284,8 +284,8 @@ def test_events_payload_rewrites_toss_ip_allowlist_error() -> None:
 
     events_payload = server.payload_for_path("/events")
     error = events_payload["items"][0]["payload"]["error"]
-    assert "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다" in error
-    assert "Toss 개발자센터 앱 허용 IP" in error
+    assert "Toss가 현재 맥북/컨테이너 네트워크 경로를 거절했습니다" in error
+    assert "앱 ID, 비밀키, 계좌 헤더" in error
     assert "IP address not allowed" not in error
 
     dashboard = server.payload_for_path("/dashboard")
@@ -381,14 +381,14 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "/dashboard/actions/live-smoke-test" in html
     assert "/dashboard/actions/apply-safe-pilot" in html
     assert "/dashboard/actions/stop-trading" in html
-    assert "/dashboard/network/public-ip" in html
+    assert "/dashboard/network/public-ip" not in html
     assert 'id="live-once-confirmation-token"' in html
     assert 'id="live-smoke-test-button"' in html
-    assert 'id="live-public-ip-check-button"' in html
-    assert 'id="settings-public-ip-check-button"' in html
-    assert "현재 공개 IP 확인" in html
-    assert "Toss 개발자센터 앱 허용 IP" in html
-    assert "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다" in html
+    assert 'id="live-public-ip-check-button"' not in html
+    assert 'id="settings-public-ip-check-button"' not in html
+    assert "현재 공개 IP 확인" not in html
+    assert "Toss 네트워크 진단" not in html
+    assert "Toss가 현재 맥북/컨테이너 네트워크 경로를 거절했습니다" in html
     assert "원문:" not in html
     assert "LIVE PILOT 실행" in html
     assert "실주문 테스트" in html
@@ -500,7 +500,7 @@ def test_public_ip_payload_reads_json_service(monkeypatch) -> None:
 
     assert payload["status"] == "ok"
     assert payload["public_ip"] == "203.0.113.7"
-    assert "allowlist" in payload["message"]
+    assert "network diagnostics" in payload["message"]
 
 
 def test_health_server_exposes_public_ip_endpoint(monkeypatch) -> None:

@@ -147,6 +147,13 @@ and Docker logs capped at 10 MB x 3 files. Override these for a larger Mac:
 CONTAINER_MEMORY=1g CONTAINER_CPUS=2.0 CONTAINER_LOG_MAX_SIZE=20m open ops/run-multi-user-gateway.command
 ```
 
+The official Toss Open API live path is configured with the app ID, app secret,
+OAuth token, and `X-Tossinvest-Account` account header. Do not add a local
+preflight that requires Toss developer-center IP registration for personal
+accounts. If Toss returns a concrete network rejection for a specific Mac,
+investigate VPN, proxy, or cloud routing as an incident, not as a normal setup
+step.
+
 The gateway stores its routing registry at:
 
 ```text
@@ -160,8 +167,9 @@ It writes audit events for setup attempts and container lifecycle commands to:
 ```
 
 The routing key is the Tailscale user login from `Tailscale-User-Login`, not the
-device IP. The registry keeps `last_client_ip` for auditing and optional setup
-allowlists.
+device IP. The registry keeps `last_client_ip` for auditing and optional gateway
+setup allowlists. This is only a local onboarding control for first-time
+dashboard registration, not a Toss Open API requirement.
 
 Registry admin helpers:
 

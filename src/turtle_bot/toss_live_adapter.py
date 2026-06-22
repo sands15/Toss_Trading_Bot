@@ -52,9 +52,9 @@ def _decorate_api_error_message(message: str) -> str:
     normalized = message.lower()
     if any(token in normalized for token in _IP_NOT_ALLOWED_TOKENS):
         return (
-            "Toss API rejected request: outbound public IP is not in the Toss IP allowlist. "
-            "Please add the current public IP to your Toss Open API app allowlist, "
-            "then retry. "
+            "Toss API rejected this request from the current outbound network path. "
+            "Check the container's public egress IP, VPN/proxy/cloud routing, and the "
+            "official Toss Open API response before assuming an IP allowlist is required. "
             f"Original: {message}"
         )
     return message

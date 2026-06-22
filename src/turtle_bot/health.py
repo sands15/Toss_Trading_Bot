@@ -43,7 +43,10 @@ def public_ip_payload(*, timeout_seconds: float = 4.0) -> dict[str, Any]:
                 "public_ip": ip_text,
                 "source": url,
                 "checked_at": _now_utc().isoformat(),
-                "message": "Toss OpenAPI allowlist must include this outbound public IP.",
+                "message": (
+                    "Detected this runtime's outbound public IP. Use it for network diagnostics "
+                    "or if Toss explicitly rejects the current network path."
+                ),
             }
         except Exception as exc:
             errors.append(f"{url}: {exc}")
@@ -179,14 +182,16 @@ def _friendly_runtime_error_label(value: Any) -> str:
             "ip adress not allowed",
             "ip address not allowed",
             "outbound public ip is not in the toss ip allowlist",
+            "rejected this request from the current outbound network path",
             "address is not allowed",
             "not allowed ip",
             "not allowed address",
         )
     ):
         return (
-            "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다. "
-            "현재 공개 IP 확인 버튼으로 나온 IP를 Toss 개발자센터 앱 허용 IP에 추가한 뒤 다시 실행하세요."
+            "Toss가 현재 맥북/컨테이너 네트워크 경로를 거절했습니다. "
+            "공식 Open API 실거래는 앱 ID, 비밀키, 계좌 헤더 기준으로 구성하고, "
+            "이 오류가 반복될 때만 VPN/프록시/클라우드 경로를 확인하세요."
         )
     return raw
 
@@ -2853,11 +2858,6 @@ def dashboard_html() -> str:
               <input id="live-smoke-confirmation" class="settings-input" type="text" autocomplete="off" placeholder="위 문구를 그대로 입력" aria-describedby="live-smoke-confirmation-token" />
               <button type="button" class="btn danger" id="live-smoke-test-button">실주문 연결 테스트</button>
               <p id="live-smoke-test-result" class="panel-copy"></p>
-              <strong>Toss 허용 IP 확인</strong>
-              <p class="panel-copy">맥북 컨테이너에서 실제 Toss로 나가는 공개 IP입니다. Toss 개발자센터 앱의 허용 IP에 이 값을 추가해야 실주문 요청이 통과합니다.</p>
-              <button type="button" class="btn" id="live-public-ip-check-button">현재 공개 IP 확인</button>
-              <button type="button" class="btn" id="live-public-ip-copy-button" disabled>IP 복사</button>
-              <p id="live-public-ip-result" class="panel-copy"></p>
                 <ul>
                   <li>안전 파일럿은 선택된 종목 1주, 하루 1건, 소액 한도로만 움직입니다</li>
                   <li>거래 중지를 누르면 새 주문을 막고 자동 실행을 멈춥니다</li>
@@ -2989,15 +2989,6 @@ def dashboard_html() -> str:
                   <button id="toss-settings-save-button" type="button" class="btn primary" disabled>토스 설정 저장</button>
                   <p id="toss-settings-save-status" class="settings-status" role="status" aria-live="polite"></p>
                 </div>
-              </section>
-              <section class="settings-form">
-                <h3>Toss 허용 IP</h3>
-                <p class="settings-helper">맥북 운영 환경은 윈도우 테스트와 달리 컨테이너에서 주문을 보냅니다. 아래 IP가 Toss 개발자센터 앱의 허용 IP에 들어 있어야 합니다.</p>
-                <div class="settings-actions">
-                  <button type="button" class="btn" id="settings-public-ip-check-button">현재 공개 IP 확인</button>
-                  <button type="button" class="btn" id="settings-public-ip-copy-button" disabled>IP 복사</button>
-                </div>
-                <p id="settings-public-ip-result" class="settings-status" role="status" aria-live="polite"></p>
               </section>
             </article>
             <article class="card data-panel">
@@ -3590,11 +3581,12 @@ def dashboard_html() -> str:
           normalized.includes("ip adress not allowed") ||
           normalized.includes("ip address not allowed") ||
           normalized.includes("outbound public ip is not in the toss ip allowlist") ||
+          normalized.includes("rejected this request from the current outbound network path") ||
           normalized.includes("address is not allowed") ||
           normalized.includes("not allowed ip") ||
           normalized.includes("not allowed address")
         ) {
-          return "Toss가 현재 맥북/컨테이너 공개 IP를 거절했습니다. '현재 공개 IP 확인' 버튼으로 나온 IP를 Toss 개발자센터 앱 허용 IP에 추가한 뒤 다시 실행하세요.";
+          return "Toss가 현재 맥북/컨테이너 네트워크 경로를 거절했습니다. 공식 Open API 설정은 앱 ID, 비밀키, 계좌 헤더 기준으로 유지하고, 이 오류가 반복될 때만 VPN/프록시/클라우드 경로를 확인하세요.";
         }
         if (normalized.includes("confirmation must be")) {
           return pathName === "/dashboard/actions/live-smoke-test"
@@ -3711,56 +3703,6 @@ def dashboard_html() -> str:
         notifyBrowser("실주문 테스트 실패", error.message);
       } finally {
         if (button) button.disabled = false;
-      }
-    }
-
-    let latestTossPublicIp = "";
-
-    function setPublicIpCopyButtons(enabled) {
-      ["live-public-ip-copy-button", "settings-public-ip-copy-button"].forEach((id) => {
-        const button = document.getElementById(id);
-        if (button) button.disabled = !enabled;
-      });
-    }
-
-    function updatePublicIpResults(message) {
-      ["live-public-ip-result", "settings-public-ip-result"].forEach((id) => {
-        const target = document.getElementById(id);
-        if (target) target.textContent = message;
-      });
-    }
-
-    async function checkTossPublicIp(buttonId = "settings-public-ip-check-button") {
-      const button = document.getElementById(buttonId);
-      if (button) button.disabled = true;
-      setPublicIpCopyButtons(false);
-      updatePublicIpResults("현재 공개 IP 확인 중...");
-      try {
-        const payload = await getJson("/dashboard/network/public-ip");
-        latestTossPublicIp = payload.public_ip || "";
-        if (!latestTossPublicIp) {
-          throw new Error(payload.message || "공개 IP를 확인하지 못했습니다.");
-        }
-        setPublicIpCopyButtons(true);
-        updatePublicIpResults(`현재 공개 IP: ${latestTossPublicIp} · Toss 개발자센터 앱 허용 IP에 추가하세요.`);
-      } catch (error) {
-        latestTossPublicIp = "";
-        updatePublicIpResults(`IP 확인 실패: ${error.message}`);
-      } finally {
-        if (button) button.disabled = false;
-      }
-    }
-
-    async function copyTossPublicIp() {
-      if (!latestTossPublicIp) {
-        updatePublicIpResults("먼저 현재 공개 IP 확인을 눌러 주세요.");
-        return;
-      }
-      try {
-        await navigator.clipboard.writeText(latestTossPublicIp);
-        updatePublicIpResults(`복사됨: ${latestTossPublicIp}`);
-      } catch (error) {
-        updatePublicIpResults(`복사 실패: ${latestTossPublicIp} 값을 직접 선택해서 복사해 주세요.`);
       }
     }
 
@@ -4828,14 +4770,6 @@ def dashboard_html() -> str:
       if (settingsLiveStopButton) {
         settingsLiveStopButton.addEventListener("click", () => stopTrading("settings-live-stop-button", "settings-live-stop-result").catch(console.error));
       }
-      ["live-public-ip-check-button", "settings-public-ip-check-button"].forEach((id) => {
-        const ipButton = document.getElementById(id);
-        if (ipButton) ipButton.addEventListener("click", () => checkTossPublicIp(id).catch(console.error));
-      });
-      ["live-public-ip-copy-button", "settings-public-ip-copy-button"].forEach((id) => {
-        const copyButton = document.getElementById(id);
-        if (copyButton) copyButton.addEventListener("click", () => copyTossPublicIp().catch(console.error));
-      });
       const notificationEnableButton = document.getElementById("notification-enable-button");
       if (notificationEnableButton) {
         notificationEnableButton.addEventListener("click", () => enableBrowserNotifications().catch(console.error));

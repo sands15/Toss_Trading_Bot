@@ -193,7 +193,7 @@ def test_toss_live_adapter_marks_server_error_as_unknown_state() -> None:
     assert exc.value.unknown_state is True
 
 
-def test_toss_live_adapter_transforms_ip_not_allowed_error() -> None:
+def test_toss_live_adapter_transforms_network_rejection_error() -> None:
     transport = FakeTransport(
         [
             TossHttpResponse(200, {}, _token_payload()),
@@ -220,7 +220,7 @@ def test_toss_live_adapter_transforms_ip_not_allowed_error() -> None:
         adapter.place_order(intent)
 
     assert exc.value.unknown_state is False
-    assert "IP allowlist" in str(exc.value)
+    assert "current outbound network path" in str(exc.value)
     assert "ip adress not allowed" in str(exc.value)
 
 

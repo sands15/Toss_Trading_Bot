@@ -38,7 +38,7 @@ runtime:
   # paper: forward-test with virtual fills.
   # shadow: real read-only account/market validation with virtual fills and no live orders.
   # live: real Toss order submission after safety gates pass.
-  #       Requires toss.live_enabled: true and a tiny allowlisted pilot setup.
+  #       Requires toss.live_enabled: true and a tiny operator-approved pilot setup.
   mode: paper
   market: KR
   timezone: Asia/Seoul
