@@ -167,6 +167,85 @@ def test_setup_post_for_existing_identity_redirects_without_csrf_error(tmp_path:
     assert response.getheader("Location") == "/"
 
 
+def test_setup_invalid_csrf_does_not_consume_rate_limit(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+        setup_rate_limit=1,
+        setup_rate_window_seconds=60,
+    )
+    manager = gateway.UserGateway(config)
+    server = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.make_handler(manager))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Tailscale-User-Login": "alice@example.com",
+            "Tailscale-User-Name": "Alice",
+        }
+        stale_body = "csrf_token=stale&client_id=x&client_secret=y&account_seq=1&confirmation=x"
+        for _ in range(2):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request(
+                "POST",
+                "/__setup",
+                body=stale_body,
+                headers={**headers, "Content-Length": str(len(stale_body))},
+            )
+            response = connection.getresponse()
+            response.read()
+            connection.close()
+            assert response.status == 400
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            "/__setup",
+            headers={
+                "Tailscale-User-Login": "alice@example.com",
+                "Tailscale-User-Name": "Alice",
+            },
+        )
+        get_response = connection.getresponse()
+        get_body = get_response.read().decode("utf-8")
+        cookie = get_response.getheader("Set-Cookie")
+        marker = 'name="csrf_token" value="'
+        csrf_token = get_body.split(marker, 1)[1].split('"', 1)[0]
+        connection.close()
+
+        valid_body = (
+            f"csrf_token={csrf_token}&client_id=x&client_secret=y&account_seq=1&confirmation=wrong"
+        )
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/__setup",
+            body=valid_body,
+            headers={
+                **headers,
+                "Content-Length": str(len(valid_body)),
+                "Cookie": cookie or "",
+            },
+        )
+        response = connection.getresponse()
+        response_body = response.read().decode("utf-8")
+        connection.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert get_response.status == 200
+    assert response.status == 400
+    assert "본인 확인 칸" in response_body
+    assert "설정 요청이 너무 많습니다" not in response_body
+
+
 def test_audit_event_allows_request_path_field(tmp_path: Path) -> None:
     gateway = _load_gateway_module()
     audit_log = tmp_path / "audit.log"

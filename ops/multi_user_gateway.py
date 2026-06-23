@@ -1350,16 +1350,6 @@ def make_handler(gateway: UserGateway):
                 )
                 self.send_setup_page(403, "이 기기는 등록 허용 목록에 없습니다. 관리자에게 Tailscale IP 등록을 요청하세요.")
                 return
-            allowed, retry_after = gateway.consume_setup_attempt(self.client_ip())
-            if not allowed:
-                gateway.audit(
-                    "setup_rate_limited",
-                    client_ip=self.client_ip(),
-                    tailscale_identity=identity["identity"],
-                    retry_after=retry_after,
-                )
-                self.send_setup_page(429, f"설정 요청이 너무 많습니다. {retry_after}초 뒤에 다시 시도하세요.")
-                return
             try:
                 length = parse_content_length(
                     self.headers.get("Content-Length"),
@@ -1378,6 +1368,16 @@ def make_handler(gateway: UserGateway):
             try:
                 if not csrf_is_valid(self.headers.get("Cookie"), csrf_token):
                     raise ValueError(SETUP_SESSION_EXPIRED_MESSAGE)
+                allowed, retry_after = gateway.consume_setup_attempt(self.client_ip())
+                if not allowed:
+                    gateway.audit(
+                        "setup_rate_limited",
+                        client_ip=self.client_ip(),
+                        tailscale_identity=identity["identity"],
+                        retry_after=retry_after,
+                    )
+                    self.send_setup_page(429, f"설정 요청이 너무 많습니다. {retry_after}초 뒤에 다시 시도하세요.")
+                    return
                 if not all([client_id, client_secret, account_seq]):
                     raise ValueError("모든 값을 입력해 주세요.")
                 if confirmation != SETUP_CONFIRMATION:
