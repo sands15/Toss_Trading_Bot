@@ -1309,7 +1309,10 @@ def make_handler(gateway: UserGateway):
                         gateway.record_user_client_ip(str(existing_user["slug"]), self.client_ip())
                         self.redirect_to_dashboard()
                         return
-                self.send_setup_page()
+                query = parse.urlparse(self.path).query
+                params = parse.parse_qs(query)
+                message = SETUP_SESSION_EXPIRED_MESSAGE if params.get("expired") else ""
+                self.send_setup_page(message=message)
                 return
             self.route_or_setup()
 
@@ -1322,6 +1325,12 @@ def make_handler(gateway: UserGateway):
         def redirect_to_dashboard(self) -> None:
             self.send_response(303)
             self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def redirect_to_setup_expired(self) -> None:
+            self.send_response(303)
+            self.send_header("Location", "/__setup?expired=1")
             self.send_header("Content-Length", "0")
             self.end_headers()
 
@@ -1374,7 +1383,17 @@ def make_handler(gateway: UserGateway):
 
             try:
                 if not csrf_is_valid(self.headers.get("Cookie"), csrf_token):
-                    raise ValueError(SETUP_SESSION_EXPIRED_MESSAGE)
+                    gateway.audit(
+                        "setup_session_expired",
+                        client_ip=self.client_ip(),
+                        tailscale_identity=identity["identity"],
+                    )
+                    self.redirect_to_setup_expired()
+                    return
+                if not all([client_id, client_secret, account_seq]):
+                    raise ValueError("모든 값을 입력해 주세요.")
+                if confirmation != SETUP_CONFIRMATION:
+                    raise ValueError(f"본인 확인 칸에 '{SETUP_CONFIRMATION}'을 그대로 입력해 주세요.")
                 attempt_key = f"identity:{identity['identity']}"
                 allowed, retry_after = gateway.consume_setup_attempt(attempt_key)
                 if not allowed:
@@ -1386,10 +1405,6 @@ def make_handler(gateway: UserGateway):
                     )
                     self.send_setup_page(429, f"설정 요청이 너무 많습니다. {retry_after}초 뒤에 다시 시도하세요.")
                     return
-                if not all([client_id, client_secret, account_seq]):
-                    raise ValueError("모든 값을 입력해 주세요.")
-                if confirmation != SETUP_CONFIRMATION:
-                    raise ValueError(f"본인 확인 칸에 '{SETUP_CONFIRMATION}'을 그대로 입력해 주세요.")
                 user = gateway.create_user(
                     client_ip=self.client_ip(),
                     tailscale_identity=identity["identity"],

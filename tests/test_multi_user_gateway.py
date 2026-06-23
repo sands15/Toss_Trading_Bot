@@ -248,12 +248,13 @@ def test_setup_invalid_csrf_does_not_consume_rate_limit(tmp_path: Path) -> None:
             response = connection.getresponse()
             response.read()
             connection.close()
-            assert response.status == 400
+            assert response.status == 303
+            assert response.getheader("Location") == "/__setup?expired=1"
 
         connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         connection.request(
             "GET",
-            "/__setup",
+            "/__setup?expired=1",
             headers={
                 "Tailscale-User-Login": "alice@example.com",
                 "Tailscale-User-Name": "Alice",
@@ -289,6 +290,7 @@ def test_setup_invalid_csrf_does_not_consume_rate_limit(tmp_path: Path) -> None:
         server.server_close()
 
     assert get_response.status == 200
+    assert gateway.SETUP_SESSION_EXPIRED_MESSAGE in get_body
     assert response.status == 400
     assert "본인 확인 칸" in response_body
     assert "설정 요청이 너무 많습니다" not in response_body
