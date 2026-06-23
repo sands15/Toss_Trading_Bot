@@ -135,7 +135,4 @@ def _watchlist_reason(
 
     label, level, distance = min(candidates, key=lambda item: item[2])
     prefix = "새 후보. " if is_new else ""
-    return (
-        f"{prefix}현재가 {current_price}가 {label} {level}에 가장 가깝습니다. "
-        f"거리 {distance}, 최근접 거리 {nearest_distance} 기준으로 정렬됐습니다."
-    )
+    return f"{prefix}{label}까지 {distance}. 현재가 {current_price}, 기준 {level}, 최근접 후보."

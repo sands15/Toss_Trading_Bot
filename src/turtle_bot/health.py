@@ -635,6 +635,12 @@ def _event_created_at(event: Mapping[str, Any] | None) -> str | None:
     return _iso_datetime(event.get("created_at"))
 
 
+def _latest_market_session(events: list[Mapping[str, Any]]) -> dict[str, Any]:
+    event = _latest_event_by_message(events, "market_session_state")
+    payload = _event_payload(event)
+    return dict(payload) if payload else {}
+
+
 def _build_live_monitor_payload(
     *,
     events: list[Mapping[str, Any]],
@@ -1690,6 +1696,17 @@ def dashboard_html() -> str:
       overflow-wrap: anywhere;
     }
 
+    .market-session-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .market-session-grid .pilot-item {
+      min-height: 76px;
+    }
+
     .view-json {
       margin: 0;
       max-height: 420px;
@@ -2707,6 +2724,11 @@ def dashboard_html() -> str:
               </div>
             </section>
 
+            <article class="card section-card wide">
+              <h2 class="section-title">거래 시간</h2>
+              <div id="dashboard-market-session" class="market-session-grid"></div>
+            </article>
+
             <article class="card section-card">
               <h2 class="section-title">시스템 상태</h2>
               <div id="dashboard-health-list" class="list-skeleton">
@@ -3040,9 +3062,21 @@ def dashboard_html() -> str:
               <p id="settings-live-stop-result" class="panel-copy"></p>
             </article>
             <article class="card data-panel">
+              <h2>거래 시간 설정</h2>
+              <p class="panel-copy">기본은 미국 정규장만 주문 후보를 평가합니다.</p>
+              <label class="settings-row">
+                <input id="market-day-enabled" type="checkbox" />
+                <span>
+                  <strong>데이마켓도 허용</strong>
+                  <span class="settings-helper">켜면 데이마켓과 정규장을 허용합니다. 데이마켓 주문은 제한가 수량 주문만 사용합니다.</span>
+                </span>
+              </label>
+            </article>
+            <article class="card data-panel">
               <h2>알림 설정</h2>
               <div class="notification-panel">
                 <p id="notification-status" class="panel-copy">매수/매도 수량과 실패 알림만 보여드립니다.</p>
+                <p id="discord-last-status" class="settings-helper">Discord 전송 기록을 확인하는 중입니다.</p>
                 <p class="settings-helper">브라우저 알림을 켜면 어떤 종목을 몇 주 주문했는지, 또는 주문이 왜 막혔는지만 알려드립니다. 브라우저나 폰에서 허용을 눌러야 작동합니다.</p>
                 <div class="settings-actions">
                   <button type="button" class="btn" id="notification-enable-button">브라우저 알림 켜기</button>
@@ -3050,6 +3084,18 @@ def dashboard_html() -> str:
                   <button type="button" class="btn" id="discord-notification-test-button">Discord 테스트 전송</button>
                 </div>
               </div>
+            </article>
+            <article class="card data-panel">
+              <h2>백업</h2>
+              <p class="panel-copy">현재 설정, SQLite 상태, 로그를 state/backups 안의 zip 파일로 묶습니다. 비밀 env 파일은 포함하지 않습니다.</p>
+              <div class="settings-actions">
+                <button type="button" class="btn" id="backup-export-button">백업 만들기</button>
+                <p id="backup-export-status" class="panel-copy" role="status" aria-live="polite"></p>
+              </div>
+            </article>
+            <article class="card data-panel">
+              <h2>로컬 LLM</h2>
+              <p id="local-llm-status" class="panel-copy">읽기 전용 설명 기능으로만 연결합니다. 매매 판단, 종목 순위, 안전장치는 규칙 기반으로 유지됩니다.</p>
             </article>
             <article class="card data-panel">
               <h2>모멘텀 전략 설정</h2>
@@ -3458,6 +3504,65 @@ def dashboard_html() -> str:
       if (state === "ready_for_shadow") return "done";
       if (state === "needs_review") return "warn";
       return "blocked";
+    }
+
+    function sessionLabel(value) {
+      const text = String(value || "").toLowerCase();
+      if (text === "daymarket") return "데이마켓";
+      if (text === "premarket") return "프리마켓";
+      if (text === "regularmarket") return "정규장";
+      if (text === "aftermarket") return "애프터마켓";
+      if (text === "closed") return "닫힘";
+      if (text === "holiday") return "휴장";
+      return value || "-";
+    }
+
+    function timeRange(session) {
+      if (!session || !session.start || !session.end) return "-";
+      return `${shortTimestamp(session.start)} - ${shortTimestamp(session.end)}`;
+    }
+
+    function renderMarketSession(session, settings) {
+      const box = document.getElementById("dashboard-market-session");
+      if (!box) return;
+      const data = session || {};
+      const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      const current = data.current_session || data.status || "UNKNOWN";
+      const next = data.next_session;
+      const allowed = Array.isArray(data.tradable_sessions) && data.tradable_sessions.length
+        ? data.tradable_sessions.map(sessionLabel).join(", ")
+        : "정규장";
+      const dayEnabled = Boolean(settings && settings.runtime && settings.runtime.day_market_enabled);
+      box.innerHTML = [
+        ["현재 세션", sessionLabel(current), data.is_open ? "거래 허용 시간입니다" : "주문 평가는 막혀 있습니다"],
+        ["다음 세션", next ? sessionLabel(next.name) : "오늘 남은 세션 없음", next ? timeRange(next) : "장 마감 또는 휴장"],
+        ["허용 세션", allowed, dayEnabled ? "데이마켓은 제한가 수량 주문만 사용합니다" : "기본값은 정규장만 허용합니다"],
+      ].map(([label, value, helper]) => `
+        <div class="pilot-item">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+          <span>${escapeHtml(helper)}</span>
+        </div>`).join("");
+      if (sessions.length > 0) {
+        box.innerHTML += sessions.map((item) => `
+          <div class="pilot-item">
+            <span>${escapeHtml(item.label || sessionLabel(item.name))}</span>
+            <strong>${escapeHtml(timeRange(item))}</strong>
+            <span>${escapeHtml((data.tradable_sessions || []).includes(item.name) ? "거래 허용" : "정보 표시")}</span>
+          </div>`).join("");
+      }
+    }
+
+    function renderLocalLlmStatus(settings) {
+      const box = document.getElementById("local-llm-status");
+      if (!box) return;
+      const ai = settings && settings.ai ? settings.ai : {};
+      const enabled = Boolean(ai.enabled);
+      const model = ai.model || "모델 미설정";
+      const baseUrl = ai.base_url || "로컬 서버 미설정";
+      box.textContent = enabled
+        ? `읽기 전용 설명용으로 준비됨: ${model} / ${baseUrl}`
+        : "꺼짐. 나중에 로컬 LLM을 붙여도 매매 판단, 종목 순위, 안전장치는 규칙 기반으로 유지됩니다.";
     }
 
     function renderLiveReadiness(readiness) {
@@ -4318,14 +4423,22 @@ def dashboard_html() -> str:
       return Notification.permission;
     }
 
-    function updateNotificationStatus(settings) {
+    function updateNotificationStatus(settings, events = []) {
       if (settings && settings.notifications) {
         discordWebhookConfigured = Boolean(settings.notifications.discord_webhook_configured);
       }
       const status = document.getElementById("notification-status");
+      const discordStatus = document.getElementById("discord-last-status");
       const button = document.getElementById("notification-enable-button");
       const discordButton = document.getElementById("discord-notification-test-button");
       const permission = browserNotificationPermission();
+      const lastDiscord = (events || []).find((entry) => [
+        "discord_alert_test_sent",
+        "discord_alert_test_failed",
+        "live_order_execution",
+        "live_order_final_guard_blocked",
+        "live_trading_loop_failed"
+      ].includes(String(entry && entry.message)));
       if (status) {
         const discordText = discordWebhookConfigured
           ? "Discord 웹훅도 감지됐습니다."
@@ -4351,6 +4464,18 @@ def dashboard_html() -> str:
         discordButton.textContent = discordWebhookConfigured
           ? "Discord 테스트 전송"
           : "Discord 웹훅 없음";
+      }
+      if (discordStatus) {
+        if (!discordWebhookConfigured) {
+          discordStatus.textContent = "Discord 웹훅이 아직 설정되지 않았습니다.";
+        } else if (lastDiscord) {
+          const failed = String(lastDiscord.message || "").includes("failed");
+          const when = shortTimestamp(lastDiscord.created_at);
+          const detail = eventDetail(lastDiscord);
+          discordStatus.textContent = `${failed ? "마지막 Discord 실패" : "마지막 Discord/거래 알림"}: ${when}${detail ? ` · ${detail}` : ""}`;
+        } else {
+          discordStatus.textContent = "Discord 웹훅 설정 완료. 테스트 전송으로 실제 도착 여부를 확인할 수 있습니다.";
+        }
       }
     }
 
@@ -4507,7 +4632,7 @@ def dashboard_html() -> str:
         localStorage.removeItem("turtleBrowserNotifications");
         showToast("알림 대기", "브라우저 알림 권한이 허용되지 않았습니다.", "warn");
       }
-      updateNotificationStatus(dashboard.settings || {});
+      updateNotificationStatus();
     }
 
     function testNotification() {
@@ -4535,13 +4660,32 @@ def dashboard_html() -> str:
       }
     }
 
+    async function exportBackup() {
+      const button = document.getElementById("backup-export-button");
+      const status = document.getElementById("backup-export-status");
+      if (button) button.disabled = true;
+      if (status) status.textContent = "백업을 만드는 중입니다...";
+      try {
+        const payload = await postJson("/dashboard/actions/export-backup", {});
+        if (status) status.textContent = `백업 완료: ${payload.path || "경로 확인 필요"} (${(payload.files || []).length}개 파일)`;
+        showToast("백업 완료", payload.path || "state/backups 안에 저장했습니다.", "info");
+      } catch (error) {
+        if (status) status.textContent = `백업 실패: ${error.message}`;
+        showToast("백업 실패", error.message, "error");
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
     function setTossSettings(settings) {
       const toss = (settings && settings.toss) || {};
+      const runtime = (settings && settings.runtime) || {};
       const accountSeq = document.getElementById("toss-account-seq");
       const accountAlias = document.getElementById("toss-account-alias");
       const clientId = document.getElementById("toss-client-id");
       const clientSecret = document.getElementById("toss-client-secret");
       const identityConfirmation = document.getElementById("toss-identity-confirmation");
+      const dayMarketEnabled = document.getElementById("market-day-enabled");
 
       currentTossAccountSeq = String(toss[SETTINGS_KEYS.accountValue] || "");
       currentTossAccountAlias = String(toss[SETTINGS_KEYS.accountAlias] || "");
@@ -4550,6 +4694,7 @@ def dashboard_html() -> str:
       if (clientId) clientId.value = "";
       if (clientSecret) clientSecret.value = "";
       if (identityConfirmation) identityConfirmation.value = "";
+      if (dayMarketEnabled) dayMarketEnabled.checked = Boolean(runtime.day_market_enabled);
 
       setPillState("toss-client-id-status", "설정됨", "미설정", Boolean(toss.client_id_configured));
       setPillState("toss-client-secret-status", "설정됨", "미설정", Boolean(toss.client_secret_configured));
@@ -4607,6 +4752,7 @@ def dashboard_html() -> str:
       const tossAccountSeq = document.getElementById("toss-account-seq");
       const tossAccountAlias = document.getElementById("toss-account-alias");
       const tossIdentityConfirmation = document.getElementById("toss-identity-confirmation");
+      const dayMarketEnabled = document.getElementById("market-day-enabled");
       const saveButtons = settingsSaveButtons();
 
       if (!settingsWritable) {
@@ -4627,6 +4773,9 @@ def dashboard_html() -> str:
           lookback_days: safeInteger(lookbackDays?.value, SETTINGS_DEFAULT.lookback_days, 1, 10000),
           skip_days: safeInteger(skipDays?.value, SETTINGS_DEFAULT.skip_days, 0, 10000),
           trend_ma_days: safeInteger(trendMaDays?.value, SETTINGS_DEFAULT.trend_ma_days, 1, 10000),
+        },
+        runtime: {
+          day_market_enabled: Boolean(dayMarketEnabled && dayMarketEnabled.checked),
         },
       };
       const accountSeq = String(tossAccountSeq?.value || "").trim();
@@ -4782,6 +4931,8 @@ def dashboard_html() -> str:
       renderOperatorBrief(status, eventRows, watchRows, positionRows, orderRows);
       renderSidebarStatus(status);
       renderHealthPanel(status);
+      renderMarketSession(dashboard.market_session || {}, dashboard.settings || {});
+      renderLocalLlmStatus(dashboard.settings || {});
       renderWatchSummary(watchRows);
       renderPositionSummary(positionRows);
       renderLiveReadiness(dashboard.live_readiness || {});
@@ -4795,7 +4946,7 @@ def dashboard_html() -> str:
       renderBotSummary(status, summary, watchRows, orderRows);
       renderLogLines(eventRows);
       notifyImportantEvents(eventRows);
-      updateNotificationStatus(dashboard.settings || {});
+      updateNotificationStatus(dashboard.settings || {}, eventRows);
 
       setCountBadge("watchlist-count-badge", watchRows.length);
       setCountBadge("positions-count-badge", positionRows.length);
@@ -4863,6 +5014,10 @@ def dashboard_html() -> str:
       const discordNotificationTestButton = document.getElementById("discord-notification-test-button");
       if (discordNotificationTestButton) {
         discordNotificationTestButton.addEventListener("click", () => sendDiscordTestNotification().catch(console.error));
+      }
+      const backupExportButton = document.getElementById("backup-export-button");
+      if (backupExportButton) {
+        backupExportButton.addEventListener("click", () => exportBackup().catch(console.error));
       }
     }
 
@@ -6272,6 +6427,7 @@ class HealthServer:
                 "items": _coerce_events_payload(events),
             },
             "runtime_summary": runtime_summary,
+            "market_session": _latest_market_session(events),
             "broker_snapshots": dict(broker_snapshots),
             "live_monitor": _build_live_monitor_payload(
                 events=events,
@@ -6326,6 +6482,7 @@ class HealthServer:
             "/dashboard/actions/stop-trading",
             "/dashboard/actions/build-watchlist",
             "/dashboard/actions/test-discord-alert",
+            "/dashboard/actions/export-backup",
         }:
             raise ValueError(f"unsupported action path: {path}")
         if self._action_runner is None:

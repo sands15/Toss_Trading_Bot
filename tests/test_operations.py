@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import plistlib
 import sys
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -1605,6 +1606,62 @@ def test_dashboard_build_watchlist_action_generates_explanations(tmp_path: Path)
         loaded = store.load_latest_watchlist(name="premarket")
     assert loaded is not None
     assert loaded.rows[0].reason == result["watchlist"][0]["reason"]
+
+
+def test_dashboard_backup_action_exports_config_state_and_logs(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    log_dir = tmp_path / "logs"
+    config_path.parent.mkdir()
+    state_db.parent.mkdir()
+    log_dir.mkdir()
+    config_path.write_text(
+        """
+runtime:
+  mode: paper
+  symbols: [TEST]
+  log_dir: ../logs
+toss:
+  account_seq: "7"
+""",
+        encoding="utf-8",
+    )
+    (log_dir / "runtime.log").write_text("ok\n", encoding="utf-8")
+    with SQLiteStateStore(state_db) as store:
+        store.record_runtime_event("INFO", "backup_seed", {})
+
+    server = build_dashboard_server(config_path=config_path, state_db=state_db)
+    result = server.action_for_path("/dashboard/actions/export-backup", {})
+
+    backup_path = Path(result["path"])
+    assert backup_path.exists()
+    with zipfile.ZipFile(backup_path) as archive:
+        names = set(archive.namelist())
+    assert "config/local.yaml" in names
+    assert "state/turtle.sqlite3" in names
+    assert "logs/runtime.log" in names
+
+
+def test_dashboard_settings_can_enable_us_day_market(tmp_path: Path) -> None:
+    config_path = tmp_path / "local.yaml"
+    config_path.write_text(
+        """
+runtime:
+  market: US
+  symbols: [AAPL]
+  market_calendar_open_sessions: [regularMarket]
+""",
+        encoding="utf-8",
+    )
+
+    update_dashboard_settings(
+        config_path,
+        {"runtime": {"day_market_enabled": True}},
+        env={},
+    )
+
+    loaded = load_config(config_path)
+    assert loaded.runtime.market_calendar_open_sessions == ("dayMarket", "regularMarket")
 
 
 def test_paper_service_blocks_when_market_calendar_is_closed(

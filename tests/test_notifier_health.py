@@ -352,6 +352,13 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert 'id="watchlist-reasons"' in html
     assert "function renderWatchlistReasons" in html
     assert 'watchlist: ["symbol", "current_price", "nearest_distance"]' in html
+    assert 'id="dashboard-market-session"' in html
+    assert "function renderMarketSession" in html
+    assert 'id="market-day-enabled"' in html
+    assert 'id="discord-last-status"' in html
+    assert 'id="backup-export-button"' in html
+    assert 'id="local-llm-status"' in html
+    assert "function renderLocalLlmStatus" in html
     assert 'getJson("/events/summary?limit=50")' in html
     assert "never submits" in html
     assert "EVENT_LABELS" in html
@@ -429,7 +436,7 @@ def test_dashboard_html_is_responsive_and_uses_read_only_endpoints() -> None:
     assert "function notifyImportantEvents" in html
     assert "function sendDiscordTestNotification" in html
     assert "function enableBrowserNotifications" in html
-    assert "updateNotificationStatus(dashboard.settings || {})" in html
+    assert "updateNotificationStatus(dashboard.settings || {}, eventRows)" in html
     assert "TRADE_NOTIFICATION_EVENTS" in html
     assert "FAILURE_NOTIFICATION_EVENTS" in html
     assert "function compactTradeNotification" in html

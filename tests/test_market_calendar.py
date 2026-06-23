@@ -105,6 +105,62 @@ def test_parse_official_us_market_calendar_closed_outside_regular_session() -> N
     assert session.blocker == "market_session_not_open:closed"
 
 
+def test_parse_official_us_day_market_is_displayed_but_not_tradable_by_default() -> None:
+    session = parse_market_session(
+        {
+            "today": {
+                "date": "2026-01-02",
+                "dayMarket": {
+                    "startTime": "2026-01-02T00:00:00+00:00",
+                    "endTime": "2026-01-02T08:00:00+00:00",
+                },
+                "regularMarket": {
+                    "startTime": "2026-01-02T14:30:00+00:00",
+                    "endTime": "2026-01-02T21:00:00+00:00",
+                },
+            }
+        },
+        market="US",
+        session_date=date(2026, 1, 2),
+        now=datetime(2026, 1, 2, 1, tzinfo=timezone.utc),
+    )
+
+    assert session.is_open is False
+    assert session.status == "DAYMARKET"
+    assert session.blocker == "market_session_not_open:daymarket"
+    assert [item["name"] for item in session.as_payload()["sessions"]] == [
+        "dayMarket",
+        "regularMarket",
+    ]
+
+
+def test_parse_official_us_day_market_can_be_enabled() -> None:
+    session = parse_market_session(
+        {
+            "today": {
+                "date": "2026-01-02",
+                "dayMarket": {
+                    "startTime": "2026-01-02T00:00:00+00:00",
+                    "endTime": "2026-01-02T08:00:00+00:00",
+                },
+                "regularMarket": {
+                    "startTime": "2026-01-02T14:30:00+00:00",
+                    "endTime": "2026-01-02T21:00:00+00:00",
+                },
+            }
+        },
+        market="US",
+        session_date=date(2026, 1, 2),
+        now=datetime(2026, 1, 2, 1, tzinfo=timezone.utc),
+        open_session_names=("dayMarket", "regularMarket"),
+    )
+
+    assert session.is_open is True
+    assert session.status == "DAYMARKET"
+    assert session.blocker is None
+    assert session.as_payload()["tradable_sessions"] == ["dayMarket", "regularMarket"]
+
+
 def test_parse_official_kr_market_calendar_holiday() -> None:
     session = parse_market_session(
         {"today": {"date": "2026-01-02", "integrated": None}},

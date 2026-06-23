@@ -27,6 +27,7 @@ class RuntimeConfig:
     market: str = "KR"
     timezone_name: str = "Asia/Seoul"
     use_market_calendar: bool = True
+    market_calendar_open_sessions: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
     state_db: str = "state/turtle.sqlite3"
     log_dir: str = "logs"
@@ -253,6 +254,11 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             market=str(runtime.get("market", "KR")),
             timezone_name=str(runtime.get("timezone", "Asia/Seoul")),
             use_market_calendar=bool(runtime.get("use_market_calendar", True)),
+            market_calendar_open_sessions=_to_string_list(
+                runtime.get("market_calendar_open_sessions")
+                or runtime.get("open_sessions")
+                or runtime.get("tradable_sessions")
+            ),
             symbols=_to_symbols(runtime.get("symbols")),
             state_db=str(runtime.get("state_db", "state/turtle.sqlite3")),
             log_dir=str(runtime.get("log_dir", "logs")),

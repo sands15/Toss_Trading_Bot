@@ -30,6 +30,8 @@ class MarketSessionState:
     known: bool
     status: str
     raw: Mapping[str, Any]
+    sessions: tuple[Mapping[str, Any], ...] = ()
+    tradable_sessions: tuple[str, ...] = ()
 
     @property
     def blocker(self) -> str | None:
@@ -47,6 +49,10 @@ class MarketSessionState:
             "known": self.known,
             "status": self.status,
             "blocker": self.blocker,
+            "sessions": [dict(item) for item in self.sessions],
+            "tradable_sessions": list(self.tradable_sessions),
+            "current_session": self.status if self.is_open else None,
+            "next_session": _next_session_payload(self.sessions),
         }
 
 
@@ -54,6 +60,7 @@ class MarketSessionState:
 class MarketCalendarConfig:
     market: str = "KR"
     timezone_name: str = "Asia/Seoul"
+    open_session_names: tuple[str, ...] = ()
 
 
 class MarketCalendarGate:
@@ -80,6 +87,7 @@ class MarketCalendarGate:
             market=self.config.market,
             session_date=local_date,
             now=now,
+            open_session_names=self.config.open_session_names,
         )
 
 
@@ -89,12 +97,14 @@ def parse_market_session(
     market: str,
     session_date: date,
     now: datetime | None = None,
+    open_session_names: tuple[str, ...] = (),
 ) -> MarketSessionState:
     official_state = _parse_official_session_payload(
         payload,
         market=market,
         session_date=session_date,
         now=now,
+        open_session_names=open_session_names,
     )
     if official_state is not None:
         return official_state
@@ -164,13 +174,15 @@ def _parse_official_session_payload(
     market: str,
     session_date: date,
     now: datetime | None,
+    open_session_names: tuple[str, ...],
 ) -> MarketSessionState | None:
     today = payload.get("today")
     if not isinstance(today, Mapping):
         return None
 
-    session_candidates = _official_session_candidates(today, market=market)
-    if not session_candidates:
+    all_sessions = _official_session_candidates(today, market=market)
+    session_payloads = _session_payloads(all_sessions)
+    if not all_sessions:
         return MarketSessionState(
             market=market.upper(),
             session_date=session_date,
@@ -178,7 +190,17 @@ def _parse_official_session_payload(
             known=True,
             status="HOLIDAY",
             raw=dict(payload),
+            sessions=session_payloads,
+            tradable_sessions=(),
         )
+    allowed_names = _normalized_session_names(
+        open_session_names or _default_open_session_names(market)
+    )
+    tradable_sessions = tuple(
+        session_name
+        for session_name, _session in all_sessions
+        if session_name.lower() in allowed_names
+    )
 
     if now is None:
         return MarketSessionState(
@@ -188,22 +210,27 @@ def _parse_official_session_payload(
             known=True,
             status="SCHEDULED",
             raw=dict(payload),
+            sessions=session_payloads,
+            tradable_sessions=tradable_sessions,
         )
 
     now_utc = _aware_utc(now)
-    for name, session in session_candidates:
+    for name, session in all_sessions:
         start = _parse_datetime(session.get("startTime"))
         end = _parse_datetime(session.get("endTime"))
         if start is None or end is None:
             continue
         if start <= now_utc <= end:
+            allowed = name.lower() in allowed_names
             return MarketSessionState(
                 market=market.upper(),
                 session_date=session_date,
-                is_open=True,
+                is_open=allowed,
                 known=True,
                 status=name.upper(),
                 raw=dict(payload),
+                sessions=session_payloads,
+                tradable_sessions=tradable_sessions,
             )
 
     return MarketSessionState(
@@ -213,6 +240,8 @@ def _parse_official_session_payload(
         known=True,
         status="CLOSED",
         raw=dict(payload),
+        sessions=session_payloads,
+        tradable_sessions=tradable_sessions,
     )
 
 
@@ -230,7 +259,7 @@ def _official_session_candidates(
         names = ("regularMarket",)
     elif market_key == "US":
         source = today
-        names = ("regularMarket",)
+        names = ("dayMarket", "preMarket", "regularMarket", "afterMarket")
     else:
         source = today
         names = ("regularMarket",)
@@ -241,6 +270,60 @@ def _official_session_candidates(
         if isinstance(value, Mapping):
             sessions.append((name, value))
     return tuple(sessions)
+
+
+def _default_open_session_names(market: str) -> tuple[str, ...]:
+    return ("regularmarket",)
+
+
+def _normalized_session_names(values: tuple[str, ...]) -> frozenset[str]:
+    return frozenset(str(value or "").strip().lower() for value in values if str(value or "").strip())
+
+
+def _session_payloads(
+    sessions: tuple[tuple[str, Mapping[str, Any]], ...]
+) -> tuple[Mapping[str, Any], ...]:
+    rows: list[Mapping[str, Any]] = []
+    for name, session in sessions:
+        start = _parse_datetime(session.get("startTime"))
+        end = _parse_datetime(session.get("endTime"))
+        rows.append(
+            {
+                "name": name,
+                "label": _session_label(name),
+                "start": start.isoformat() if start is not None else None,
+                "end": end.isoformat() if end is not None else None,
+            }
+        )
+    return tuple(rows)
+
+
+def _next_session_payload(sessions: tuple[Mapping[str, Any], ...]) -> dict[str, Any] | None:
+    now = datetime.now(timezone.utc)
+    future: list[Mapping[str, Any]] = []
+    for session in sessions:
+        start_raw = session.get("start")
+        start = _parse_datetime(start_raw)
+        if start is not None and start > now:
+            future.append(session)
+    if not future:
+        return None
+    return dict(
+        sorted(
+            future,
+            key=lambda item: _parse_datetime(item.get("start")) or datetime.max.replace(tzinfo=timezone.utc),
+        )[0]
+    )
+
+
+def _session_label(name: str) -> str:
+    labels = {
+        "dayMarket": "데이마켓",
+        "preMarket": "프리마켓",
+        "regularMarket": "정규장",
+        "afterMarket": "애프터마켓",
+    }
+    return labels.get(name, name)
 
 
 def _parse_datetime(value: Any) -> datetime | None:

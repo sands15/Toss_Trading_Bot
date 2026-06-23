@@ -5,6 +5,7 @@ import plistlib
 import subprocess
 import sys
 import time
+import zipfile
 from os import environ
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -454,6 +455,22 @@ def build_dashboard_server(
                 if not sent and discord_notifier.last_error:
                     result["error"] = discord_notifier.last_error
                 return result
+            if path == "/dashboard/actions/export-backup":
+                result = export_dashboard_backup(
+                    config_path=config_path,
+                    state_db=state_db,
+                    log_dir=config.runtime.log_dir,
+                )
+                with SQLiteStateStore(state_db) as store:
+                    store.record_runtime_event(
+                        "INFO",
+                        "dashboard_backup_exported",
+                        {
+                            "path": result["path"],
+                            "files": result["files"],
+                        },
+                    )
+                return result
             if path == "/dashboard/actions/build-watchlist":
                 if not action_lock.acquire(blocking=False):
                     raise RuntimeError("watchlist generation is already running")
@@ -689,6 +706,11 @@ def _dashboard_settings_payload(
             "mode": config.runtime.mode,
             "market": config.runtime.market,
             "timezone": config.runtime.timezone_name,
+            "market_calendar_open_sessions": list(config.runtime.market_calendar_open_sessions),
+            "day_market_enabled": any(
+                str(name).strip().lower() == "daymarket"
+                for name in config.runtime.market_calendar_open_sessions
+            ),
         },
         "toss": {
             "live_enabled": config.live_enabled,
@@ -708,6 +730,13 @@ def _dashboard_settings_payload(
                 env_values.get(DiscordTradeNotifier.DEFAULT_WEBHOOK_ENV)
             ),
             "discord_webhook_env": DiscordTradeNotifier.DEFAULT_WEBHOOK_ENV,
+        },
+        "ai": {
+            "enabled": config.ai.enabled,
+            "provider": config.ai.provider,
+            "model": config.ai.model,
+            "base_url": config.ai.base_url,
+            "mode": "read_only_explanations",
         },
         "live": {
             "emergency_stop": config.live.emergency_stop,
@@ -1011,6 +1040,43 @@ def stop_live_trading_settings(config_path: str | Path) -> dict[str, Any]:
     return {"status": "stopped", "emergency_stop": True, "config": dict(raw)}
 
 
+def export_dashboard_backup(
+    *,
+    config_path: str | Path,
+    state_db: str | Path,
+    log_dir: str | Path,
+) -> dict[str, Any]:
+    config_file = Path(config_path)
+    backup_dir = Path(state_db).parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_dir / f"dashboard-backup-{timestamp}.zip"
+    added: list[str] = []
+
+    def add_file(path: Path, arcname: str) -> None:
+        if path.exists() and path.is_file():
+            archive.write(path, arcname)
+            added.append(arcname)
+
+    with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        add_file(config_file, "config/local.yaml")
+        add_file(Path(state_db), "state/turtle.sqlite3")
+        logs = Path(log_dir)
+        if not logs.is_absolute():
+            config_relative = config_file.parent / logs
+            app_relative = config_file.parent.parent / logs
+            logs = config_relative if config_relative.exists() else app_relative
+        if logs.exists() and logs.is_dir():
+            for path in sorted(logs.rglob("*")):
+                if path.is_file():
+                    add_file(path, f"logs/{path.relative_to(logs).as_posix()}")
+    return {
+        "status": "exported",
+        "path": str(backup_path),
+        "files": added,
+    }
+
+
 def _dashboard_loop_should_stop(config_path: str | Path) -> bool:
     try:
         config = load_config(config_path)
@@ -1048,6 +1114,22 @@ def update_dashboard_settings(
         raise ValueError("settings payload missing")
 
     raw = update_momentum_settings(config_file, payload) if "momentum" in payload else _read_yaml(config_file)
+    runtime_payload = payload.get("runtime", {})
+    if runtime_payload is None:
+        runtime_payload = {}
+    if not isinstance(runtime_payload, Mapping):
+        raise ValueError("runtime settings must be an object")
+    if "day_market_enabled" in runtime_payload:
+        runtime = raw.get("runtime", {})
+        if not isinstance(runtime, Mapping):
+            runtime = {}
+        runtime_data = dict(runtime)
+        if bool(runtime_payload.get("day_market_enabled")):
+            runtime_data["market_calendar_open_sessions"] = ["dayMarket", "regularMarket"]
+        else:
+            runtime_data["market_calendar_open_sessions"] = ["regularMarket"]
+        raw["runtime"] = runtime_data
+        _write_yaml(config_file, raw)
     toss_payload = payload.get("toss", {})
     if toss_payload is None:
         toss_payload = {}
@@ -1456,6 +1538,7 @@ def _paper_service_iteration(
             config=MarketCalendarConfig(
                 market=config.runtime.market,
                 timezone_name=config.runtime.timezone_name,
+                open_session_names=config.runtime.market_calendar_open_sessions,
             ),
             now=now,
         ).current_session()
@@ -1962,6 +2045,7 @@ def run_live_smoke_test(
                 config=MarketCalendarConfig(
                     market=config.runtime.market,
                     timezone_name=config.runtime.timezone_name,
+                    open_session_names=config.runtime.market_calendar_open_sessions,
                 ),
                 now=now,
             ).current_session()
