@@ -35,6 +35,7 @@ class FakeReadOnlyMarketClient:
         self.candle_calls = 0
         self.price_calls = 0
         self.last_candle_count: int | None = None
+        self.candle_requests: list[dict[str, Any]] = []
 
     def get_candles(
         self,
@@ -47,6 +48,7 @@ class FakeReadOnlyMarketClient:
     ) -> CandlePage:
         self.candle_calls += 1
         self.last_candle_count = count
+        self.candle_requests.append({"count": count, "before": before})
         return CandlePage(
             candles=self.candles_payload,
             next_before=None,
@@ -62,6 +64,7 @@ class SnapshotStore:
     def __init__(self) -> None:
         self.items: list[tuple[str, str, dict[str, Any]]] = []
         self.latest: tuple[tuple[Candle, ...], datetime | None] | None = None
+        self.latest_payload: dict[str, Any] | None = None
 
     def record_market_data_snapshot(
         self,
@@ -81,6 +84,14 @@ class SnapshotStore:
     ) -> tuple[tuple[Candle, ...], datetime | None] | None:
         return self.latest
 
+    def latest_market_data_snapshot(self, kind: str, symbol: str) -> dict[str, Any] | None:
+        if self.latest_payload is not None:
+            return self.latest_payload
+        for item_kind, item_symbol, payload in reversed(self.items):
+            if item_kind == kind and item_symbol == symbol:
+                return payload
+        return None
+
 
 class RateLimitedClient(FakeReadOnlyMarketClient):
     def get_candles(
@@ -94,6 +105,37 @@ class RateLimitedClient(FakeReadOnlyMarketClient):
     ) -> CandlePage:
         self.candle_calls += 1
         raise TossApiError(429, code="rate-limit-paused", message="paused")
+
+
+class PagedReadOnlyMarketClient(FakeReadOnlyMarketClient):
+    def __init__(
+        self,
+        pages: tuple[tuple[tuple[Candle, ...], str | None], ...],
+        *,
+        prices_payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(candles_payload=(), prices_payload=prices_payload or {})
+        self.pages = pages
+
+    def get_candles(
+        self,
+        symbol: str,
+        *,
+        interval: str = "1d",
+        count: int = 100,
+        before: str | datetime | None = None,
+        adjusted: bool = True,
+    ) -> CandlePage:
+        self.candle_calls += 1
+        self.last_candle_count = count
+        self.candle_requests.append({"count": count, "before": before})
+        index = min(self.candle_calls - 1, len(self.pages) - 1)
+        candles, next_before = self.pages[index]
+        return CandlePage(
+            candles=candles,
+            next_before=next_before,
+            raw={"symbol": symbol, "interval": interval, "count": count},
+        )
 
 
 def test_extract_price_accepts_common_toss_payload_shapes() -> None:
@@ -138,7 +180,7 @@ def test_toss_market_data_provider_uses_persistent_candle_cache() -> None:
     )
     provider = TossReadOnlyMarketDataProvider(
         client=client,
-        config=TossMarketDataConfig(candle_count=5),
+        config=TossMarketDataConfig(candle_count=3),
         store=store,
         now=lambda: now,
     )
@@ -164,6 +206,67 @@ def test_toss_market_data_provider_clamps_candle_count_to_toss_limit() -> None:
     provider.get_completed_candles("TEST")
 
     assert client.last_candle_count == 200
+
+
+def test_toss_market_data_provider_paginates_to_reach_completed_target() -> None:
+    now = datetime(2026, 10, 28, tzinfo=timezone.utc)
+    current_session = Candle(
+        timestamp=now,
+        symbol="TEST",
+        open=Decimal("100"),
+        high=Decimal("110"),
+        low=Decimal("90"),
+        close=Decimal("105"),
+        volume=Decimal("1000"),
+    )
+    client = PagedReadOnlyMarketClient(
+        pages=(
+            (tuple(_c(day) for day in range(199)) + (current_session,), "cursor-1"),
+            (tuple(_c(day) for day in range(120, 250)), None),
+        ),
+    )
+    provider = TossReadOnlyMarketDataProvider(
+        client=client,
+        config=TossMarketDataConfig(candle_count=250),
+        now=lambda: now,
+    )
+
+    candles = provider.get_completed_candles("TEST")
+
+    assert len(candles) == 250
+    assert candles[-1] == _c(249)
+    assert client.candle_calls == 2
+    assert client.candle_requests == [
+        {"count": 200, "before": None},
+        {"count": 200, "before": "cursor-1"},
+    ]
+
+
+def test_toss_market_data_provider_merges_insufficient_fresh_snapshot_with_pages() -> None:
+    now = datetime(2027, 1, 1, tzinfo=timezone.utc)
+    store = SnapshotStore()
+    store.latest = (tuple(_c(day) for day in range(150)), now - timedelta(minutes=1))
+    store.latest_payload = {
+        "interval": "1d",
+        "next_before": "cursor-stored",
+        "candles": [],
+    }
+    client = PagedReadOnlyMarketClient(
+        pages=((tuple(_c(day) for day in range(150, 350)), None),),
+    )
+    provider = TossReadOnlyMarketDataProvider(
+        client=client,
+        config=TossMarketDataConfig(candle_count=250),
+        store=store,
+        now=lambda: now,
+    )
+
+    candles = provider.get_completed_candles("TEST")
+
+    assert len(candles) == 250
+    assert candles[0] == _c(100)
+    assert candles[-1] == _c(349)
+    assert client.candle_calls == 1
 
 
 def test_toss_market_data_provider_falls_back_to_stale_cache_on_rate_limit() -> None:
