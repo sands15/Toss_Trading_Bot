@@ -107,6 +107,13 @@ def csrf_is_valid(cookie_header: str | None, form_token: str) -> bool:
     return bool(cookie_token and form_token and hmac.compare_digest(cookie_token, form_token))
 
 
+def reusable_csrf_token(cookie_header: str | None) -> str:
+    token = cookie_value(cookie_header, SETUP_CSRF_COOKIE)
+    if 32 <= len(token) <= 256 and re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        return token
+    return make_csrf_token()
+
+
 def parse_content_length(value: str | None, *, max_bytes: int) -> int:
     try:
         length = int(value or "0")
@@ -1267,7 +1274,7 @@ def make_handler(gateway: UserGateway):
             if identity is None:
                 self.send_identity_required_page(401, "Tailscale Serve identity header가 없습니다.")
                 return
-            token = make_csrf_token()
+            token = reusable_csrf_token(self.headers.get("Cookie"))
             body = setup_page(
                 self.client_ip(),
                 tailscale_identity=identity["identity"],

@@ -115,6 +115,46 @@ def test_setup_csrf_token_must_match_cookie() -> None:
     assert "설정 페이지를 다시 열고" in gateway.SETUP_SESSION_EXPIRED_MESSAGE
 
 
+def test_setup_page_reuses_existing_csrf_cookie(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+    server = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.make_handler(manager))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        existing_token = "A" * 43
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            "/__setup?expired=1",
+            headers={
+                "Cookie": f"toss_gateway_setup={existing_token}",
+                "Tailscale-User-Login": "alice@example.com",
+                "Tailscale-User-Name": "Alice",
+            },
+        )
+        response = connection.getresponse()
+        response_body = response.read().decode("utf-8")
+        response_cookie = response.getheader("Set-Cookie")
+        connection.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert response.status == 200
+    assert f'name="csrf_token" value="{existing_token}"' in response_body
+    assert response_cookie is not None
+    assert f"toss_gateway_setup={existing_token}" in response_cookie
+
+
 def test_setup_post_for_existing_identity_redirects_without_csrf_error(tmp_path: Path) -> None:
     gateway = _load_gateway_module()
     registry_path = tmp_path / "registry.json"
