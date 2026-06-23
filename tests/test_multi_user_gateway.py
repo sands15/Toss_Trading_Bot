@@ -167,6 +167,54 @@ def test_setup_post_for_existing_identity_redirects_without_csrf_error(tmp_path:
     assert response.getheader("Location") == "/"
 
 
+def test_setup_get_for_existing_identity_redirects_to_dashboard(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    registry_path = tmp_path / "registry.json"
+    registry = gateway.load_registry(registry_path)
+    registry["users"]["alice"] = {
+        "slug": "alice",
+        "display_name": "Alice",
+        "client_ip": "100.64.0.10",
+        "last_client_ip": "100.64.0.10",
+        "tailscale_identity": "alice@example.com",
+        "container_name": "toss-dashboard-alice",
+        "port": 19000,
+        "status": "running",
+    }
+    registry["identity_map"]["alice@example.com"] = "alice"
+    gateway.save_registry(registry_path, registry)
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=registry_path,
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+    server = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.make_handler(manager))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            "/__setup",
+            headers={
+                "Tailscale-User-Login": "alice@example.com",
+                "Tailscale-User-Name": "Alice",
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert response.status == 303
+    assert response.getheader("Location") == "/"
+
+
 def test_setup_invalid_csrf_does_not_consume_rate_limit(tmp_path: Path) -> None:
     gateway = _load_gateway_module()
     config = gateway.GatewayConfig(
@@ -425,7 +473,7 @@ def test_registration_allowlist_accepts_exact_ips_and_cidr() -> None:
     assert gateway.client_ip_is_allowed("203.0.113.10", ())
 
 
-def test_setup_attempts_are_rate_limited_per_client_ip(tmp_path: Path) -> None:
+def test_setup_attempts_are_rate_limited_per_attempt_key(tmp_path: Path) -> None:
     gateway = _load_gateway_module()
     config = gateway.GatewayConfig(
         repo_root=tmp_path,
@@ -438,13 +486,13 @@ def test_setup_attempts_are_rate_limited_per_client_ip(tmp_path: Path) -> None:
     )
     manager = gateway.UserGateway(config)
 
-    assert manager.consume_setup_attempt("100.64.0.10", now=100.0) == (True, 0)
-    assert manager.consume_setup_attempt("100.64.0.10", now=110.0) == (True, 0)
-    allowed, retry_after = manager.consume_setup_attempt("100.64.0.10", now=120.0)
+    assert manager.consume_setup_attempt("identity:alice@example.com", now=100.0) == (True, 0)
+    assert manager.consume_setup_attempt("identity:alice@example.com", now=110.0) == (True, 0)
+    allowed, retry_after = manager.consume_setup_attempt("identity:alice@example.com", now=120.0)
     assert not allowed
     assert retry_after == 40
-    assert manager.consume_setup_attempt("100.64.0.10", now=161.0) == (True, 0)
-    assert manager.consume_setup_attempt("100.64.0.11", now=120.0) == (True, 0)
+    assert manager.consume_setup_attempt("identity:alice@example.com", now=161.0) == (True, 0)
+    assert manager.consume_setup_attempt("identity:bob@example.com", now=120.0) == (True, 0)
 
 
 def test_registration_allowed_uses_gateway_allowlist(tmp_path: Path) -> None:

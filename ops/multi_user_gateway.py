@@ -724,7 +724,7 @@ class UserGateway:
     def registration_allowed(self, client_ip: str) -> bool:
         return client_ip_is_allowed(client_ip, self.config.registration_allowlist)
 
-    def consume_setup_attempt(self, client_ip: str, *, now: float | None = None) -> tuple[bool, int]:
+    def consume_setup_attempt(self, attempt_key: str, *, now: float | None = None) -> tuple[bool, int]:
         limit = int(self.config.setup_rate_limit)
         window = int(self.config.setup_rate_window_seconds)
         if limit <= 0 or window <= 0:
@@ -733,13 +733,13 @@ class UserGateway:
         timestamp = time.time() if now is None else now
         cutoff = timestamp - window
         with self._setup_attempts_lock:
-            attempts = [item for item in self._setup_attempts.get(client_ip, []) if item >= cutoff]
+            attempts = [item for item in self._setup_attempts.get(attempt_key, []) if item >= cutoff]
             if len(attempts) >= limit:
                 retry_after = max(1, int(window - (timestamp - attempts[0])))
-                self._setup_attempts[client_ip] = attempts
+                self._setup_attempts[attempt_key] = attempts
                 return False, retry_after
             attempts.append(timestamp)
-            self._setup_attempts[client_ip] = attempts
+            self._setup_attempts[attempt_key] = attempts
         return True, 0
 
     def user_for_ip(self, client_ip: str) -> dict[str, Any] | None:
@@ -1302,6 +1302,13 @@ def make_handler(gateway: UserGateway):
                 self.send_json(200, {"status": "ok", "service": "multi-user-gateway"})
                 return
             if self.path.startswith("/__setup"):
+                identity = tailscale_identity_from_headers(self.headers)
+                if identity is not None:
+                    existing_user = gateway.user_for_identity(identity["identity"])
+                    if existing_user is not None:
+                        gateway.record_user_client_ip(str(existing_user["slug"]), self.client_ip())
+                        self.redirect_to_dashboard()
+                        return
                 self.send_setup_page()
                 return
             self.route_or_setup()
@@ -1368,7 +1375,8 @@ def make_handler(gateway: UserGateway):
             try:
                 if not csrf_is_valid(self.headers.get("Cookie"), csrf_token):
                     raise ValueError(SETUP_SESSION_EXPIRED_MESSAGE)
-                allowed, retry_after = gateway.consume_setup_attempt(self.client_ip())
+                attempt_key = f"identity:{identity['identity']}"
+                allowed, retry_after = gateway.consume_setup_attempt(attempt_key)
                 if not allowed:
                     gateway.audit(
                         "setup_rate_limited",
