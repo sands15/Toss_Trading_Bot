@@ -111,6 +111,60 @@ def test_setup_csrf_token_must_match_cookie() -> None:
     assert not gateway.csrf_is_valid("toss_gateway_setup=abc", "wrong")
     assert not gateway.csrf_is_valid("", "abc")
     assert gateway.cookie_value("a=1; toss_gateway_setup=xyz", "toss_gateway_setup") == "xyz"
+    assert "새로고침한 뒤 다시 제출" not in gateway.SETUP_SESSION_EXPIRED_MESSAGE
+    assert "설정 페이지를 다시 열고" in gateway.SETUP_SESSION_EXPIRED_MESSAGE
+
+
+def test_setup_post_for_existing_identity_redirects_without_csrf_error(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    registry_path = tmp_path / "registry.json"
+    registry = gateway.load_registry(registry_path)
+    registry["users"]["alice"] = {
+        "slug": "alice",
+        "display_name": "Alice",
+        "client_ip": "100.64.0.10",
+        "last_client_ip": "100.64.0.10",
+        "tailscale_identity": "alice@example.com",
+        "container_name": "toss-dashboard-alice",
+        "port": 19000,
+        "status": "running",
+    }
+    registry["identity_map"]["alice@example.com"] = "alice"
+    gateway.save_registry(registry_path, registry)
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=registry_path,
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+    server = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.make_handler(manager))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        body = "csrf_token=stale&client_id=x&client_secret=y&account_seq=1&confirmation=x"
+        connection.request(
+            "POST",
+            "/__setup",
+            body=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Length": str(len(body)),
+                "Tailscale-User-Login": "alice@example.com",
+                "Tailscale-User-Name": "Alice",
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert response.status == 303
+    assert response.getheader("Location") == "/"
 
 
 def test_audit_event_allows_request_path_field(tmp_path: Path) -> None:

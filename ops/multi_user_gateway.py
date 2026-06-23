@@ -30,6 +30,9 @@ DEFAULT_CONTAINER_PORT = 8765
 DEFAULT_FIRST_PORT = 19000
 SETUP_CONFIRMATION = "토스 연결 승인"
 SETUP_CSRF_COOKIE = "toss_gateway_setup"
+SETUP_SESSION_EXPIRED_MESSAGE = (
+    "설정 화면의 보안 확인 시간이 지났습니다. 설정 페이지를 다시 열고 한 번만 제출해 주세요."
+)
 MAX_SETUP_BODY_BYTES = 32 * 1024
 DEFAULT_SETUP_RATE_LIMIT = 5
 DEFAULT_SETUP_RATE_WINDOW_SECONDS = 15 * 60
@@ -1309,11 +1312,34 @@ def make_handler(gateway: UserGateway):
                 return
             self.route_or_setup()
 
+        def redirect_to_dashboard(self) -> None:
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def discard_request_body(self) -> None:
+            try:
+                length = parse_content_length(
+                    self.headers.get("Content-Length"),
+                    max_bytes=MAX_SETUP_BODY_BYTES,
+                )
+            except ValueError:
+                return
+            if length > 0:
+                self.rfile.read(length)
+
         def handle_setup(self) -> None:
             identity = tailscale_identity_from_headers(self.headers)
             if identity is None:
                 gateway.audit("identity_missing", client_ip=self.client_ip(), request_path=self.path)
                 self.send_identity_required_page(401, "Tailscale Serve를 통해 다시 접속해 주세요.")
+                return
+            existing_user = gateway.user_for_identity(identity["identity"])
+            if existing_user is not None:
+                self.discard_request_body()
+                gateway.record_user_client_ip(str(existing_user["slug"]), self.client_ip())
+                self.redirect_to_dashboard()
                 return
             if not gateway.registration_allowed(self.client_ip()):
                 gateway.audit(
@@ -1351,7 +1377,7 @@ def make_handler(gateway: UserGateway):
 
             try:
                 if not csrf_is_valid(self.headers.get("Cookie"), csrf_token):
-                    raise ValueError("설정 페이지를 새로고침한 뒤 다시 제출해 주세요.")
+                    raise ValueError(SETUP_SESSION_EXPIRED_MESSAGE)
                 if not all([client_id, client_secret, account_seq]):
                     raise ValueError("모든 값을 입력해 주세요.")
                 if confirmation != SETUP_CONFIRMATION:
@@ -1368,10 +1394,7 @@ def make_handler(gateway: UserGateway):
                 self.send_setup_page(400, str(exc))
                 return
 
-            self.send_response(303)
-            self.send_header("Location", "/")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            self.redirect_to_dashboard()
 
         def route_or_setup(self) -> None:
             identity = tailscale_identity_from_headers(self.headers)
