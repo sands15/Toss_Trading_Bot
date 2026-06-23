@@ -31,7 +31,7 @@ DEFAULT_FIRST_PORT = 19000
 SETUP_CONFIRMATION = "토스 연결 승인"
 SETUP_CSRF_COOKIE = "toss_gateway_setup"
 SETUP_SESSION_EXPIRED_MESSAGE = (
-    "설정 화면의 보안 확인 시간이 지났습니다. 설정 페이지를 다시 열고 한 번만 제출해 주세요."
+    "보안 확인을 새로 발급했습니다. 아래 값을 다시 확인하고 한 번만 제출해 주세요."
 )
 MAX_SETUP_BODY_BYTES = 32 * 1024
 DEFAULT_SETUP_RATE_LIMIT = 5
@@ -1308,7 +1308,17 @@ def make_handler(gateway: UserGateway):
             if self.path == "/health":
                 self.send_json(200, {"status": "ok", "service": "multi-user-gateway"})
                 return
-            if self.path.startswith("/__setup"):
+            parsed_path = parse.urlparse(self.path)
+            if parsed_path.path == "/_setup":
+                target = "/__setup"
+                if parsed_path.query:
+                    target = f"{target}?{parsed_path.query}"
+                self.send_response(303)
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if parsed_path.path == "/__setup":
                 identity = tailscale_identity_from_headers(self.headers)
                 if identity is not None:
                     existing_user = gateway.user_for_identity(identity["identity"])
@@ -1316,8 +1326,7 @@ def make_handler(gateway: UserGateway):
                         gateway.record_user_client_ip(str(existing_user["slug"]), self.client_ip())
                         self.redirect_to_dashboard()
                         return
-                query = parse.urlparse(self.path).query
-                params = parse.parse_qs(query)
+                params = parse.parse_qs(parsed_path.query)
                 message = SETUP_SESSION_EXPIRED_MESSAGE if params.get("expired") else ""
                 self.send_setup_page(message=message)
                 return

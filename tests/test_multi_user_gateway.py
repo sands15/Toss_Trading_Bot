@@ -112,7 +112,7 @@ def test_setup_csrf_token_must_match_cookie() -> None:
     assert not gateway.csrf_is_valid("", "abc")
     assert gateway.cookie_value("a=1; toss_gateway_setup=xyz", "toss_gateway_setup") == "xyz"
     assert "새로고침한 뒤 다시 제출" not in gateway.SETUP_SESSION_EXPIRED_MESSAGE
-    assert "설정 페이지를 다시 열고" in gateway.SETUP_SESSION_EXPIRED_MESSAGE
+    assert "보안 확인을 새로 발급" in gateway.SETUP_SESSION_EXPIRED_MESSAGE
 
 
 def test_setup_page_reuses_existing_csrf_cookie(tmp_path: Path) -> None:
@@ -153,6 +153,41 @@ def test_setup_page_reuses_existing_csrf_cookie(tmp_path: Path) -> None:
     assert f'name="csrf_token" value="{existing_token}"' in response_body
     assert response_cookie is not None
     assert f"toss_gateway_setup={existing_token}" in response_cookie
+
+
+def test_single_underscore_setup_path_redirects_to_canonical_setup(tmp_path: Path) -> None:
+    gateway = _load_gateway_module()
+    config = gateway.GatewayConfig(
+        repo_root=tmp_path,
+        registry_path=tmp_path / "registry.json",
+        users_root=tmp_path / "users",
+        image_name="test-image",
+        container_port=8765,
+    )
+    manager = gateway.UserGateway(config)
+    server = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.make_handler(manager))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            "/_setup?expired=1",
+            headers={
+                "Tailscale-User-Login": "alice@example.com",
+                "Tailscale-User-Name": "Alice",
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert response.status == 303
+    assert response.getheader("Location") == "/__setup?expired=1"
 
 
 def test_setup_post_for_existing_identity_redirects_without_csrf_error(tmp_path: Path) -> None:
