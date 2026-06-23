@@ -38,6 +38,7 @@ DEFAULT_CONTAINER_CPUS = "1.0"
 DEFAULT_CONTAINER_LOG_MAX_SIZE = "10m"
 DEFAULT_CONTAINER_LOG_MAX_FILES = "3"
 DEFAULT_KEYCHAIN_SERVICE = "toss-trading-bot"
+DEFAULT_DISCORD_WEBHOOK_ENV = "DISCORD_TRADE_ALERT_WEBHOOK_URL"
 SECRET_CLIENT_ID = "toss_client_id"
 SECRET_CLIENT_SECRET = "toss_client_secret"
 TAILSCALE_USER_LOGIN_HEADER = "Tailscale-User-Login"
@@ -401,6 +402,7 @@ def write_placeholder_env_file(path: Path, backend: str) -> None:
                 "# Toss credentials are not stored in this file.",
                 f"# Secret backend: {backend}",
                 "# The gateway injects TOSS_CLIENT_ID and TOSS_CLIENT_SECRET at container start.",
+                f"# Optional alerts: set {DEFAULT_DISCORD_WEBHOOK_ENV} in the gateway process environment before container creation.",
                 "",
             ]
         ),
@@ -1043,6 +1045,16 @@ class UserGateway:
         client_secret = credentials.get("TOSS_CLIENT_SECRET", "")
         if not client_id or not client_secret:
             raise RuntimeError(f"Toss credentials are not available for user: {slug}")
+        container_env_names = ["TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET"]
+        container_env = {
+            **os.environ,
+            "TOSS_CLIENT_ID": client_id,
+            "TOSS_CLIENT_SECRET": client_secret,
+        }
+        discord_webhook_url = str(os.environ.get(DEFAULT_DISCORD_WEBHOOK_ENV) or "").strip()
+        if discord_webhook_url:
+            container_env[DEFAULT_DISCORD_WEBHOOK_ENV] = discord_webhook_url
+            container_env_names.append(DEFAULT_DISCORD_WEBHOOK_ENV)
 
         existing = subprocess.run(
             ["docker", "ps", "-a", "--format", "{{.Names}}"],
@@ -1066,8 +1078,7 @@ class UserGateway:
             return
 
         self.ensure_image()
-        run_command(
-            [
+        docker_run = [
                 "docker",
                 "run",
                 "-d",
@@ -1083,10 +1094,11 @@ class UserGateway:
                 f"max-size={self.config.container_log_max_size}",
                 "--log-opt",
                 f"max-file={self.config.container_log_max_files}",
-                "--env",
-                "TOSS_CLIENT_ID",
-                "--env",
-                "TOSS_CLIENT_SECRET",
+            ]
+        for env_name in container_env_names:
+            docker_run.extend(["--env", env_name])
+        docker_run.extend(
+            [
                 "-p",
                 f"127.0.0.1:{port}:{self.config.container_port}",
                 "-v",
@@ -1105,14 +1117,9 @@ class UserGateway:
                 "0.0.0.0",
                 "--port",
                 str(self.config.container_port),
-            ],
-            cwd=self.config.repo_root,
-            env={
-                **os.environ,
-                "TOSS_CLIENT_ID": client_id,
-                "TOSS_CLIENT_SECRET": client_secret,
-            },
+            ]
         )
+        run_command(docker_run, cwd=self.config.repo_root, env=container_env)
         self.wait_for_user_http(user)
 
 

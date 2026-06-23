@@ -697,6 +697,7 @@ def test_new_user_container_uses_resource_and_log_limits(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(gateway, "run_command", fake_run_command)
     monkeypatch.setattr(gateway.UserGateway, "wait_for_user_http", lambda _self, _user: None)
+    monkeypatch.setenv(gateway.DEFAULT_DISCORD_WEBHOOK_ENV, "https://discord.test/webhook")
 
     manager.ensure_container(
         {
@@ -715,8 +716,10 @@ def test_new_user_container_uses_resource_and_log_limits(tmp_path: Path, monkeyp
     assert "--env-file" not in docker_run
     assert docker_run[docker_run.index("--env") + 1] == "TOSS_CLIENT_ID"
     assert "TOSS_CLIENT_SECRET" in docker_run
+    assert gateway.DEFAULT_DISCORD_WEBHOOK_ENV in docker_run
     assert command_envs[-1]["TOSS_CLIENT_ID"] == "id"
     assert command_envs[-1]["TOSS_CLIENT_SECRET"] == "secret"
+    assert command_envs[-1][gateway.DEFAULT_DISCORD_WEBHOOK_ENV] == "https://discord.test/webhook"
 
 
 def test_create_user_rolls_back_registry_when_container_creation_fails(
