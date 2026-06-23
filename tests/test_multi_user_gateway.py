@@ -110,12 +110,18 @@ def test_setup_csrf_token_must_match_cookie() -> None:
     assert gateway.csrf_is_valid("toss_gateway_setup=abc; other=1", "abc")
     assert not gateway.csrf_is_valid("toss_gateway_setup=abc", "wrong")
     assert not gateway.csrf_is_valid("", "abc")
+    token = gateway.make_csrf_token("alice@example.com", now=100)
+    assert gateway.signed_csrf_is_valid(token, "alice@example.com", now=100)
+    assert not gateway.signed_csrf_is_valid(token, "bob@example.com", now=100)
+    assert not gateway.signed_csrf_is_valid(token, "alice@example.com", now=3701)
+    current_token = gateway.make_csrf_token("alice@example.com")
+    assert gateway.csrf_is_valid("", current_token, "alice@example.com")
     assert gateway.cookie_value("a=1; toss_gateway_setup=xyz", "toss_gateway_setup") == "xyz"
     assert "새로고침한 뒤 다시 제출" not in gateway.SETUP_SESSION_EXPIRED_MESSAGE
     assert "보안 확인을 새로 발급" in gateway.SETUP_SESSION_EXPIRED_MESSAGE
 
 
-def test_setup_page_reuses_existing_csrf_cookie(tmp_path: Path) -> None:
+def test_setup_page_uses_signed_csrf_token_without_cookie_dependency(tmp_path: Path) -> None:
     gateway = _load_gateway_module()
     config = gateway.GatewayConfig(
         repo_root=tmp_path,
@@ -143,6 +149,8 @@ def test_setup_page_reuses_existing_csrf_cookie(tmp_path: Path) -> None:
         response = connection.getresponse()
         response_body = response.read().decode("utf-8")
         response_cookie = response.getheader("Set-Cookie")
+        marker = 'name="csrf_token" value="'
+        csrf_token = response_body.split(marker, 1)[1].split('"', 1)[0]
         connection.close()
     finally:
         server.shutdown()
@@ -150,9 +158,10 @@ def test_setup_page_reuses_existing_csrf_cookie(tmp_path: Path) -> None:
         server.server_close()
 
     assert response.status == 200
-    assert f'name="csrf_token" value="{existing_token}"' in response_body
+    assert csrf_token.startswith("v1.")
+    assert csrf_token != existing_token
     assert response_cookie is not None
-    assert f"toss_gateway_setup={existing_token}" in response_cookie
+    assert f"toss_gateway_setup={csrf_token}" in response_cookie
 
 
 def test_single_underscore_setup_path_redirects_to_canonical_setup(tmp_path: Path) -> None:
@@ -353,7 +362,6 @@ def test_setup_invalid_csrf_does_not_consume_rate_limit(tmp_path: Path) -> None:
             headers={
                 **headers,
                 "Content-Length": str(len(valid_body)),
-                "Cookie": cookie or "",
             },
         )
         response = connection.getresponse()

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import hmac
 import html
 import ipaddress
@@ -33,6 +35,7 @@ SETUP_CSRF_COOKIE = "toss_gateway_setup"
 SETUP_SESSION_EXPIRED_MESSAGE = (
     "보안 확인을 새로 발급했습니다. 아래 값을 다시 확인하고 한 번만 제출해 주세요."
 )
+SETUP_CSRF_TOKEN_TTL_SECONDS = 60 * 60
 MAX_SETUP_BODY_BYTES = 32 * 1024
 DEFAULT_SETUP_RATE_LIMIT = 5
 DEFAULT_SETUP_RATE_WINDOW_SECONDS = 15 * 60
@@ -50,6 +53,7 @@ DELETE_SECRETS_CONFIRMATION = "DELETE_USER_SECRETS"
 CLEANUP_ORPHANS_CONFIRMATION = "CLEANUP_ORPHANS"
 OFFBOARD_USER_CONFIRMATION = "OFFBOARD_USER"
 USER_CONTAINER_PREFIX = "toss-dashboard-"
+_SETUP_CSRF_SIGNING_KEY = secrets.token_bytes(32)
 
 
 def slugify(value: str) -> str:
@@ -69,8 +73,31 @@ def clean_env_value(value: str) -> str:
     return cleaned
 
 
-def make_csrf_token() -> str:
-    return secrets.token_urlsafe(32)
+def _base64url_encode(payload: bytes) -> str:
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def make_csrf_token(identity: str = "", *, now: int | None = None) -> str:
+    issued_at = int(time.time() if now is None else now)
+    payload = {
+        "iat": issued_at,
+        "identity": normalize_tailscale_identity(identity),
+        "nonce": secrets.token_urlsafe(16),
+    }
+    payload_part = _base64url_encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+    signature = hmac.new(
+        _SETUP_CSRF_SIGNING_KEY,
+        payload_part.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return f"v1.{payload_part}.{_base64url_encode(signature)}"
 
 
 def decode_tailscale_header(value: str) -> str:
@@ -102,7 +129,46 @@ def cookie_value(cookie_header: str | None, name: str) -> str:
     return ""
 
 
-def csrf_is_valid(cookie_header: str | None, form_token: str) -> bool:
+def signed_csrf_is_valid(
+    form_token: str,
+    identity: str,
+    *,
+    now: int | None = None,
+) -> bool:
+    try:
+        version, payload_part, signature_part = form_token.split(".", 2)
+    except ValueError:
+        return False
+    if version != "v1" or not payload_part or not signature_part:
+        return False
+    expected = hmac.new(
+        _SETUP_CSRF_SIGNING_KEY,
+        payload_part.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    try:
+        actual = _base64url_decode(signature_part)
+    except Exception:
+        return False
+    if not hmac.compare_digest(expected, actual):
+        return False
+    try:
+        payload = json.loads(_base64url_decode(payload_part).decode("utf-8"))
+    except Exception:
+        return False
+    if payload.get("identity") != normalize_tailscale_identity(identity):
+        return False
+    try:
+        issued_at = int(payload.get("iat"))
+    except (TypeError, ValueError):
+        return False
+    current_time = int(time.time() if now is None else now)
+    return current_time - SETUP_CSRF_TOKEN_TTL_SECONDS <= issued_at <= current_time + 60
+
+
+def csrf_is_valid(cookie_header: str | None, form_token: str, identity: str = "") -> bool:
+    if identity and signed_csrf_is_valid(form_token, identity):
+        return True
     cookie_token = cookie_value(cookie_header, SETUP_CSRF_COOKIE)
     return bool(cookie_token and form_token and hmac.compare_digest(cookie_token, form_token))
 
@@ -1274,7 +1340,7 @@ def make_handler(gateway: UserGateway):
             if identity is None:
                 self.send_identity_required_page(401, "Tailscale Serve identity header가 없습니다.")
                 return
-            token = reusable_csrf_token(self.headers.get("Cookie"))
+            token = make_csrf_token(identity["identity"])
             body = setup_page(
                 self.client_ip(),
                 tailscale_identity=identity["identity"],
@@ -1398,7 +1464,7 @@ def make_handler(gateway: UserGateway):
             csrf_token = form.get("csrf_token", [""])[0].strip()
 
             try:
-                if not csrf_is_valid(self.headers.get("Cookie"), csrf_token):
+                if not csrf_is_valid(self.headers.get("Cookie"), csrf_token, identity["identity"]):
                     gateway.audit(
                         "setup_session_expired",
                         client_ip=self.client_ip(),
