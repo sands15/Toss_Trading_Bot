@@ -4,6 +4,14 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+gateway_env_file="${GATEWAY_ENV_FILE:-.local/gateway.env}"
+if [ -f "$gateway_env_file" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$gateway_env_file"
+  set +a
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker was not found. Install Docker Desktop on this Mac first." >&2
   exit 1
