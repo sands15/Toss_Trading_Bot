@@ -1625,6 +1625,12 @@ def dashboard_html() -> str:
       max-height: 420px;
     }
 
+    .watchlist-table {
+      max-height: none;
+      overflow-x: visible;
+      overflow-y: visible;
+    }
+
     .data-table:empty {
       display: none;
     }
@@ -1650,6 +1656,37 @@ def dashboard_html() -> str:
       text-align: left;
       font-size: 13px;
       word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .watchlist-reasons {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .watchlist-reason-card {
+      display: grid;
+      grid-template-columns: minmax(48px, 72px) minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .watchlist-reason-symbol {
+      color: #111827;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .watchlist-reason-text {
+      margin: 0;
+      color: #475569;
+      font-size: 13px;
+      line-height: 1.45;
       overflow-wrap: anywhere;
     }
 
@@ -2772,7 +2809,8 @@ def dashboard_html() -> str:
                 <button type="button" class="btn primary" id="build-watchlist-button">관심종목 생성</button>
                 <p id="build-watchlist-result" class="panel-copy" role="status" aria-live="polite"></p>
               </div>
-              <div id="watchlist-table" class="data-table"></div>
+              <div id="watchlist-table" class="data-table watchlist-table"></div>
+              <div id="watchlist-reasons" class="watchlist-reasons" aria-label="판단 근거"></div>
             </article>
           </div>
         </section>
@@ -3202,7 +3240,7 @@ def dashboard_html() -> str:
     };
 
     const TABLE_COLUMNS = {
-      watchlist: ["symbol", "current_price", "nearest_distance", "reason"],
+      watchlist: ["symbol", "current_price", "nearest_distance"],
       positions: ["symbol", "status", "quantity", "average_price", "stop_price", "updated_at"],
       orders: ["symbol", "side", "quantity", "price", "status", "created_at"]
     };
@@ -3891,6 +3929,21 @@ def dashboard_html() -> str:
       const head = keys.map((key) => `<th>${escapeHtml(columnLabel(key))}</th>`).join("");
       const body = rows.map((row) => `<tr>${keys.map((key) => `<td>${escapeHtml(displayValue(row[key]))}</td>`).join("")}</tr>`).join("");
       container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function renderWatchlistReasons(rows) {
+      const container = document.getElementById("watchlist-reasons");
+      if (!container) return;
+      const reasonRows = (rows || []).filter((row) => row && row.reason);
+      if (!reasonRows.length) {
+        container.innerHTML = "";
+        return;
+      }
+      container.innerHTML = reasonRows.map((row) => `
+        <div class="watchlist-reason-card">
+          <strong class="watchlist-reason-symbol">${escapeHtml(displayValue(row.symbol))}</strong>
+          <p class="watchlist-reason-text">${escapeHtml(displayValue(row.reason))}</p>
+        </div>`).join("");
     }
 
     function setCountBadge(id, count, suffix = "개") {
@@ -4734,6 +4787,7 @@ def dashboard_html() -> str:
       renderLiveReadiness(dashboard.live_readiness || {});
       renderLiveMonitor(dashboard.live_monitor || {});
       renderTable("watchlist-table", watchRows, TABLE_COLUMNS.watchlist, "관심 종목이 없습니다", "필요할 때 관심종목 생성을 눌러 최신 후보를 계산하세요.", "#watchlist");
+      renderWatchlistReasons(watchRows);
       renderTable("positions-table", positionRows, TABLE_COLUMNS.positions, "보유 포지션이 없습니다", "포지션이 생기면 이곳에 표시됩니다.", "#positions");
       renderTable("orders-table", orderRows, TABLE_COLUMNS.orders, "미체결 주문이 없습니다", "실주문 또는 페이퍼 주문 후보가 생기면 이곳에 표시됩니다.", "#orders");
       renderTable("dashboard-open-orders-table", orderRows, null, "미체결 주문이 없습니다", "페이퍼 모드에서 주문 후보가 생기면 여기에 표시됩니다.", "#events");
