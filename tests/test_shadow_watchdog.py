@@ -106,6 +106,7 @@ def _write_stream_context(
         ),
         encoding="utf-8",
     )
+    path.chmod(0o600)
 
 
 def _write_stream_expectation(
@@ -130,6 +131,7 @@ def _write_stream_expectation(
         ),
         encoding="utf-8",
     )
+    path.chmod(0o600)
 
 
 def _error_code(call) -> str:
