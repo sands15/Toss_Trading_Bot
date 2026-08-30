@@ -24,6 +24,7 @@ TEST_PATHS = (
     "tests/test_news_digest.py",
     "tests/test_shadow_watchdog.py",
     "tests/test_shadow_heartbeat.py",
+    "tests/test_paper_status.py",
     "tests/test_macos_shadow_jobs.py",
 )
 

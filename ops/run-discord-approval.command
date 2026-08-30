@@ -129,7 +129,10 @@ writer = RedactedHeartbeatWriter(
     sys.argv[1], release_sha=sys.argv[2], component="approval"
 )
 writer.write("STARTING")
-result = main(heartbeat=lambda status: writer.write(status))
+result = main(
+    heartbeat=lambda status: writer.write(status),
+    expected_release_sha=sys.argv[2],
+)
 writer.write("STOPPED" if result == 0 else "ERROR")
 raise SystemExit(result)
 ' "$DISCORD_APPROVAL_HEARTBEAT_PATH" "$release_sha"

@@ -909,6 +909,121 @@ def test_intraday_simulation_sizes_from_virtual_cash_and_blocks_personal_reads(
         assert paper.current_cash() == Decimal("10000")
 
 
+def test_paper_status_sink_receives_only_public_month_and_latest_day(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summary = {
+        "run_id": "august-forward-test",
+        "simulation_account_key": "private-simulation-account-key",
+        "status": "WAITING",
+        "start_date": "2026-08-01",
+        "end_date_inclusive": "2026-08-31",
+        "initial_cash_usd": "10000",
+        "current_cash_usd": "10000",
+        "realized_pnl_usd": "0",
+        "trade_count": 0,
+        "waiting_plan_count": 1,
+        "coverage": {
+            "expected_count": 21,
+            "covered_count": 1,
+            "missing_count": 20,
+            "missing": ["2026-08-03"],
+            "market_closed": [],
+        },
+        "days": [
+            {
+                "run_id": "august-forward-test",
+                "plan_id": "private-plan-id-old",
+                "plan_hash": "a" * 64,
+                "session_date": "2026-08-27",
+                "symbol": "MSFT",
+                "status": "NO_ENTRY",
+            },
+            {
+                "run_id": "august-forward-test",
+                "plan_id": "private-plan-id-latest",
+                "plan_hash": "b" * 64,
+                "session_date": "2026-08-28",
+                "symbol": "AAPL",
+                "status": "WAITING_ENTRY",
+                "quantity": 1,
+                "cash_before": "10000",
+                "cash_after": None,
+            },
+        ],
+    }
+    closed: list[bool] = []
+
+    class FakePaperStore:
+        def __init__(self, _path: Path, _config: object) -> None:
+            pass
+
+        def summary(self, *, as_of: datetime) -> dict[str, Any]:
+            assert as_of == NOW
+            return summary
+
+        def close(self) -> None:
+            closed.append(True)
+
+    snapshot = operations.HealthSnapshot(
+        mode="shadow",
+        ready=False,
+        blockers=("intraday_plan_window_not_started",),
+        generated_at=NOW,
+    )
+    config = SimpleNamespace(
+        strategy_kind="intraday",
+        live_enabled=False,
+        runtime=SimpleNamespace(mode="shadow"),
+        intraday=SimpleNamespace(
+            simulation_enabled=True,
+            simulation_db_path=tmp_path / "intraday-paper.sqlite3",
+        ),
+    )
+    received: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    def sink(month: dict[str, Any], **metadata: Any) -> None:
+        received.append((month, metadata))
+
+    monkeypatch.setattr(operations, "load_config", lambda _path: config)
+    monkeypatch.setattr(
+        operations,
+        "_paper_service_iteration",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(operations, "IntradayPaperStore", FakePaperStore)
+    monkeypatch.setattr(operations, "_intraday_paper_config", lambda _config: object())
+
+    result = run_paper_service(
+        config_path=tmp_path / "simulation.yaml",
+        state_db=tmp_path / "intraday.sqlite3",
+        log_dir=tmp_path / "logs",
+        once=True,
+        paper_status_sink=sink,
+    )
+
+    assert result is snapshot
+    assert closed == [True]
+    assert len(received) == 1
+    month, metadata = received[0]
+    assert month == operations._paper_month_public_payload(summary)
+    assert metadata == {
+        "planner_ready": False,
+        "blocker_codes": ("intraday_plan_window_not_started",),
+        "latest_day": operations._paper_daily_public_payload(summary["days"][-1]),
+    }
+    assert "simulation_account_key" not in month
+    assert "days" not in month
+    assert "plan_id" not in metadata["latest_day"]
+    serialized = json.dumps(received, sort_keys=True)
+    assert "private-simulation-account-key" not in serialized
+    assert "private-plan-id-old" not in serialized
+    assert "private-plan-id-latest" not in serialized
+    assert "a" * 64 not in serialized
+    assert "b" * 64 not in serialized
+
+
 def test_intraday_simulation_records_official_weekday_market_closure(
     tmp_path: Path,
 ) -> None:

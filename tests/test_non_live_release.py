@@ -331,6 +331,7 @@ def test_gate_runners_scrub_environment_before_starting_pytest() -> None:
     assert "tests/test_intraday_live.py" in runner
     assert "tests/test_intraday_crash_replay.py" in runner
     assert "tests/test_approval_consumer.py" in runner
+    assert "tests/test_paper_status.py" in runner
 
 
 def test_scrubbed_gate_process_contains_no_sensitive_environment_names() -> None:

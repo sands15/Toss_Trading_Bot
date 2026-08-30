@@ -91,7 +91,8 @@ kill switch, 주문 한도, shadow 검증이 끝나기 전까지
   사용하지 않으며 출력의 `ready_for_live_entry`는 항상 `false`
 - Discord 직접 승인 worker: 독립 `turtle_approval` package가 intents `0`의 outbound Gateway로
   단일 사용자·서버·채널과 화면에 표시된 전체 계획값을 묶어 검증하고, 계획 hash 확인 modal 뒤
-  완성된 파일만 no-clobber publish하는 one-shot 영수증을 기록
+  완성된 파일만 no-clobber publish하는 one-shot 영수증을 기록. 같은 worker의 guild 전용 `/현황`은
+  정확히 허용된 사용자·서버·채널에서만 모의투자 상태를 ephemeral 응답하고 다른 context에는 무응답
 - 승인 격리: bot token·원 nonce·계좌번호·주문 정보는 영수증에 없고, 현재 shadow recorder는
   영수증을 거래 DB나 주문 runtime으로 소비하지 않음. 별도 offline v2 consumer는 plan
   economics/hash/Discord identity/boot·writer fence/generation/만료/latch를 다시 검증하고 SQLite에서
@@ -258,6 +259,12 @@ invalid·unresolved·waiting 수, expected/covered/missing/holiday coverage와 j
 Discord 한 줄 알림은 그중 핵심 상태·자산·손익·거래·fee·MDD·무효/미해결/누락 수를 표시한다.
 reconnect percentile, uptime, MAE/MFE, exposure, 종목 분포는 아직 지표가 아니다. paper engine은
 Discord 승인 receipt를 기다리거나 소비하지 않는다.
+
+planner는 매 반복 뒤 공개용 월간 요약과 최신 일일 요약만 allowlist한 `paper-status.json`을 승인
+envelope 옆에 owner-only `0600`으로 원자 교체한다. approval worker는 거래 SQLite나 `turtle_bot`을
+읽지 않고 이 파일만 strict 검증해 `/현황`에 사용한다. release SHA·현재 boot hash·130초 freshness,
+`mode=shadow`, `live_order_submission=false` 중 하나라도 맞지 않으면 상세 원인 없이 현황 unavailable로
+응답한다. 허용되지 않은 사용자·서버·채널에서는 파일도 읽지 않고 아무 응답도 보내지 않는다.
 
 월 요약은 모든 예상 평일이 plan 또는 `MARKET_CLOSED`로 덮여야만 coverage가 완성된다. 기간 종료
 뒤 누락일이 있거나 plan이 하나도 없으면 `INCOMPLETE`이며 `COMPLETE`로 가장하지 않는다. `WAITING`,

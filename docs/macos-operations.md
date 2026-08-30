@@ -110,7 +110,8 @@ order. The only data path is:
 
 ```text
 immutable shadow plan -> redacted 0600 envelope -> Discord button + modal
-                                              -> one new 0600 receipt
+                                               -> one new 0600 receipt
+paper summary -> redacted 0600 paper-status.json -> guild-only /현황
 ```
 
 There is deliberately no edge from the receipt back to the trading DB in this
@@ -159,8 +160,9 @@ lists. Keep the real values only in the local installed plist; the repository
 template contains placeholders. The target channel is the only channel where
 the bot may have `VIEW_CHANNEL | SEND_MESSAGES` (`3072`) through a channel
 overwrite. Install the bot with server-level permissions `0`; do not grant
-administrator, history, message-management, webhook-management, slash-command,
-or privileged-intent permissions. The worker uses an outbound Gateway
+administrator, history, message-management, webhook-management, or privileged-intent
+permissions. The worker registers only the guild-scoped `/현황` command and checks the
+exact user, guild, and channel before reading status or responding. The worker uses an outbound Gateway
 connection with intents `0`, so it needs no public inbound port or interaction
 HTTP endpoint.
 
@@ -469,6 +471,15 @@ runs the causal fill evaluator against a separate USD ledger. The other three
 allowlisted jobs remain approval recorder, news one-shot, and unprivileged
 watchdog. Paper execution does not wait for or consume a Discord approval receipt;
 the approval job remains an independent shadow security exercise.
+
+After each planner iteration, the planner derives `paper-status.json` beside the
+configured `approval-envelope.json` and atomically writes only the redacted month
+summary, latest-day summary, and planner readiness. The approval process reads only
+that owner-private file for `/현황`; it receives no trading database path and imports
+no trading package. The reader rejects a stale file (over 130 seconds), wrong release
+SHA or boot hash, symlinks, non-`0600` mode, schema drift, and any value claiming live
+submission. Calls outside the exact allowlisted user, guild, and channel are silent;
+the allowed response is ephemeral with mentions disabled.
 
 Use two separate private manifests with the same basename: a planner manifest
 under a planner-only directory and an account-free stream manifest under a

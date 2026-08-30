@@ -1514,6 +1514,7 @@ def run_paper_service(
     expected_mode: str | None = None,
     expected_simulation: Mapping[str, str] | None = None,
     expected_account_fingerprint: str | None = None,
+    paper_status_sink: Callable[..., None] | None = None,
     now=lambda: datetime.now(timezone.utc),
 ) -> HealthSnapshot:
     if expected_mode not in {None, "shadow"}:
@@ -1581,6 +1582,12 @@ def run_paper_service(
                 rate_limits=rate_limits,
                 now=now,
             )
+            if paper_status_sink is not None:
+                _publish_intraday_paper_status(
+                    config=config,
+                    snapshot=snapshot,
+                    sink=paper_status_sink,
+                )
             store.record_runtime_event(
                 "INFO",
                 f"{service_mode}_service_heartbeat",
@@ -1592,6 +1599,38 @@ def run_paper_service(
     finally:
         if store is not None:
             store.close()
+
+
+def _publish_intraday_paper_status(
+    *,
+    config,
+    snapshot: HealthSnapshot,
+    sink: Callable[..., None],
+) -> None:
+    """Give a status sink only the existing public paper payloads."""
+
+    if config.strategy_kind != "intraday" or not config.intraday.simulation_enabled:
+        raise RuntimeError("paper status requires intraday simulation mode")
+    paper_store = IntradayPaperStore(
+        config.intraday.simulation_db_path,
+        _intraday_paper_config(config),
+    )
+    try:
+        summary = paper_store.summary(as_of=snapshot.generated_at)
+        days = summary.get("days")
+        latest_day = (
+            _paper_daily_public_payload(days[-1])
+            if isinstance(days, list) and days and isinstance(days[-1], Mapping)
+            else None
+        )
+        sink(
+            _paper_month_public_payload(summary),
+            planner_ready=snapshot.ready,
+            blocker_codes=snapshot.blockers,
+            latest_day=latest_day,
+        )
+    finally:
+        paper_store.close()
 
 
 def _require_shadow_service_config(config) -> None:

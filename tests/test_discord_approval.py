@@ -689,12 +689,41 @@ class _FakeChannel:
             raise TimeoutError("ambiguous send")
 
 
+class _FakeCommand:
+    def __init__(self, callback, **kwargs: object) -> None:
+        self.callback = callback
+        self.name = kwargs["name"]
+        self.description = kwargs["description"]
+        self.guild = kwargs["guild"]
+
+
+class _FakeCommandTree:
+    def __init__(self, client: object) -> None:
+        self.client = client
+        self.commands: list[_FakeCommand] = []
+        self.synced: list[object] = []
+
+    def command(self, **kwargs: object):
+        def register(callback):
+            command = _FakeCommand(callback, **kwargs)
+            self.commands.append(command)
+            return command
+
+        return register
+
+    async def sync(self, *, guild: object) -> list[_FakeCommand]:
+        self.synced.append(guild)
+        return self.commands
+
+
 def _fake_discord_module() -> object:
     allowed_mentions = object()
     return SimpleNamespace(
         Client=_FakeClient,
         Intents=SimpleNamespace(none=lambda: SimpleNamespace(value=0)),
         AllowedMentions=SimpleNamespace(none=lambda: allowed_mentions),
+        Object=lambda *, id: SimpleNamespace(id=id),
+        app_commands=SimpleNamespace(CommandTree=_FakeCommandTree),
         ButtonStyle=SimpleNamespace(success=3),
         ui=SimpleNamespace(
             View=_FakeView,
@@ -703,6 +732,165 @@ def _fake_discord_module() -> object:
             TextInput=_FakeTextInput,
         ),
     )
+
+
+def _paper_status_snapshot() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "release_sha": "a" * 40,
+        "boot_id_hash": "b" * 64,
+        "mode": "shadow",
+        "live_order_submission": False,
+        "updated_at": "2026-08-31T03:00:00+00:00",
+        "planner_ready": False,
+        "blocker_codes": ["intraday_plan_window_not_started"],
+        "run_status": "ACTIVE",
+        "start_date": "2026-08-31",
+        "end_date": "2026-09-30",
+        "initial_cash_usd": "10000",
+        "current_cash_usd": "10025.5",
+        "final_equity_usd": None,
+        "realized_pnl_usd": "25.5",
+        "return_fraction": "0.00255",
+        "trade_count": 2,
+        "wins": 1,
+        "losses": 1,
+        "win_rate": "0.5",
+        "total_fees_usd": "1.2",
+        "max_drawdown_usd": "10",
+        "max_drawdown_fraction": "0.001",
+        "no_entry_count": 0,
+        "invalid_result_count": 0,
+        "unresolved_position_count": 0,
+        "waiting_plan_count": 0,
+        "coverage_expected_count": 23,
+        "coverage_covered_count": 2,
+        "coverage_missing_count": 21,
+        "latest_day": {
+            "session_date": "2026-08-31",
+            "symbol": "AAPL",
+            "status": "CLOSED",
+            "net_pnl_usd": "25.5",
+            "fees_usd": "1.2",
+            "cash_start_usd": "10000",
+            "cash_end_usd": "10025.5",
+            "data_gap_count": 0,
+        },
+    }
+
+
+def _status_interaction(
+    *,
+    user_id: str = USER_ID,
+    guild_id: str = GUILD_ID,
+    channel_id: str = CHANNEL_ID,
+) -> object:
+    events: list[str] = []
+    return SimpleNamespace(
+        user=SimpleNamespace(id=int(user_id)),
+        guild_id=int(guild_id),
+        channel_id=int(channel_id),
+        response=_FakeResponse(events),
+        followup=_FakeFollowup(events),
+    )
+
+
+def test_status_command_is_guild_scoped_synced_and_uses_no_gateway_intents(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    client = worker.create_discord_client(
+        service.config,
+        service=service,
+        discord_module=_fake_discord_module(),
+        expected_release_sha="a" * 40,
+    )
+
+    async def scenario() -> None:
+        async def no_loop() -> None:
+            return None
+
+        client._approval_loop = no_loop
+        await client.setup_hook()
+        await asyncio.sleep(0)
+        assert client.client_kwargs["intents"].value == 0
+        assert len(client._command_tree.commands) == 1
+        command = client._command_tree.commands[0]
+        assert command.name == "현황"
+        assert command.guild.id == int(GUILD_ID)
+        assert [guild.id for guild in client._command_tree.synced] == [int(GUILD_ID)]
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_status_command_responds_ephemerally_only_in_exact_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _ = _service(tmp_path)
+    discord = _fake_discord_module()
+    reads: list[tuple[Path, str]] = []
+
+    def read(path: Path, *, expected_release_sha: str):
+        reads.append((path, expected_release_sha))
+        return _paper_status_snapshot()
+
+    monkeypatch.setattr(worker, "read_paper_status", read)
+    client = worker.create_discord_client(
+        service.config,
+        service=service,
+        discord_module=discord,
+        expected_release_sha="a" * 40,
+    )
+
+    async def scenario() -> None:
+        for denied in (
+            _status_interaction(user_id=OTHER_ID),
+            _status_interaction(guild_id=OTHER_ID),
+            _status_interaction(channel_id=OTHER_ID),
+        ):
+            await client._handle_paper_status(denied)
+            assert denied.response.messages == []
+        assert reads == []
+
+        allowed = _status_interaction()
+        await client._handle_paper_status(allowed)
+        assert reads == [(service.config.paper_status_path, "a" * 40)]
+        assert len(allowed.response.messages) == 1
+        args, kwargs = allowed.response.messages[0]
+        message = str(args[0])
+        assert "한 달 모의투자 현황" in message
+        assert "$10,025.50" in message
+        assert "+$25.50" in message
+        assert "실주문: 꺼짐" in message
+        assert kwargs["ephemeral"] is True
+        assert kwargs["allowed_mentions"] is client.client_kwargs["allowed_mentions"]
+
+    asyncio.run(scenario())
+
+
+def test_status_command_hides_reader_failures_in_allowed_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _ = _service(tmp_path)
+
+    def fail(*args: object, **kwargs: object):
+        raise worker.PaperStatusError("paper_status_stale")
+
+    monkeypatch.setattr(worker, "read_paper_status", fail)
+    client = worker.create_discord_client(
+        service.config,
+        service=service,
+        discord_module=_fake_discord_module(),
+        expected_release_sha="a" * 40,
+    )
+    interaction = _status_interaction()
+    asyncio.run(client._handle_paper_status(interaction))
+
+    assert interaction.response.messages[0][0] == (
+        "현황을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+    )
+    assert interaction.response.messages[0][1]["ephemeral"] is True
 
 
 def test_gateway_loop_reports_sanitized_error_once(

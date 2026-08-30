@@ -14,10 +14,16 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
+
+from turtle_runtime.paper_status import (
+    PaperStatusError,
+    derive_paper_status_path,
+    read_paper_status,
+)
 
 
 TOKEN_ENV = "DISCORD_APPROVAL_BOT_TOKEN"
@@ -282,6 +288,13 @@ class ApprovalConfig:
     envelope_path: Path
     inbox_dir: Path
     poll_interval_seconds: float = 5.0
+
+    @property
+    def paper_status_path(self) -> Path:
+        try:
+            return derive_paper_status_path(self.envelope_path)
+        except PaperStatusError as exc:
+            raise ApprovalError("paper_status_path_invalid") from exc
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ApprovalConfig:
@@ -2024,6 +2037,131 @@ def _safe_error_message(code: str) -> str:
     }.get(code, "승인 요청을 처리하지 못했습니다.")
 
 
+_PAPER_RUN_LABELS = {
+    "ACTIVE": "진행 중",
+    "WAITING": "계획 대기",
+    "OPEN": "포지션 보유 중",
+    "UNRESOLVED": "미해결 포지션",
+    "INVALID": "데이터 무효",
+    "BLOCKED": "차단됨",
+    "INCOMPLETE": "미완료",
+    "COMPLETE": "완료",
+}
+_PAPER_DAY_LABELS = {
+    "WAITING_ENTRY": "진입 대기",
+    "OPEN": "포지션 보유 중",
+    "CLOSED": "청산 완료",
+    "NO_ENTRY": "진입 없음",
+    "INVALID": "데이터 무효",
+    "UNRESOLVED": "미해결",
+    "MARKET_CLOSED": "휴장",
+    "NO_PLAN": "계획 없음",
+}
+_PAPER_BLOCKER_LABELS = {
+    "intraday_simulation_not_started": "모의투자 시작일 전",
+    "intraday_simulation_complete": "모의투자 완료",
+    "intraday_simulation_incomplete": "모의투자 기간 종료 후 미완료 항목 확인 필요",
+    "intraday_market_holiday": "미국장 휴장",
+    "intraday_plan_window_not_started": "장전 계획 시간 대기",
+    "intraday_plan_deadline_missed": "장전 계획 마감 지남",
+    "intraday_not_in_premarket": "프리마켓 시간 밖",
+    "intraday_no_eligible_candidate": "조건을 충족한 종목 없음",
+    "intraday_simulation_blocked": "모의투자 안전 조건 차단",
+    "intraday_simulation_integrity_failure": "모의투자 데이터 무결성 확인 필요",
+    "intraday_read_or_integrity_failure": "조회 또는 데이터 무결성 확인 필요",
+    "planner_configuration_blocked": "플래너 설정 확인 필요",
+}
+
+
+def _paper_usd(value: object, *, signed: bool = False) -> str:
+    amount = Decimal(str(value))
+    prefix = "+" if signed and amount > 0 else "-" if amount < 0 else ""
+    return f"{prefix}${abs(amount):,.2f}"
+
+
+def _paper_percent(value: object, *, signed: bool = False) -> str:
+    percent = Decimal(str(value)) * Decimal("100")
+    prefix = "+" if signed and percent > 0 else "-" if percent < 0 else ""
+    return f"{prefix}{abs(percent):,.2f}%"
+
+
+def render_paper_status(snapshot: Mapping[str, Any]) -> str:
+    """Render only the strict, redacted status schema accepted by the reader."""
+
+    run_status = str(snapshot["run_status"])
+    ready = snapshot["planner_ready"] is True
+    blockers = snapshot["blocker_codes"]
+    planner_label = "정상"
+    if not ready:
+        first = str(blockers[0]) if blockers else "planner_configuration_blocked"
+        planner_label = _PAPER_BLOCKER_LABELS.get(first, "안전 조건 확인 대기")
+    win_rate = snapshot["win_rate"]
+    return_fraction = snapshot["return_fraction"]
+    max_drawdown_fraction = snapshot["max_drawdown_fraction"]
+    lines = [
+        "📊 한 달 모의투자 현황",
+        f"상태: {_PAPER_RUN_LABELS.get(run_status, run_status)} · 플래너: {planner_label}",
+        f"기간: {snapshot['start_date']} ~ {snapshot['end_date']}",
+        (
+            f"가상 현금: {_paper_usd(snapshot['current_cash_usd'])}"
+            f" / 시작 {_paper_usd(snapshot['initial_cash_usd'])}"
+        ),
+        (
+            f"확정 손익: {_paper_usd(snapshot['realized_pnl_usd'], signed=True)}"
+            + (
+                f" ({_paper_percent(return_fraction, signed=True)})"
+                if return_fraction is not None
+                else ""
+            )
+        ),
+        (
+            f"거래: {snapshot['trade_count']}회 · 승 {snapshot['wins']} / 패 {snapshot['losses']}"
+            + (
+                f" · 승률 {_paper_percent(win_rate)}"
+                if win_rate is not None
+                else ""
+            )
+        ),
+        f"수수료: {_paper_usd(snapshot['total_fees_usd'])}",
+        (
+            f"최대 낙폭: {_paper_usd(snapshot['max_drawdown_usd'])}"
+            f" ({_paper_percent(max_drawdown_fraction)})"
+        ),
+        (
+            f"기간 기록: {snapshot['coverage_covered_count']}"
+            f"/{snapshot['coverage_expected_count']}일"
+            f" · 미기록 {snapshot['coverage_missing_count']}일"
+        ),
+        (
+            f"미진입 {snapshot['no_entry_count']} · 대기 {snapshot['waiting_plan_count']}"
+            f" · 무효 {snapshot['invalid_result_count']}"
+            f" · 미해결 {snapshot['unresolved_position_count']}"
+        ),
+    ]
+    final_equity = snapshot["final_equity_usd"]
+    if final_equity is not None:
+        equity_label = "최종 평가액" if run_status == "COMPLETE" else "현재 평가액"
+        lines.append(f"{equity_label}: {_paper_usd(final_equity)}")
+    latest = snapshot["latest_day"]
+    if isinstance(latest, Mapping):
+        symbol = latest["symbol"] or "-"
+        lines.append(
+            f"최근: {latest['session_date']} · {symbol} · "
+            f"{_PAPER_DAY_LABELS.get(str(latest['status']), str(latest['status']))} · "
+            f"손익 {_paper_usd(latest['net_pnl_usd'], signed=True)}"
+        )
+    updated_at = datetime.fromisoformat(
+        str(snapshot["updated_at"]).replace("Z", "+00:00")
+    ).astimezone(timezone(timedelta(hours=9)))
+    lines.extend(
+        (
+            "실주문: 꺼짐 (모의투자 전용)",
+            f"업데이트: {updated_at:%Y-%m-%d %H:%M:%S} KST",
+        )
+    )
+    return "\n".join(lines)
+
+
 def _discord_send_failure_is_definitive(error: BaseException) -> bool:
     status = getattr(error, "status", None)
     return (
@@ -2040,6 +2178,7 @@ def create_discord_client(
     service: ApprovalService | None = None,
     discord_module: Any | None = None,
     heartbeat: Callable[[str], None] | None = None,
+    expected_release_sha: str | None = None,
 ) -> Any:
     """Build the Gateway client; discord.py is imported only at this boundary."""
 
@@ -2090,8 +2229,20 @@ def create_discord_client(
             self._approval_task: asyncio.Task[None] | None = None
             self._posted_key: str | None = None
             self._last_loop_error: str | None = None
+            self._command_guild = discord.Object(id=int(config.guild_id))
+            self._command_tree = discord.app_commands.CommandTree(self)
+
+            async def paper_status(interaction):
+                await self._handle_paper_status(interaction)
+
+            self._paper_status_command = self._command_tree.command(
+                name="현황",
+                description="한 달 모의투자 현황을 확인합니다.",
+                guild=self._command_guild,
+            )(paper_status)
 
         async def setup_hook(self) -> None:
+            await self._command_tree.sync(guild=self._command_guild)
             self._approval_task = asyncio.create_task(self._approval_loop())
 
         async def close(self) -> None:
@@ -2106,8 +2257,16 @@ def create_discord_client(
                 try:
                     await self._publish_current()
                 except ApprovalError as exc:
-                    self._report_loop_error(exc.code)
-                    heartbeat_status = "DEGRADED"
+                    if exc.code in {
+                        "approval_envelope_missing",
+                        "approval_not_yet_valid",
+                        "approval_expired",
+                    }:
+                        self._last_loop_error = None
+                        heartbeat_status = "IDLE"
+                    else:
+                        self._report_loop_error(exc.code)
+                        heartbeat_status = "DEGRADED"
                 except OSError:
                     self._report_loop_error("approval_worker_io_failed")
                     heartbeat_status = "DEGRADED"
@@ -2124,6 +2283,25 @@ def create_discord_client(
                         await super().close()
                         return
                 await asyncio.sleep(config.poll_interval_seconds)
+
+        async def _handle_paper_status(self, interaction: object) -> None:
+            if not _is_allowed_context(approval_service, interaction):
+                return
+            try:
+                if expected_release_sha is None:
+                    raise PaperStatusError("paper_status_release_missing")
+                snapshot = read_paper_status(
+                    config.paper_status_path,
+                    expected_release_sha=expected_release_sha,
+                )
+                message = render_paper_status(snapshot)
+            except Exception:
+                message = "현황을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요."
+            await interaction.response.send_message(
+                message,
+                ephemeral=True,
+                allowed_mentions=allowed_mentions,
+            )
 
         def _report_loop_error(self, code: str) -> None:
             if code == self._last_loop_error:
@@ -2238,12 +2416,17 @@ def main(
     env: Mapping[str, str] | None = None,
     *,
     heartbeat: Callable[[str], None] | None = None,
+    expected_release_sha: str | None = None,
 ) -> int:
     try:
         config = ApprovalConfig.from_env(env)
         if env is None:
             os.environ.pop(TOKEN_ENV, None)
-        client = create_discord_client(config, heartbeat=heartbeat)
+        client = create_discord_client(
+            config,
+            heartbeat=heartbeat,
+            expected_release_sha=expected_release_sha,
+        )
         client.run(config.bot_token, reconnect=True, log_handler=None)
     except KeyboardInterrupt:
         return 130

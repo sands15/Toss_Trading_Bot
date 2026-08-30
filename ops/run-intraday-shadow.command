@@ -239,6 +239,7 @@ from pathlib import Path
 from turtle_bot.config import load_config
 from turtle_bot.operations import run_paper_service
 from turtle_runtime.heartbeat import HeartbeatError, RedactedHeartbeatWriter
+from turtle_runtime.paper_status import PaperStatusWriter, derive_paper_status_path
 client_id = os.environ.pop("TOSS_CLIENT_ID", "")
 client_secret = os.environ.pop("TOSS_CLIENT_SECRET", "")
 trade_webhook = os.environ.pop("DISCORD_TRADE_ALERT_WEBHOOK_URL", "")
@@ -252,6 +253,10 @@ env = {
 }
 writer = RedactedHeartbeatWriter(
     sys.argv[4], release_sha=sys.argv[5], component="planner"
+)
+status_writer = PaperStatusWriter(
+    derive_paper_status_path(config.intraday.approval_envelope_path),
+    release_sha=sys.argv[5],
 )
 databases = (Path(sys.argv[2]).resolve(), Path(sys.argv[9]).resolve())
 def db_quick_check():
@@ -288,6 +293,7 @@ try:
             "experiment_hash": sys.argv[10],
         },
         expected_account_fingerprint=sys.argv[11],
+        paper_status_sink=status_writer.write,
         sleep=heartbeat_sleep,
     )
 except BaseException:
