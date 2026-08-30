@@ -188,13 +188,13 @@ exec /usr/bin/env -i \
     export SSL_CERT_FILE="$ca_bundle"
 
     client_id="$(/usr/bin/security find-generic-password \
-      -w -s toss-trading-bot -a "$keychain_slug:toss_client_id" \
+      -w -s toss-trading-bot -a "${keychain_slug}:toss_client_id" \
       2>/dev/null)" || {
         /usr/bin/printf '%s\n' 'Toss client ID is unavailable from Keychain' >&2
         exit 69
       }
     client_secret="$(/usr/bin/security find-generic-password \
-      -w -s toss-trading-bot -a "$keychain_slug:toss_client_secret" \
+      -w -s toss-trading-bot -a "${keychain_slug}:toss_client_secret" \
       2>/dev/null)" || {
         client_id=
         /usr/bin/printf '%s\n' 'Toss client secret is unavailable from Keychain' >&2

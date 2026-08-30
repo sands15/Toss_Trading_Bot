@@ -219,6 +219,7 @@ def test_secret_handoff_is_keychain_only_and_python_pops_environment() -> None:
         assert source.rindex("exec /usr/bin/env -i") < source.index(
             "security find-generic-password"
         )
+        assert re.search(r"\$[A-Za-z_][A-Za-z0-9_]*:[A-Za-z_]", source) is None
         assert re.search(
             r'^\s*TOSS_CLIENT_(?:ID|SECRET)="\$client_', source, re.MULTILINE
         ) is None
