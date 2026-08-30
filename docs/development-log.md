@@ -823,3 +823,24 @@ order intent, execution order table은 모두 0건이다. 아직 selected-symbol
 `trade:us`·`orderbook:us`를 구독한다. 진단용 LaunchAgent와 임시 probe/helper/status 파일은 검증 후
 삭제했다. 상세 데이터·체결 계약은 `docs/intraday-bracket-design.md`, 설치·운영 경계는
 `docs/macos-operations.md`가 정본이다.
+
+## 2026-08-31 — Discord `/현황` 모의투자 조회 배포
+
+- 기존 exact-five topology를 유지한 채 planner가 매 반복 뒤 승인 envelope와 같은 private directory에
+  `paper-status.json`을 `0600` atomic replace하도록 추가했다. 입력은 기존 공개 월간 payload와 최신
+  일일 payload만 explicit allowlist하며 account key, plan ID/hash, 전체 일자 배열, 경로, broker/raw
+  frame은 기록하지 않는다. `mode=shadow`, `live_order_submission=false`, exact release SHA, 현재 boot
+  hash, owner/private mode, exact schema와 130초 freshness가 모두 맞아야 읽을 수 있다.
+- 기존 intents-0 approval Gateway에 guild-scoped `/현황` 하나를 등록했다. callback은 status 파일을
+  읽기 전에 exact user/guild/channel을 검사하고 불일치하면 defer·응답·파일 read를 모두 생략한다.
+  허용 context의 응답만 ephemeral이며 mentions를 비활성화했다. approval process에는 trading SQLite
+  경로나 Toss credential, `turtle_bot` import를 추가하지 않았다.
+- Windows 전체 회귀와 scrubbed non-live gate `546 passed, 5 skipped`를 통과했다. Mac exact-SHA
+  `b9221a0b0285e30c078fb9d71ecc6cf4752321d3`에서는 network-denied non-live gate `551 passed`,
+  `pip check`, compileall, zsh syntax와 plist lint를 통과했다. planner·selected-symbol stream·approval을
+  같은 SHA로 전환한 뒤 planner heartbeat `OK`, approval heartbeat `IDLE`, stream healthy idle,
+  paper run `ACTIVE`, 실주문 false를 재검증했다.
+- Discord API read-back에서 guild command `/현황`은 정확히 1개이고 global command는 0개였다. 설정에
+  사용한 bot token과 Discord ID는 출력·로그·저장소에 남기지 않았고 1회용 Aqua setup/verification
+  helper와 결과 파일은 검증 후 제거했다. 실제 사용자 interaction 전송은 수행하지 않았으며, 사용자
+  계정에서 지정 채널의 `/현황`을 한 번 호출하는 UI smoke만 남아 있다.
