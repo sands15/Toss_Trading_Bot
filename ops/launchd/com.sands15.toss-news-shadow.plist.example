@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TOSS_NEWS_ALLOWED_CHANNEL_ID</key>
+    <string>REPLACE_WITH_CHANNEL_ID</string>
+    <key>TOSS_NEWS_CONFIG_PATH</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/news-digest.json</string>
+    <key>TOSS_NEWS_HEARTBEAT_PATH</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/heartbeats/news/heartbeat.json</string>
+  </dict>
+  <key>Label</key>
+  <string>com.sands15.toss-news-shadow</string>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/READ_ONLY/RELEASE/REPLACE_WITH_EXACT_COMMIT_SHA/ops/run-news-shadow.command</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/PRIVATE/RUNTIME/news.stderr.log</string>
+  <key>StandardOutPath</key>
+  <string>/ABSOLUTE/PRIVATE/RUNTIME/news.stdout.log</string>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/READ_ONLY/RELEASE/REPLACE_WITH_EXACT_COMMIT_SHA</string>
+</dict>
+</plist>

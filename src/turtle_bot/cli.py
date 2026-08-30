@@ -755,6 +755,7 @@ def run(argv: list[str] | None = None) -> int:
             log_dir=args.log_dir,
             interval_seconds=args.interval_seconds,
             once=args.once,
+            expected_mode="shadow" if args.shadow_service else None,
         )
         if args.once:
             print(json.dumps(snapshot.as_payload(), indent=2, sort_keys=True))

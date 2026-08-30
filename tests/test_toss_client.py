@@ -10,10 +10,14 @@ import pytest
 from turtle_bot.domain import Candle
 from turtle_bot.toss_client import (
     ACCOUNT_HEADER,
+    SimulationReadOnlyTossTransport,
+    ShadowReadOnlyTossTransport,
+    ShadowTransportViolation,
     TossApiError,
     TossClient,
     TossCredentials,
     TossHttpResponse,
+    UrllibTossTransport,
 )
 
 
@@ -148,7 +152,7 @@ def test_rate_limit_response_pauses_group_and_skips_network_until_resume():
         client.get_candles("AAPL", count=1)
 
     assert first.value.status == 429
-    assert client.rate_limits.is_group_paused("market") is True
+    assert client.rate_limits.is_group_paused("market_data_chart") is True
     request_count = len(transport.requests)
 
     with pytest.raises(TossApiError) as second:
@@ -396,6 +400,96 @@ def test_market_info_methods_use_official_read_only_paths():
     assert transport.requests[6].url == "https://example.test/api/v1/stocks/005930/warnings"
 
 
+def test_get_rankings_uses_official_read_only_contract_and_decimal_fields():
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": {
+                        "rankedAt": "2026-01-01T08:00:00-05:00",
+                        "rankings": [
+                            {
+                                "rank": 1,
+                                "symbol": "AAPL",
+                                "currency": "USD",
+                                "price": {
+                                    "lastPrice": "200",
+                                    "basePrice": "198",
+                                    "changeRate": "0.0101",
+                                },
+                                "tradingVolume": "100000",
+                                "tradingAmount": "20000000",
+                            }
+                        ],
+                    }
+                },
+            ),
+        ]
+    )
+    client = _client(transport, account_seq=None)
+
+    result = client.get_rankings(
+        ranking_type="MARKET_TRADING_AMOUNT",
+        market_country="US",
+        duration="realtime",
+        count=20,
+    )
+
+    assert result["rankings"][0]["tradingAmount"] == Decimal("20000000")
+    assert result["rankings"][0]["price"]["changeRate"] == Decimal("0.0101")
+    request = transport.requests[1]
+    assert request.method == "GET"
+    assert request.url == "https://example.test/api/v1/rankings"
+    assert request.query == {
+        "type": "MARKET_TRADING_AMOUNT",
+        "marketCountry": "US",
+        "duration": "realtime",
+        "excludeInvestmentCaution": True,
+        "count": 20,
+    }
+    assert ACCOUNT_HEADER not in request.headers
+
+
+def test_list_stocks_uses_tradeable_universe_filters_without_account_header():
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                200,
+                {},
+                {
+                    "result": [
+                        {
+                            "symbol": "AAPL",
+                            "name": "Apple",
+                            "securityType": "STOCK",
+                            "isCommonShare": True,
+                            "isinCode": "US0378331005",
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    client = _client(transport, account_seq=None)
+
+    result = client.list_stocks("NASDAQ")
+
+    assert result[0]["symbol"] == "AAPL"
+    request = transport.requests[1]
+    assert request.url == "https://example.test/api/v1/stocks/all"
+    assert request.query == {
+        "market": "NASDAQ",
+        "status": "ACTIVE",
+        "securityType": "STOCK",
+        "commonShare": True,
+    }
+    assert ACCOUNT_HEADER not in request.headers
+
+
 def test_account_header_is_required_for_account_methods():
     transport = FakeTransport([])
     client = _client(transport, account_seq=None)
@@ -462,7 +556,7 @@ def test_429_captures_retry_after_and_raises():
         client.get_prices(["005930"])
 
     assert exc.value.status == 429
-    assert client.rate_limits.seconds_until_resumed("market") == 30
+    assert client.rate_limits.seconds_until_resumed("market_data") == 30
 
 
 def test_unknown_enum_values_are_preserved_as_strings():
@@ -519,3 +613,154 @@ def test_client_exposes_no_order_mutation_methods():
     assert not hasattr(client, "create_order")
     assert not hasattr(client, "modify_order")
     assert not hasattr(client, "cancel_order")
+
+
+def test_shadow_transport_allows_only_exact_oauth_and_read_contract():
+    delegate = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"result": {"rankings": []}}),
+        ]
+    )
+    client = TossClient(
+        credentials=TossCredentials("id", "secret"),
+        base_url="https://openapi.tossinvest.com",
+        transport=ShadowReadOnlyTossTransport(delegate),
+        now=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    client.get_rankings(
+        ranking_type="MARKET_TRADING_AMOUNT",
+        market_country="US",
+        duration="realtime",
+    )
+
+    assert [item.method for item in delegate.requests] == ["POST", "GET"]
+    assert delegate.requests[0].url == "https://openapi.tossinvest.com/oauth2/token"
+    assert delegate.requests[1].url == "https://openapi.tossinvest.com/api/v1/rankings"
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/api/v1/accounts",
+        "/api/v1/holdings",
+        "/api/v1/orders",
+        "/api/v1/conditional-orders",
+        "/api/v1/buying-power",
+        "/api/v1/sellable-quantity",
+    ),
+)
+def test_simulation_transport_blocks_personal_state_reads_before_delegate(path: str):
+    delegate = FakeTransport([])
+    guard = SimulationReadOnlyTossTransport(delegate)
+
+    with pytest.raises(ShadowTransportViolation, match="personal account read"):
+        guard.request(
+            "GET",
+            f"https://openapi.tossinvest.com{path}",
+            headers={},
+        )
+
+    assert delegate.requests == []
+
+
+def test_simulation_transport_keeps_read_only_commission_schedule_available():
+    delegate = FakeTransport([TossHttpResponse(200, {}, {"result": []})])
+    guard = SimulationReadOnlyTossTransport(delegate)
+
+    response = guard.request(
+        "GET",
+        "https://openapi.tossinvest.com/api/v1/commissions",
+        headers={ACCOUNT_HEADER: "account"},
+    )
+
+    assert response.status == 200
+    assert len(delegate.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "headers"),
+    [
+        ("/api/v1/prices", {ACCOUNT_HEADER: "account"}),
+        ("/api/v1/commissions", {}),
+    ],
+)
+def test_simulation_transport_confines_account_header_to_commissions(
+    path: str, headers: Mapping[str, str]
+):
+    delegate = FakeTransport([])
+    guard = SimulationReadOnlyTossTransport(delegate)
+
+    with pytest.raises(ShadowTransportViolation):
+        guard.request(
+            "GET",
+            f"https://openapi.tossinvest.com{path}",
+            headers=headers,
+            query={"symbols": "AAPL"} if path.endswith("prices") else None,
+        )
+
+    assert delegate.requests == []
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "query"),
+    [
+        ("POST", "https://openapi.tossinvest.com/api/v1/orders", None),
+        ("DELETE", "https://openapi.tossinvest.com/api/v1/conditional-orders/x", None),
+        ("GET", "https://evil.test/api/v1/accounts", None),
+        ("GET", "https://openapi.tossinvest.com.evil.test/api/v1/accounts", None),
+        ("GET", "https://openapi.tossinvest.com/api/v1/orders/x", None),
+        ("GET", "https://openapi.tossinvest.com/api/v1/accounts", {"next": "evil"}),
+        ("GET", "https://openapi.tossinvest.com/%2e%2e/api/v1/accounts", None),
+    ],
+)
+def test_shadow_transport_rejects_origin_route_query_and_mutation_before_delegate(
+    method: str,
+    url: str,
+    query: Mapping[str, Any] | None,
+):
+    delegate = FakeTransport([])
+    guard = ShadowReadOnlyTossTransport(delegate)
+
+    with pytest.raises(ShadowTransportViolation):
+        guard.request(method, url, headers={}, query=query, json_body={} if method == "POST" else None)
+
+    assert delegate.requests == []
+
+
+def test_shadow_transport_rejects_redirect_response_and_urllib_disables_following():
+    delegate = FakeTransport([TossHttpResponse(302, {"Location": "https://evil.test"}, None)])
+    guard = ShadowReadOnlyTossTransport(delegate)
+
+    with pytest.raises(ShadowTransportViolation, match="redirect"):
+        guard.request(
+            "GET",
+            "https://openapi.tossinvest.com/api/v1/accounts",
+            headers={},
+        )
+
+    assert len(delegate.requests) == 1
+    urllib_transport = UrllibTossTransport()
+    redirect_handlers = [
+        handler
+        for handler in urllib_transport._opener.handlers
+        if handler.__class__.__name__ == "_NoRedirect"
+    ]
+    assert len(redirect_handlers) == 1
+    assert redirect_handlers[0].redirect_request(None, None, 302, "", {}, "https://evil.test") is None
+
+
+def test_shadow_transport_rejects_non_exact_oauth_before_delegate():
+    delegate = FakeTransport([])
+    guard = ShadowReadOnlyTossTransport(delegate)
+
+    with pytest.raises(ShadowTransportViolation, match="OAuth"):
+        guard.request(
+            "POST",
+            "https://openapi.tossinvest.com/oauth2/token",
+            headers={},
+            form_body={"grant_type": "password", "client_id": "id", "client_secret": "secret"},
+        )
+
+    assert delegate.requests == []

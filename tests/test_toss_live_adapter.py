@@ -56,6 +56,13 @@ class FakeTransport:
         return self.responses.pop(0)
 
 
+class OrderTransportFailure(FakeTransport):
+    def request(self, *args, **kwargs) -> TossHttpResponse:
+        if self.responses:
+            return super().request(*args, **kwargs)
+        raise OSError("scripted connection reset after send")
+
+
 def _token_payload() -> dict[str, Any]:
     return {
         "access_token": "tok",
@@ -81,7 +88,7 @@ def test_toss_live_adapter_places_limit_order_with_safe_client_order_id() -> Non
             TossHttpResponse(
                 200,
                 {},
-                {"result": {"orderId": "order-1", "clientOrderId": "client-1"}},
+                {"result": {"orderId": "order-1", "clientOrderId": None}},
             ),
         ]
     )
@@ -113,6 +120,27 @@ def test_toss_live_adapter_places_limit_order_with_safe_client_order_id() -> Non
     assert request.json_body["quantity"] == "10"
     assert request.json_body["price"] == "70000"
     assert len(str(request.json_body["clientOrderId"])) <= 36
+
+
+def test_toss_live_adapter_maps_raw_transport_failure_to_unknown_outcome() -> None:
+    transport = OrderTransportFailure([TossHttpResponse(200, {}, _token_payload())])
+    adapter = TossLiveBrokerAdapter(_client(transport, account_seq=99))
+    intent = OrderIntent(
+        intent_id="intent-transport-failure",
+        idempotency_key="transport-failure-1",
+        symbol="AAPL",
+        side=Side.BUY,
+        quantity=Decimal("1"),
+        order_type=OrderType.LIMIT,
+        limit_price=Decimal("100"),
+        source="test",
+        reason="unknown_transport_outcome",
+    )
+
+    with pytest.raises(LiveBrokerError) as raised:
+        adapter.place_order(intent)
+
+    assert raised.value.unknown_state is True
 
 
 def test_toss_live_adapter_supports_modify_cancel_and_query_mapping() -> None:
@@ -189,6 +217,248 @@ def test_toss_live_adapter_marks_server_error_as_unknown_state() -> None:
 
     with pytest.raises(LiveBrokerError) as exc:
         adapter.place_order(intent)
+
+    assert exc.value.unknown_state is True
+
+
+def test_toss_live_adapter_marks_idempotency_identity_conflict_unknown() -> None:
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(
+                422,
+                {},
+                {
+                    "error": {
+                        "code": "idempotency-key-conflict",
+                        "message": "same key was used with a different body",
+                    }
+                },
+            ),
+        ]
+    )
+    adapter = TossLiveBrokerAdapter(_client(transport, account_seq=99))
+    intent = OrderIntent(
+        intent_id="intent-1",
+        idempotency_key="idem-1",
+        symbol="005930",
+        side=Side.BUY,
+        quantity=Decimal("1"),
+        order_type=OrderType.MARKET,
+        source="test",
+        reason="identity_conflict",
+    )
+
+    with pytest.raises(LiveBrokerError, match="identity conflict") as exc:
+        adapter.place_order(intent)
+
+    assert exc.value.unknown_state is True
+    assert exc.value.code == "idempotency-key-conflict"
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "message"),
+    [
+        (201, {"result": {"orderId": "order-1"}}, "unexpected HTTP 201"),
+        (200, {"orderId": "order-1"}, "object result"),
+        (200, {"result": {"id": "order-1"}}, "orderId"),
+        (
+            200,
+            {"result": {"orderId": "order-1", "clientOrderId": "other-key"}},
+            "clientOrderId",
+        ),
+    ],
+)
+def test_toss_live_adapter_requires_exact_create_response_contract(
+    status: int,
+    payload: Mapping[str, Any],
+    message: str,
+) -> None:
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(status, {}, payload),
+        ]
+    )
+    adapter = TossLiveBrokerAdapter(_client(transport, account_seq=99))
+    intent = OrderIntent(
+        intent_id="intent-1",
+        idempotency_key="idem-1",
+        symbol="005930",
+        side=Side.BUY,
+        quantity=Decimal("1"),
+        order_type=OrderType.MARKET,
+        source="test",
+        reason="strict_response",
+    )
+
+    with pytest.raises(LiveBrokerError, match=message) as exc:
+        adapter.place_order(intent)
+
+    assert exc.value.unknown_state is True
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "message"),
+    [
+        (204, None, "unexpected HTTP 204"),
+        (200, {"orderId": "cancel-1"}, "object result"),
+        (200, {"result": {"id": "cancel-1"}}, "orderId"),
+    ],
+)
+def test_toss_live_adapter_requires_exact_cancel_response_contract(
+    status: int,
+    payload: Any,
+    message: str,
+) -> None:
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(status, {}, payload),
+        ]
+    )
+    adapter = TossLiveBrokerAdapter(_client(transport, account_seq=99))
+
+    with pytest.raises(LiveBrokerError, match=message) as exc:
+        adapter.cancel_order("order-1")
+
+    assert exc.value.unknown_state is True
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        (
+            {"orderId": "order-1", "status": "PENDING", "quantity": "10"},
+            "execution must be an object",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "PENDING",
+                "quantity": "10",
+                "execution": {"averageFilledPrice": None},
+            },
+            "filledQuantity",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "PENDING",
+                "quantity": "10",
+                "execution": {"filledQuantity": "bad", "averageFilledPrice": None},
+            },
+            "filledQuantity",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "PARTIAL_FILLED",
+                "quantity": "10",
+                "execution": {"filledQuantity": 1, "averageFilledPrice": "100"},
+            },
+            "filledQuantity",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "PENDING",
+                "quantity": "10",
+                "execution": {"filledQuantity": "NaN", "averageFilledPrice": None},
+            },
+            "must be finite",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "PARTIAL_FILLED",
+                "quantity": "10",
+                "execution": {"filledQuantity": "-1", "averageFilledPrice": "100"},
+            },
+            "nonnegative",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "FILLED",
+                "quantity": "10",
+                "execution": {"filledQuantity": "11", "averageFilledPrice": "100"},
+            },
+            "exceeds requested",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "PARTIAL_FILLED",
+                "quantity": "10",
+                "execution": {"filledQuantity": "1", "avgPrice": "100"},
+            },
+            "averageFilledPrice",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "PARTIAL_FILLED",
+                "quantity": "10",
+                "execution": {"filledQuantity": "1", "averageFilledPrice": None},
+            },
+            "must be positive",
+        ),
+        (
+            {
+                "orderId": "order-1",
+                "status": "PENDING",
+                "quantity": "10",
+                "execution": {"filledQuantity": "0", "averageFilledPrice": "0"},
+            },
+            "must be null",
+        ),
+    ],
+)
+def test_toss_live_adapter_rejects_invalid_authoritative_execution_data(
+    result: Mapping[str, Any],
+    message: str,
+) -> None:
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, {"result": result}),
+        ]
+    )
+    adapter = TossLiveBrokerAdapter(_client(transport, account_seq=99))
+
+    with pytest.raises(LiveBrokerError, match=message) as exc:
+        adapter.query_order("order-1")
+
+    assert exc.value.unknown_state is True
+
+
+def test_toss_live_adapter_rejects_decreasing_cumulative_fill() -> None:
+    def detail(filled: str) -> dict[str, Any]:
+        return {
+            "result": {
+                "orderId": "order-1",
+                "status": "PARTIAL_FILLED",
+                "quantity": "10",
+                "execution": {
+                    "filledQuantity": filled,
+                    "averageFilledPrice": "100",
+                },
+            }
+        }
+
+    transport = FakeTransport(
+        [
+            TossHttpResponse(200, {}, _token_payload()),
+            TossHttpResponse(200, {}, detail("3")),
+            TossHttpResponse(200, {}, detail("2")),
+        ]
+    )
+    adapter = TossLiveBrokerAdapter(_client(transport, account_seq=99))
+
+    assert adapter.query_order("order-1").filled_quantity == Decimal("3")
+    with pytest.raises(LiveBrokerError, match="decreased") as exc:
+        adapter.query_order("order-1")
 
     assert exc.value.unknown_state is True
 

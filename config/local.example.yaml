@@ -59,6 +59,7 @@ runtime:
   - AMD
   - META
 strategy:
+  # For the separate shadow-only intraday planner, use intraday.example.yaml.
   kind: momentum
   minimum_tick: 0.01
   n_method: turtle

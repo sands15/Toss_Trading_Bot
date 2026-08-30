@@ -1,0 +1,92 @@
+# One-month, no-order forward-test profile. Create two private copies outside
+# the Git checkout, each named intraday-simulation.yaml in a separate directory:
+# planner: fill account_alias/account_seq only for the commission-schedule GET.
+# stream: leave account_alias/account_seq empty; it receives no account identity.
+# Keep every economic/selection/runtime/simulation field identical so both copies
+# produce the same immutable experiment hash. The resolved absolute
+# news_context_path is part of that hash. Use the same resolved absolute state DB,
+# paper DB, and news-context paths in both copies. Credentials stay in macOS
+# Keychain; neither file contains a token or webhook. The planner copy contains
+# account_seq, so it must be a non-symlink regular file owned by the runtime user
+# with no group/other permission bits (normally chmod 600). Deployment also pins
+# a private SHA-256 account-authority fingerprint; never copy that value into Git
+# or the account-free stream manifest.
+toss:
+  live_enabled: false
+  base_url: https://openapi.tossinvest.com
+  account_alias:
+  # Used only for the dated US commission schedule. Simulation transport blocks
+  # holdings, buying power, order history, and every mutation endpoint.
+  account_seq:
+  client_id_env: TOSS_CLIENT_ID
+  client_secret_env: TOSS_CLIENT_SECRET
+
+runtime:
+  mode: shadow
+  market: US
+  timezone: America/New_York
+  use_market_calendar: true
+  symbols: []
+  state_db: state/intraday.sqlite3
+  log_dir: logs
+  interval_seconds: 60
+  watchlist_enabled: false
+  universe_enabled: false
+
+strategy:
+  kind: intraday
+  intraday:
+    # Hypotheses for the forward test, not approved live-trading settings.
+    cash_allocation_fraction: 0.90
+    # 0.25% of allocated cash: 0.90 * 0.0025 = 0.00225 of total cash.
+    risk_fraction: 0.00225
+    take_profit_fraction: 0.012
+    stop_fraction: 0.006
+    stop_limit_buffer_fraction: 0.001
+    max_entry_slippage_fraction: 0.001
+    estimated_round_trip_cost_fraction: 0.0021
+    estimated_fixed_round_trip_cost: 0.01
+    minimum_reward_risk_ratio: 1.2
+    max_spread_fraction: 0.002
+    max_last_mid_deviation_fraction: 0.003
+    max_notional: 9000
+    max_quantity: 10000
+
+    plan_lead_minutes: 90
+    minimum_plan_lead_minutes: 15
+    quote_max_age_seconds: 15
+    orderbook_max_age_seconds: 15
+    max_quote_skew_seconds: 2
+    entry_start_minutes_after_open: 5
+    entry_expiry_minutes_after_open: 60
+    force_exit_minutes_before_close: 15
+    regular_session_only: true
+
+    selection:
+      mode: automatic
+      rank_max_age_seconds: 120
+      min_price: 5
+      min_trading_amount: 1000000
+      min_change_fraction: 0.005
+      max_change_fraction: 0.08
+      min_average_daily_value: 50000000
+      max_average_daily_range_fraction: 0.08
+      max_premarket_range_fraction: 0.05
+
+    live_execution_enabled: false
+    # load_config resolves this example-relative value; both rendered private
+    # manifests must resolve it to the exact same absolute news-context.json.
+    news_context_path: ../state/news-context.json
+    approval_envelope_path: ../state/approval-envelope.json
+    simulation:
+      enabled: true
+      id: 2026-09-forward-test
+      start_date: 2026-08-31
+      end_date: 2026-09-30
+      initial_cash: 10000
+      slippage_fraction: 0.0005
+      db_path: ../state/intraday-paper.sqlite3
+
+live:
+  emergency_stop: true
+  allowed_symbols: []

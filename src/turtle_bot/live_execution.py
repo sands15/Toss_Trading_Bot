@@ -8,9 +8,16 @@ from .live_safety import PreTradeDecision, PreTradeSafety, PreTradeSafetyContext
 
 
 class LiveBrokerError(RuntimeError):
-    def __init__(self, message: str, *, unknown_state: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        unknown_state: bool = False,
+        code: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.unknown_state = unknown_state
+        self.code = code
 
 
 class LiveBrokerDisabledError(LiveBrokerError):

@@ -7,6 +7,23 @@ from turtle_bot.health import HealthServer, HealthSnapshot, TOSS_LOGO_ASSET, das
 from turtle_bot.notifier import DiscordTradeNotifier, MemoryNotifier
 
 
+TEST_CHANNEL_ID = "123456789012345678"
+TEST_WEBHOOK_URL = "https://discord.com/api/webhooks/123/token"
+
+
+def _discord_notifier(
+    *, sender, channel_id: str = TEST_CHANNEL_ID
+) -> DiscordTradeNotifier:
+    return DiscordTradeNotifier(
+        env={
+            "DISCORD_TRADE_ALERT_WEBHOOK_URL": TEST_WEBHOOK_URL,
+            "DISCORD_ALLOWED_CHANNEL_ID": channel_id,
+        },
+        sender=sender,
+        channel_resolver=lambda _url, _timeout: TEST_CHANNEL_ID,
+    )
+
+
 def test_memory_notifier_collects_output_only_messages() -> None:
     notifier = MemoryNotifier()
     notifier.notify("startup", level="info", payload={"step": "start"})
@@ -20,9 +37,8 @@ def test_memory_notifier_collects_output_only_messages() -> None:
 
 def test_discord_trade_notifier_sends_compact_trade_alert() -> None:
     sent: list[tuple[str, bytes, float]] = []
-    notifier = DiscordTradeNotifier(
-        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
-        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
     )
 
     sent_ok = notifier.notify(
@@ -39,7 +55,7 @@ def test_discord_trade_notifier_sends_compact_trade_alert() -> None:
 
     assert sent_ok is True
     assert sent
-    assert sent[0][0] == "https://discord.test/webhook"
+    assert sent[0][0] == TEST_WEBHOOK_URL
     assert b"SPCX" in sent[0][1]
     assert "정훈 미국주식 계좌".encode("utf-8") in sent[0][1]
     assert "매수".encode("utf-8") in sent[0][1]
@@ -50,9 +66,8 @@ def test_discord_trade_notifier_sends_compact_trade_alert() -> None:
 
 def test_discord_trade_notifier_sends_cancel_after_ack_alert() -> None:
     sent: list[tuple[str, bytes, float]] = []
-    notifier = DiscordTradeNotifier(
-        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
-        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
     )
 
     notifier.notify(
@@ -74,9 +89,8 @@ def test_discord_trade_notifier_sends_cancel_after_ack_alert() -> None:
 
 def test_discord_trade_notifier_sends_dashboard_test_alert() -> None:
     sent: list[tuple[str, bytes, float]] = []
-    notifier = DiscordTradeNotifier(
-        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
-        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
     )
 
     sent_ok = notifier.notify(
@@ -91,14 +105,11 @@ def test_discord_trade_notifier_sends_dashboard_test_alert() -> None:
     assert "정훈 미국주식 계좌".encode("utf-8") in sent[0][1]
 
 
-def test_discord_trade_notifier_keeps_safe_failure_reason() -> None:
+def test_discord_trade_notifier_does_not_copy_arbitrary_failure_text() -> None:
     def fail_send(url: str, body: bytes, timeout: float) -> None:
         raise RuntimeError("network unreachable")
 
-    notifier = DiscordTradeNotifier(
-        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
-        sender=fail_send,
-    )
+    notifier = _discord_notifier(sender=fail_send)
 
     sent_ok = notifier.notify(
         "discord_alert_test",
@@ -107,20 +118,146 @@ def test_discord_trade_notifier_keeps_safe_failure_reason() -> None:
     )
 
     assert sent_ok is False
-    assert notifier.last_error == "network unreachable"
+    assert notifier.last_error == "RuntimeError"
 
 
 def test_discord_trade_notifier_ignores_non_trade_noise() -> None:
     sent: list[tuple[str, bytes, float]] = []
-    notifier = DiscordTradeNotifier(
-        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook"},
-        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
     )
 
     sent_ok = notifier.notify("settings_saved", level="info", payload={"path": "config/local.yaml"})
 
     assert sent_ok is False
     assert sent == []
+
+
+def test_discord_trade_notifier_fails_closed_for_wrong_channel() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+        channel_id="223456789012345678",
+    )
+
+    sent_ok = notifier.notify(
+        "discord_alert_test", payload={"account_alias": "미국주식 계좌"}
+    )
+
+    assert sent_ok is False
+    assert notifier.last_error == "discord_channel_mismatch"
+    assert sent == []
+
+
+def test_discord_trade_notifier_revalidates_channel_before_every_post() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    resolved = iter((TEST_CHANNEL_ID, "223456789012345678"))
+    notifier = DiscordTradeNotifier(
+        env={
+            "DISCORD_TRADE_ALERT_WEBHOOK_URL": TEST_WEBHOOK_URL,
+            "DISCORD_ALLOWED_CHANNEL_ID": TEST_CHANNEL_ID,
+        },
+        sender=lambda url, body, timeout: sent.append((url, body, timeout)),
+        channel_resolver=lambda _url, _timeout: next(resolved),
+    )
+
+    assert notifier.notify(
+        "discord_alert_test", payload={"account_alias": "미국주식 계좌"}
+    )
+    assert not notifier.notify(
+        "discord_alert_test", payload={"account_alias": "미국주식 계좌"}
+    )
+    assert notifier.last_error == "discord_channel_mismatch"
+    assert len(sent) == 1
+
+
+def test_discord_trade_notifier_requires_channel_and_official_webhook() -> None:
+    missing_channel = DiscordTradeNotifier(
+        env={"DISCORD_TRADE_ALERT_WEBHOOK_URL": TEST_WEBHOOK_URL}
+    )
+    invalid_webhook = DiscordTradeNotifier(
+        env={
+            "DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://example.com/webhook",
+            "DISCORD_ALLOWED_CHANNEL_ID": TEST_CHANNEL_ID,
+        }
+    )
+
+    assert missing_channel.enabled is False
+    assert invalid_webhook.enabled is False
+
+
+def test_discord_intraday_plan_is_shadow_only_and_redacted() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
+    )
+
+    sent_ok = notifier.notify(
+        "intraday_shadow_plan_created",
+        payload={
+            "account_alias": "미국주식 계좌",
+            "account_key": "must-not-leak",
+            "symbol": "AAPL",
+            "quantity": "1",
+            "entry_trigger": "100",
+            "entry_limit": "100.10",
+            "target_trigger": "102",
+            "stop_trigger": "98.50",
+            "stop_limit": "98.40",
+            "planned_risk": "1.80",
+            "reward_risk_ratio": "1.1",
+            "entry_start": "2026-08-28T09:35:00-04:00",
+            "entry_expiry": "2026-08-28T10:30:00-04:00",
+        },
+    )
+
+    assert sent_ok is True
+    body = sent[0][1]
+    assert "SHADOW/실주문 없음".encode("utf-8") in body
+    assert b"must-not-leak" not in body
+    assert b'"allowed_mentions": {"parse": []}' in body
+
+
+def test_discord_intraday_paper_reports_are_explicitly_virtual() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
+    )
+
+    assert notifier.notify(
+        "intraday_paper_daily_report",
+        payload={
+            "session_date": "2026-08-31",
+            "status": "TARGET",
+            "net_pnl": "12.34",
+            "cash_end": "10012.34",
+        },
+    )
+
+    body = sent[0][1]
+    assert "가상매매 일일결과".encode("utf-8") in body
+    assert "실주문 없음".encode("utf-8") in body
+    assert b"10012.34" in body
+
+
+def test_discord_intraday_blocker_is_explicitly_non_live() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
+    )
+
+    notifier.notify(
+        "intraday_shadow_plan_blocked",
+        level="warn",
+        payload={
+            "account_alias": "미국주식 계좌",
+            "symbol": "AAPL",
+            "reason": "quote is stale",
+        },
+    )
+
+    assert "계획 차단".encode("utf-8") in sent[0][1]
+    assert "실주문 없음".encode("utf-8") in sent[0][1]
 
 
 def test_health_payload_is_read_only_without_binding() -> None:

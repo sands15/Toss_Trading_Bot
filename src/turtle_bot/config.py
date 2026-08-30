@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -76,11 +79,63 @@ class LiveConfig:
 
 
 @dataclass(frozen=True)
+class IntradayConfig:
+    """Explicit inputs for the read-only US premarket plan builder.
+
+    Economic values intentionally have no trading defaults.  A plan is blocked
+    until the operator supplies every value in configuration.
+    """
+
+    cash_allocation_fraction: Decimal | None = None
+    risk_fraction: Decimal | None = None
+    take_profit_fraction: Decimal | None = None
+    stop_fraction: Decimal | None = None
+    stop_limit_buffer_fraction: Decimal | None = None
+    max_entry_slippage_fraction: Decimal | None = None
+    estimated_round_trip_cost_fraction: Decimal | None = None
+    estimated_fixed_round_trip_cost: Decimal | None = None
+    minimum_reward_risk_ratio: Decimal | None = None
+    max_spread_fraction: Decimal | None = None
+    max_last_mid_deviation_fraction: Decimal | None = None
+    max_notional: Decimal | None = None
+    max_quantity: int = 1
+    plan_lead_minutes: int | None = None
+    minimum_plan_lead_minutes: int | None = None
+    quote_max_age_seconds: int | None = None
+    orderbook_max_age_seconds: int | None = None
+    max_quote_skew_seconds: int | None = None
+    entry_start_minutes_after_open: int | None = None
+    entry_expiry_minutes_after_open: int | None = None
+    force_exit_minutes_before_close: int | None = None
+    regular_session_only: bool = True
+    live_execution_enabled: bool = False
+    selection_mode: str = "manual"
+    selection_rank_max_age_seconds: int | None = None
+    selection_min_price: Decimal | None = None
+    selection_min_trading_amount: Decimal | None = None
+    selection_min_change_fraction: Decimal | None = None
+    selection_max_change_fraction: Decimal | None = None
+    selection_min_average_daily_value: Decimal | None = None
+    selection_max_average_daily_range_fraction: Decimal | None = None
+    selection_max_premarket_range_fraction: Decimal | None = None
+    news_context_path: str | None = None
+    approval_envelope_path: str | None = None
+    simulation_enabled: bool = False
+    simulation_id: str | None = None
+    simulation_start_date: date | None = None
+    simulation_end_date: date | None = None
+    simulation_initial_cash: Decimal | None = None
+    simulation_slippage_fraction: Decimal | None = None
+    simulation_db_path: str | None = None
+
+
+@dataclass(frozen=True)
 class TradingConfig:
     toss: TossConfig = field(default_factory=TossConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     ai: AiConfig = field(default_factory=AiConfig)
     live: LiveConfig = field(default_factory=LiveConfig)
+    intraday: IntradayConfig = field(default_factory=IntradayConfig)
     strategy_kind: str = "turtle"
     minimum_tick: Decimal = Decimal("1")
     risk_pct_per_unit: Decimal = Decimal("0.005")
@@ -114,6 +169,86 @@ class TradingConfig:
         return Decimal("1") - self.momentum_max_exposure_pct
 
 
+_INTRADAY_EXPERIMENT_FIELDS = (
+    "cash_allocation_fraction",
+    "risk_fraction",
+    "take_profit_fraction",
+    "stop_fraction",
+    "stop_limit_buffer_fraction",
+    "max_entry_slippage_fraction",
+    "estimated_round_trip_cost_fraction",
+    "estimated_fixed_round_trip_cost",
+    "minimum_reward_risk_ratio",
+    "max_spread_fraction",
+    "max_last_mid_deviation_fraction",
+    "max_notional",
+    "max_quantity",
+    "plan_lead_minutes",
+    "minimum_plan_lead_minutes",
+    "quote_max_age_seconds",
+    "orderbook_max_age_seconds",
+    "max_quote_skew_seconds",
+    "entry_start_minutes_after_open",
+    "entry_expiry_minutes_after_open",
+    "force_exit_minutes_before_close",
+    "regular_session_only",
+    "news_context_path",
+    "live_execution_enabled",
+    "selection_mode",
+    "selection_rank_max_age_seconds",
+    "selection_min_price",
+    "selection_min_trading_amount",
+    "selection_min_change_fraction",
+    "selection_max_change_fraction",
+    "selection_min_average_daily_value",
+    "selection_max_average_daily_range_fraction",
+    "selection_max_premarket_range_fraction",
+    "simulation_id",
+    "simulation_enabled",
+    "simulation_start_date",
+    "simulation_end_date",
+    "simulation_initial_cash",
+    "simulation_slippage_fraction",
+)
+
+
+def intraday_simulation_experiment_hash(config: TradingConfig) -> str:
+    """Hash every economic/selection input that must stay fixed for one run."""
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, Decimal):
+            return format(value, "f")
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, tuple):
+            return [normalize(item) for item in value]
+        return value
+
+    payload = {
+        "schema_version": 1,
+        "strategy_kind": config.strategy_kind,
+        "runtime": {
+            "market": config.runtime.market,
+            "timezone": config.runtime.timezone_name,
+            "use_market_calendar": config.runtime.use_market_calendar,
+            "symbols": normalize(config.runtime.symbols),
+            "interval_seconds": config.runtime.interval_seconds,
+        },
+        "intraday": {
+            name: normalize(getattr(config.intraday, name))
+            for name in _INTRADAY_EXPERIMENT_FIELDS
+        },
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _to_decimal(value: Any, default: Decimal) -> Decimal:
     try:
         return Decimal(str(value))
@@ -124,13 +259,54 @@ def _to_decimal(value: Any, default: Decimal) -> Decimal:
 def _to_optional_decimal(value: Any) -> Decimal | None:
     if value is None or value == "":
         return None
-    return _to_decimal(value, Decimal("0"))
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a valid decimal configuration value")
+    try:
+        parsed = Decimal(str(value))
+    except Exception as exc:
+        raise ValueError("invalid decimal configuration value") from exc
+    if not parsed.is_finite():
+        raise ValueError("decimal configuration value must be finite")
+    return parsed
 
 
 def _to_optional_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a valid integer configuration value")
     return int(value)
+
+
+def _to_optional_date(value: Any) -> date | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        raise ValueError("datetime is not a valid date configuration value")
+    if isinstance(value, date):
+        return value
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a valid date configuration value")
+    text = str(value).strip()
+    if len(text) != 10 or text[4:5] != "-" or text[7:8] != "-":
+        raise ValueError("date configuration value must use YYYY-MM-DD")
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("date configuration value must use YYYY-MM-DD") from exc
+
+
+def _to_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError("boolean configuration value must be true or false")
+    return value
+
+
+def _to_int(value: Any, default: int) -> int:
+    parsed = _to_optional_int(value)
+    return default if parsed is None else parsed
 
 
 def _momentum_max_exposure_pct(momentum: Mapping[str, Any]) -> Decimal:
@@ -160,6 +336,20 @@ def _to_clean_string(value: Any, *, allow_empty: bool = False) -> str | None:
     if not text and not allow_empty:
         return None
     return text
+
+
+def _to_optional_path_string(value: Any, *, base_dir: Path) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError("path configuration value must be a string")
+    text = value.strip()
+    if not text:
+        return None
+    parsed = Path(text).expanduser()
+    if not parsed.is_absolute():
+        parsed = base_dir / parsed
+    return str(parsed.resolve())
 
 
 def _to_string_list(value: Any) -> tuple[str, ...]:
@@ -222,12 +412,19 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
 
     strategy = raw.get("strategy", {}) or {}
     momentum = strategy.get("momentum", {}) or {}
+    intraday = strategy.get("intraday", {}) or {}
+    selection = intraday.get("selection", {}) or {}
+    simulation = intraday.get("simulation", {}) or {}
+    if not isinstance(selection, Mapping):
+        raise ValueError("strategy.intraday.selection must be an object")
+    if not isinstance(simulation, Mapping):
+        raise ValueError("strategy.intraday.simulation must be an object")
     risk = strategy.get("risk", {}) or {}
     toss = raw.get("toss", {}) or {}
     runtime = raw.get("runtime", {}) or {}
     ai = raw.get("ai", {}) or {}
     live = raw.get("live", {}) or {}
-    return TradingConfig(
+    config = TradingConfig(
         toss=TossConfig(
             live_enabled=bool(toss.get("live_enabled", False)),
             base_url=toss.get("base_url"),
@@ -322,6 +519,121 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
                 live.get("max_consecutive_order_failures", 3)
             ),
         ),
+        intraday=IntradayConfig(
+            cash_allocation_fraction=_to_optional_decimal(
+                intraday.get("cash_allocation_fraction")
+            ),
+            risk_fraction=_to_optional_decimal(intraday.get("risk_fraction")),
+            take_profit_fraction=_to_optional_decimal(
+                intraday.get("take_profit_fraction")
+            ),
+            stop_fraction=_to_optional_decimal(intraday.get("stop_fraction")),
+            stop_limit_buffer_fraction=_to_optional_decimal(
+                intraday.get("stop_limit_buffer_fraction")
+            ),
+            max_entry_slippage_fraction=_to_optional_decimal(
+                intraday.get("max_entry_slippage_fraction")
+            ),
+            estimated_round_trip_cost_fraction=_to_optional_decimal(
+                intraday.get("estimated_round_trip_cost_fraction")
+            ),
+            estimated_fixed_round_trip_cost=_to_optional_decimal(
+                intraday.get("estimated_fixed_round_trip_cost")
+            ),
+            minimum_reward_risk_ratio=_to_optional_decimal(
+                intraday.get("minimum_reward_risk_ratio")
+            ),
+            max_spread_fraction=_to_optional_decimal(
+                intraday.get("max_spread_fraction")
+            ),
+            max_last_mid_deviation_fraction=_to_optional_decimal(
+                intraday.get("max_last_mid_deviation_fraction")
+            ),
+            max_notional=_to_optional_decimal(intraday.get("max_notional")),
+            max_quantity=_to_int(intraday.get("max_quantity", 1), 1),
+            plan_lead_minutes=_to_optional_int(
+                intraday.get("plan_lead_minutes")
+            ),
+            minimum_plan_lead_minutes=_to_optional_int(
+                intraday.get("minimum_plan_lead_minutes")
+            ),
+            quote_max_age_seconds=_to_optional_int(
+                intraday.get("quote_max_age_seconds")
+            ),
+            orderbook_max_age_seconds=_to_optional_int(
+                intraday.get("orderbook_max_age_seconds")
+            ),
+            max_quote_skew_seconds=_to_optional_int(
+                intraday.get("max_quote_skew_seconds")
+            ),
+            entry_start_minutes_after_open=_to_optional_int(
+                intraday.get("entry_start_minutes_after_open")
+            ),
+            entry_expiry_minutes_after_open=_to_optional_int(
+                intraday.get("entry_expiry_minutes_after_open")
+            ),
+            force_exit_minutes_before_close=_to_optional_int(
+                intraday.get("force_exit_minutes_before_close")
+            ),
+            regular_session_only=bool(
+                intraday.get("regular_session_only", True)
+            ),
+            live_execution_enabled=bool(
+                intraday.get("live_execution_enabled", False)
+            ),
+            selection_mode=str(selection.get("mode", "manual")).strip().lower(),
+            selection_rank_max_age_seconds=_to_optional_int(
+                selection.get("rank_max_age_seconds")
+            ),
+            selection_min_price=_to_optional_decimal(selection.get("min_price")),
+            selection_min_trading_amount=_to_optional_decimal(
+                selection.get("min_trading_amount")
+            ),
+            selection_min_change_fraction=_to_optional_decimal(
+                selection.get("min_change_fraction")
+            ),
+            selection_max_change_fraction=_to_optional_decimal(
+                selection.get("max_change_fraction")
+            ),
+            selection_min_average_daily_value=_to_optional_decimal(
+                selection.get("min_average_daily_value")
+            ),
+            selection_max_average_daily_range_fraction=_to_optional_decimal(
+                selection.get("max_average_daily_range_fraction")
+            ),
+            selection_max_premarket_range_fraction=_to_optional_decimal(
+                selection.get("max_premarket_range_fraction")
+            ),
+            news_context_path=_to_optional_path_string(
+                intraday.get("news_context_path"),
+                base_dir=p.parent.resolve(),
+            ),
+            approval_envelope_path=_to_optional_path_string(
+                intraday.get("approval_envelope_path"),
+                base_dir=p.parent.resolve(),
+            ),
+            simulation_enabled=_to_bool(simulation.get("enabled"), default=False),
+            simulation_id=_to_clean_string(
+                simulation.get("id"),
+                allow_empty=False,
+            ),
+            simulation_start_date=_to_optional_date(
+                simulation.get("start_date")
+            ),
+            simulation_end_date=_to_optional_date(
+                simulation.get("end_date")
+            ),
+            simulation_initial_cash=_to_optional_decimal(
+                simulation.get("initial_cash")
+            ),
+            simulation_slippage_fraction=_to_optional_decimal(
+                simulation.get("slippage_fraction")
+            ),
+            simulation_db_path=_to_optional_path_string(
+                simulation.get("db_path"),
+                base_dir=p.parent.resolve(),
+            ),
+        ),
         minimum_tick=_to_decimal(strategy.get("minimum_tick"), Decimal("1")),
         strategy_kind=str(strategy.get("kind", "turtle")).strip().lower(),
         risk_pct_per_unit=_to_decimal(risk.get("risk_pct_per_unit"), Decimal("0.005")),
@@ -375,3 +687,10 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
             momentum.get("use_market_filter", True)
         ),
     )
+    if config.intraday.simulation_enabled:
+        context_path = Path(str(config.intraday.news_context_path or ""))
+        if not context_path.is_absolute() or context_path.name != "news-context.json":
+            raise ValueError(
+                "strategy.intraday.news_context_path must be an absolute news-context.json path when simulation is enabled"
+            )
+    return config

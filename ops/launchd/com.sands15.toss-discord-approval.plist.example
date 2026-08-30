@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sands15.toss-discord-approval</string>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/READ_ONLY/RELEASE/REPLACE_WITH_EXACT_COMMIT_SHA/ops/run-discord-approval.command</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/READ_ONLY/RELEASE/REPLACE_WITH_EXACT_COMMIT_SHA</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DISCORD_ALLOWED_GUILD_ID</key>
+    <string>__GUILD_ID__</string>
+    <key>DISCORD_ALLOWED_CHANNEL_ID</key>
+    <string>__CHANNEL_ID__</string>
+    <key>DISCORD_ALLOWED_USER_ID</key>
+    <string>__USER_ID__</string>
+    <key>DISCORD_APPROVAL_ENVELOPE_PATH</key>
+    <string>__RUNTIME_DIR__/approval-envelope.json</string>
+    <key>DISCORD_APPROVAL_INBOX_DIR</key>
+    <string>__RUNTIME_DIR__/approval-inbox</string>
+    <key>DISCORD_APPROVAL_HEARTBEAT_PATH</key>
+    <string>__RUNTIME_DIR__/heartbeats/approval/heartbeat.json</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>__RUNTIME_DIR__/discord-approval.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__RUNTIME_DIR__/discord-approval.stderr.log</string>
+</dict>
+</plist>

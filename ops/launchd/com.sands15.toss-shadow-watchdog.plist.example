@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TOSS_WATCHDOG_HEARTBEAT_ROOT</key>
+    <string>/ABSOLUTE/ROOT_OWNED/HEARTBEATS</string>
+    <key>TOSS_WATCHDOG_CONTEXT_PATH</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/news-context.json</string>
+    <key>TOSS_WATCHDOG_EXPECTATION_PATH</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/stream-expectation.json</string>
+    <key>TOSS_WATCHDOG_LAUNCHD_DOMAIN</key>
+    <string>gui/REPLACE_WITH_RUNTIME_UID</string>
+    <key>TOSS_WATCHDOG_RELEASE_SHA</key>
+    <string>REPLACE_WITH_EXACT_COMMIT_SHA</string>
+    <key>TOSS_WATCHDOG_STATE_PATH</key>
+    <string>/ABSOLUTE/WATCHDOG_OWNED/STATE/state.json</string>
+  </dict>
+  <key>Label</key>
+  <string>com.sands15.toss-shadow-watchdog</string>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/READ_ONLY/RELEASE/SHA/ops/run-shadow-watchdog.command</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>15</integer>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/READ_ONLY/RELEASE/SHA</string>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/WATCHDOG_OWNED/LOG/watchdog.stderr.log</string>
+  <key>StandardOutPath</key>
+  <string>/ABSOLUTE/WATCHDOG_OWNED/LOG/watchdog.stdout.log</string>
+</dict>
+</plist>

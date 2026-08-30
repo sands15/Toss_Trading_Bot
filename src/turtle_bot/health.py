@@ -4648,7 +4648,7 @@ def dashboard_html() -> str:
         if (payload.status === "sent") {
           showToast("Discord 테스트 전송", "웹훅으로 테스트 메시지를 보냈습니다.", "info");
         } else if (payload.status === "not_configured") {
-          showToast("Discord 웹훅 없음", "DISCORD_TRADE_ALERT_WEBHOOK_URL을 설정하고 서버를 다시 시작하세요.", "warn");
+          showToast("Discord 설정 없음", "DISCORD_TRADE_ALERT_WEBHOOK_URL과 DISCORD_ALLOWED_CHANNEL_ID를 설정하고 서버를 다시 시작하세요.", "warn");
         } else {
           showToast("Discord 전송 실패", payload.error || "웹훅 응답을 확인하지 못했습니다.", "warn");
         }

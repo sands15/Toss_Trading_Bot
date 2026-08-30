@@ -811,7 +811,11 @@ def test_live_service_blocks_second_order_by_daily_count_limit(
                         "side": "BUY",
                         "status": "FILLED",
                         "quantity": "1",
-                    }
+                        "execution": {
+                            "filledQuantity": "1",
+                            "averageFilledPrice": "105",
+                        },
+                    },
                 },
             ),
             TossHttpResponse(200, {}, {"cashBuyingPower": "1000000"}),
@@ -1083,13 +1087,34 @@ def test_dashboard_reports_discord_webhook_configuration(tmp_path: Path) -> None
         env={
             "TOSS_CLIENT_ID": "id",
             "TOSS_CLIENT_SECRET": "secret",
-            "DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.test/webhook",
+            "DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.com/api/webhooks/123/token",
+            "DISCORD_ALLOWED_CHANNEL_ID": "123456789012345678",
         },
     )
 
     payload = server.payload_for_path("/dashboard")
 
     assert payload["settings"]["notifications"]["discord_webhook_configured"] is True
+
+
+def test_dashboard_requires_discord_channel_allowlist(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "local.yaml"
+    state_db = tmp_path / "state" / "turtle.sqlite3"
+    _write_config(config_path, account_seq="7")
+
+    server = build_dashboard_server(
+        state_db=state_db,
+        config_path=config_path,
+        env={
+            "TOSS_CLIENT_ID": "id",
+            "TOSS_CLIENT_SECRET": "secret",
+            "DISCORD_TRADE_ALERT_WEBHOOK_URL": "https://discord.com/api/webhooks/123/token",
+        },
+    )
+
+    payload = server.payload_for_path("/dashboard")
+
+    assert payload["settings"]["notifications"]["discord_webhook_configured"] is False
 
 
 def test_dashboard_discord_alert_action_reports_missing_webhook(tmp_path: Path) -> None:
@@ -1760,3 +1785,27 @@ def test_cli_writes_launchd_plist_and_runs_paper_service_once(
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "paper"
     assert payload["ready"] is False
+
+
+def test_cli_shadow_service_passes_exact_mode_hard_lock(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class Snapshot:
+        def as_payload(self) -> dict[str, Any]:
+            return {"mode": "shadow", "ready": True}
+
+    def fake_run_paper_service(**kwargs):
+        captured.update(kwargs)
+        return Snapshot()
+
+    monkeypatch.setattr("turtle_bot.cli.run_paper_service", fake_run_paper_service)
+
+    assert run(
+        [
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--shadow-service",
+            "--once",
+        ]
+    ) == 0
+    assert captured["expected_mode"] == "shadow"

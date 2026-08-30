@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
+import re
 from typing import Any, Mapping, Protocol
 from urllib import parse, request
 from urllib.error import HTTPError
@@ -14,12 +15,56 @@ from .rate_limit import RateLimitHeaderSnapshot, RateLimitQueue
 
 TOSS_BASE_URL = "https://openapi.tossinvest.com"
 ACCOUNT_HEADER = "X-Tossinvest-Account"
+_SHADOW_SYMBOL = re.compile(
+    r"(?=.{1,16}\Z)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?\Z"
+)
+_SHADOW_CURSOR = re.compile(r"[A-Za-z0-9_=-]{1,256}\Z")
+_SHADOW_DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+_SHADOW_GET_QUERIES = {
+    "/api/v1/market-calendar/US": (frozenset({"date"}), frozenset()),
+    "/api/v1/rankings": (
+        frozenset(
+            {
+                "type",
+                "marketCountry",
+                "duration",
+                "excludeInvestmentCaution",
+                "count",
+            }
+        ),
+        frozenset(),
+    ),
+    "/api/v1/stocks": (frozenset({"symbols"}), frozenset()),
+    "/api/v1/stocks/all": (
+        frozenset({"market", "status", "securityType", "commonShare"}),
+        frozenset(),
+    ),
+    "/api/v1/candles": (
+        frozenset({"symbol", "interval", "count", "adjusted"}),
+        frozenset({"before"}),
+    ),
+    "/api/v1/prices": (frozenset({"symbols"}), frozenset()),
+    "/api/v1/orderbook": (frozenset({"symbol"}), frozenset()),
+    "/api/v1/accounts": (frozenset(), frozenset()),
+    "/api/v1/holdings": (frozenset(), frozenset({"symbol"})),
+    "/api/v1/orders": (
+        frozenset({"status", "limit"}),
+        frozenset({"symbol", "from", "to", "cursor"}),
+    ),
+    "/api/v1/conditional-orders": (
+        frozenset({"status", "limit"}),
+        frozenset({"symbol", "cursor"}),
+    ),
+    "/api/v1/buying-power": (frozenset({"currency"}), frozenset()),
+    "/api/v1/commissions": (frozenset(), frozenset()),
+}
 DECIMAL_FIELD_NAMES = frozenset(
     {
         "averageFilledPrice",
         "averagePurchasePrice",
         "basisPoint",
         "cashBuyingPower",
+        "changeRate",
         "closePrice",
         "commission",
         "commissionRate",
@@ -38,10 +83,13 @@ DECIMAL_FIELD_NAMES = frozenset(
         "profitLoss",
         "quantity",
         "rate",
+        "basePrice",
         "midRate",
         "sellableQuantity",
         "tax",
         "totalPurchaseAmount",
+        "tradingAmount",
+        "tradingVolume",
         "upperLimitPrice",
         "usd",
         "volume",
@@ -93,7 +141,15 @@ class TossTransport(Protocol):
         ...
 
 
+class _NoRedirect(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 class UrllibTossTransport:
+    def __init__(self, *, opener: Any | None = None) -> None:
+        self._opener = opener or request.build_opener(_NoRedirect())
+
     def request(
         self,
         method: str,
@@ -121,7 +177,7 @@ class UrllibTossTransport:
             method=method.upper(),
         )
         try:
-            with request.urlopen(req, timeout=15) as response:
+            with self._opener.open(req, timeout=15) as response:
                 raw_body = response.read().decode("utf-8")
                 payload = json.loads(raw_body) if raw_body else None
                 return TossHttpResponse(
@@ -140,6 +196,107 @@ class UrllibTossTransport:
                 headers=dict(exc.headers.items()),
                 payload=payload,
             )
+
+
+class ShadowTransportViolation(RuntimeError):
+    """A shadow request crossed its fixed read-only Toss boundary."""
+
+
+class ShadowReadOnlyTossTransport:
+    """Fail closed before dispatching anything outside the shadow contract."""
+
+    def __init__(self, delegate: TossTransport | None = None) -> None:
+        self.delegate = delegate or UrllibTossTransport()
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        query: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        form_body: Mapping[str, Any] | None = None,
+    ) -> TossHttpResponse:
+        clean_method = str(method).upper()
+        path = _shadow_path(url)
+        if clean_method == "POST" and path == "/oauth2/token":
+            _validate_shadow_oauth(query, json_body, form_body)
+        elif clean_method == "GET":
+            _validate_shadow_get(path, query, json_body, form_body)
+        else:
+            raise ShadowTransportViolation(
+                f"shadow transport rejected {clean_method} {path}"
+            )
+
+        response = self.delegate.request(
+            clean_method,
+            url,
+            headers=headers,
+            query=query,
+            json_body=json_body,
+            form_body=form_body,
+        )
+        if 300 <= response.status < 400:
+            raise ShadowTransportViolation(
+                f"shadow transport rejected HTTP redirect {response.status}"
+            )
+        return response
+
+
+class SimulationReadOnlyTossTransport(ShadowReadOnlyTossTransport):
+    """Read-only forward-test boundary with personal trading state blocked.
+
+    The commission schedule remains available because Toss exposes it behind
+    the account header. Cash, holdings, order history, and conditional orders
+    are deliberately unavailable: simulation sizing must use its own ledger.
+    """
+
+    _BLOCKED_PATHS = frozenset(
+        {
+            "/api/v1/accounts",
+            "/api/v1/holdings",
+            "/api/v1/orders",
+            "/api/v1/conditional-orders",
+            "/api/v1/buying-power",
+            "/api/v1/sellable-quantity",
+        }
+    )
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        query: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        form_body: Mapping[str, Any] | None = None,
+    ) -> TossHttpResponse:
+        path = _shadow_path(url)
+        if str(method).upper() == "GET":
+            if path in self._BLOCKED_PATHS:
+                raise ShadowTransportViolation(
+                    f"simulation transport rejected personal account read {path}"
+                )
+            has_account_header = bool(str(headers.get(ACCOUNT_HEADER) or "").strip())
+            if path == "/api/v1/commissions":
+                if not has_account_header:
+                    raise ShadowTransportViolation(
+                        "simulation commission read requires its account header"
+                    )
+            elif has_account_header:
+                raise ShadowTransportViolation(
+                    "simulation public market read rejected an account header"
+                )
+        return super().request(
+            method,
+            url,
+            headers=headers,
+            query=query,
+            json_body=json_body,
+            form_body=form_body,
+        )
 
 
 class TossApiError(RuntimeError):
@@ -233,10 +390,15 @@ class TossClient:
         if before is not None:
             query["before"] = before.isoformat() if isinstance(before, datetime) else before
 
-        payload = self._request_json("GET", "/api/v1/candles", query=query, group="market")
+        payload = self._request_json(
+            "GET",
+            "/api/v1/candles",
+            query=query,
+            group="market_data_chart",
+        )
         raw = _expect_mapping(payload)
         candles = tuple(
-            Candle.from_api({"symbol": symbol, **item})
+            Candle.from_api({"symbol": symbol, **item, "adjusted": adjusted})
             for item in _expect_sequence(raw.get("candles", ()))
         )
         return CandlePage(
@@ -250,7 +412,7 @@ class TossClient:
             "GET",
             "/api/v1/prices",
             query={"symbols": ",".join(symbols)},
-            group="market",
+            group="market_data",
         )
         return _normalize_decimal_payload(payload)
 
@@ -259,7 +421,7 @@ class TossClient:
             "GET",
             "/api/v1/orderbook",
             query={"symbol": symbol},
-            group="market",
+            group="market_data",
         )
         return _normalize_decimal_payload(payload)
 
@@ -268,7 +430,7 @@ class TossClient:
             "GET",
             "/api/v1/trades",
             query={"symbol": symbol, "count": count},
-            group="market",
+            group="market_data",
         )
         return _normalize_decimal_payload(payload)
 
@@ -277,7 +439,7 @@ class TossClient:
             "GET",
             "/api/v1/price-limits",
             query={"symbol": symbol},
-            group="market",
+            group="market_data",
         )
         return _normalize_decimal_payload(payload)
 
@@ -317,20 +479,115 @@ class TossClient:
         )
         return _normalize_decimal_payload(payload)
 
+    def get_rankings(
+        self,
+        *,
+        ranking_type: str,
+        market_country: str,
+        duration: str,
+        exclude_investment_caution: bool = True,
+        count: int = 20,
+    ) -> Mapping[str, Any]:
+        ranking = str(ranking_type).strip().upper()
+        market = str(market_country).strip().upper()
+        period = str(duration).strip().lower()
+        if ranking not in {
+            "MARKET_TRADING_AMOUNT",
+            "MARKET_TRADING_VOLUME",
+            "TOP_GAINERS",
+            "TOP_LOSERS",
+            "TOSS_SECURITIES_TRADING_AMOUNT",
+            "TOSS_SECURITIES_TRADING_VOLUME",
+        }:
+            raise ValueError("unsupported ranking type")
+        if market not in {"KR", "US"}:
+            raise ValueError("market_country must be KR or US")
+        if period not in {"realtime", "1d", "1w", "1mo", "3mo", "6mo", "1y"}:
+            raise ValueError("unsupported ranking duration")
+        if ranking in {"TOP_GAINERS", "TOP_LOSERS"} and period == "realtime":
+            raise ValueError("TOP_GAINERS and TOP_LOSERS do not support realtime")
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 100:
+            raise ValueError("ranking count must be between 1 and 100")
+        payload = self._request_json(
+            "GET",
+            "/api/v1/rankings",
+            query={
+                "type": ranking,
+                "marketCountry": market,
+                "duration": period,
+                "excludeInvestmentCaution": bool(exclude_investment_caution),
+                "count": count,
+            },
+            group="ranking",
+        )
+        return _normalize_decimal_payload(payload)
+
     def get_stocks(self, symbols: list[str] | tuple[str, ...]) -> Mapping[str, Any]:
         payload = self._request_json(
             "GET",
             "/api/v1/stocks",
             query={"symbols": ",".join(symbols)},
-            group="market_info",
+            group="stock",
         )
         return _normalize_decimal_payload(payload)
+
+    def list_stocks(
+        self,
+        market: str,
+        *,
+        status: str = "ACTIVE",
+        security_type: str = "STOCK",
+        common_share: bool = True,
+    ) -> list[Mapping[str, Any]]:
+        clean_market = str(market).strip().upper()
+        clean_status = str(status).strip().upper()
+        clean_security_type = str(security_type).strip().upper()
+        if clean_market not in {
+            "KOSPI",
+            "KOSDAQ",
+            "NYSE",
+            "NASDAQ",
+            "AMEX",
+            "KR_ETC",
+            "US_ETC",
+        }:
+            raise ValueError("unsupported stock market")
+        if clean_status not in {"SCHEDULED", "ACTIVE", "DELISTED"}:
+            raise ValueError("unsupported stock status")
+        if clean_security_type not in {
+            "STOCK",
+            "FOREIGN_STOCK",
+            "DEPOSITARY_RECEIPT",
+            "INFRASTRUCTURE_FUND",
+            "REIT",
+            "ETF",
+            "FOREIGN_ETF",
+            "ETN",
+            "STOCK_WARRANTS",
+        }:
+            raise ValueError("unsupported security type")
+        payload = self._request_json(
+            "GET",
+            "/api/v1/stocks/all",
+            query={
+                "market": clean_market,
+                "status": clean_status,
+                "securityType": clean_security_type,
+                "commonShare": bool(common_share),
+            },
+            group="stock_all",
+        )
+        if not isinstance(payload, list) or any(
+            not isinstance(item, Mapping) for item in payload
+        ):
+            raise TypeError("stock universe response must be an array of objects")
+        return list(payload)
 
     def get_stock_warnings(self, symbol: str) -> Mapping[str, Any]:
         payload = self._request_json(
             "GET",
             f"/api/v1/stocks/{parse.quote(symbol, safe='')}/warnings",
-            group="market_info",
+            group="stock",
         )
         return _normalize_decimal_payload(payload)
 
@@ -539,6 +796,127 @@ def _with_query(url: str, query: Mapping[str, Any] | None) -> str:
         if value is not None
     }
     return f"{url}?{parse.urlencode(filtered)}"
+
+
+def _shadow_path(url: str) -> str:
+    try:
+        parsed = parse.urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ShadowTransportViolation("shadow transport rejected malformed URL") from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc not in {"openapi.tossinvest.com", "openapi.tossinvest.com:443"}
+        or parsed.hostname != "openapi.tossinvest.com"
+        or port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.startswith("/")
+        or "\\" in parsed.path
+        or "%" in parsed.path
+        or "//" in parsed.path
+        or "/./" in parsed.path
+        or "/../" in parsed.path
+    ):
+        raise ShadowTransportViolation("shadow transport rejected non-canonical Toss URL")
+    return parsed.path
+
+
+def _validate_shadow_oauth(
+    query: Mapping[str, Any] | None,
+    json_body: Mapping[str, Any] | None,
+    form_body: Mapping[str, Any] | None,
+) -> None:
+    if query or json_body is not None or not isinstance(form_body, Mapping):
+        raise ShadowTransportViolation("shadow OAuth request shape is invalid")
+    if set(form_body) != {"grant_type", "client_id", "client_secret"}:
+        raise ShadowTransportViolation("shadow OAuth form keys are invalid")
+    if form_body.get("grant_type") != "client_credentials":
+        raise ShadowTransportViolation("shadow OAuth grant type is invalid")
+    if not all(
+        isinstance(form_body.get(key), str) and bool(form_body.get(key))
+        for key in ("client_id", "client_secret")
+    ):
+        raise ShadowTransportViolation("shadow OAuth credentials are invalid")
+
+
+def _validate_shadow_get(
+    path: str,
+    query: Mapping[str, Any] | None,
+    json_body: Mapping[str, Any] | None,
+    form_body: Mapping[str, Any] | None,
+) -> None:
+    if json_body is not None or form_body is not None:
+        raise ShadowTransportViolation("shadow GET request must not have a body")
+    schema = _SHADOW_GET_QUERIES.get(path)
+    if schema is None:
+        match = re.fullmatch(
+            r"/api/v1/stocks/([A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?)/warnings",
+            path,
+        )
+        if match is None or _SHADOW_SYMBOL.fullmatch(match.group(1)) is None:
+            raise ShadowTransportViolation(f"shadow GET path is not allowed: {path}")
+        schema = (frozenset(), frozenset())
+    values = dict(query or {})
+    required, optional = schema
+    if not all(isinstance(key, str) for key in values):
+        raise ShadowTransportViolation("shadow GET query keys must be strings")
+    keys = frozenset(values)
+    if not required <= keys or keys - required - optional:
+        raise ShadowTransportViolation(f"shadow GET query is invalid for {path}")
+    if any(
+        value is None
+        or isinstance(value, (bytes, bytearray, Mapping, list, tuple, set))
+        or any(ord(char) < 32 for char in str(value))
+        for value in values.values()
+    ):
+        raise ShadowTransportViolation("shadow GET query value is invalid")
+    _validate_shadow_query_values(path, values)
+
+
+def _validate_shadow_query_values(path: str, query: Mapping[str, Any]) -> None:
+    for key in ("symbol",):
+        if key in query and _SHADOW_SYMBOL.fullmatch(str(query[key])) is None:
+            raise ShadowTransportViolation(f"shadow query {key} is invalid")
+    if "symbols" in query:
+        symbols = str(query["symbols"]).split(",")
+        if (
+            not symbols
+            or len(symbols) != len(set(symbols))
+            or any(_SHADOW_SYMBOL.fullmatch(symbol) is None for symbol in symbols)
+        ):
+            raise ShadowTransportViolation("shadow query symbols is invalid")
+    for key in ("date", "from", "to"):
+        if key in query and _SHADOW_DATE.fullmatch(str(query[key])) is None:
+            raise ShadowTransportViolation(f"shadow query {key} is invalid")
+    if "cursor" in query and _SHADOW_CURSOR.fullmatch(str(query["cursor"])) is None:
+        raise ShadowTransportViolation("shadow query cursor is invalid")
+    for key in ("count", "limit"):
+        if key in query and (
+            isinstance(query[key], bool)
+            or not isinstance(query[key], int)
+            or not 1 <= query[key] <= (200 if path == "/api/v1/candles" else 100)
+        ):
+            raise ShadowTransportViolation(f"shadow query {key} is invalid")
+    if path == "/api/v1/market-calendar/US" and not query:
+        raise ShadowTransportViolation("shadow calendar date is required")
+    if path == "/api/v1/rankings" and (
+        query.get("marketCountry") != "US"
+        or query.get("duration") != "realtime"
+        or not isinstance(query.get("excludeInvestmentCaution"), bool)
+    ):
+        raise ShadowTransportViolation("shadow ranking query is invalid")
+    if path == "/api/v1/orders" and query.get("status") not in {"OPEN", "CLOSED"}:
+        raise ShadowTransportViolation("shadow order status is invalid")
+    if path == "/api/v1/conditional-orders" and query.get("status") not in {
+        "OPEN",
+        "CLOSED",
+    }:
+        raise ShadowTransportViolation("shadow conditional-order status is invalid")
+    if path == "/api/v1/buying-power" and query.get("currency") != "USD":
+        raise ShadowTransportViolation("shadow buying-power currency is invalid")
 
 
 def _retry_after_seconds(headers: Mapping[str, str] | None) -> float | None:

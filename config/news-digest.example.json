@@ -1,0 +1,18 @@
+{
+  "context_path": "../state/news-context.json",
+  "state_db": "../state/news.sqlite3",
+  "context_max_age_seconds": 300,
+  "article_max_age_hours": 24,
+  "max_items_per_run": 4,
+  "request_timeout_seconds": 10,
+  "finnhub_api_key_env": "FINNHUB_API_KEY",
+  "discord_webhook_env": "DISCORD_NEWS_WEBHOOK_URL",
+  "discord_channel_env": "DISCORD_ALLOWED_CHANNEL_ID",
+  "llm": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:8000/v1",
+    "model": "",
+    "api_key_env": null,
+    "timeout_seconds": 30
+  }
+}

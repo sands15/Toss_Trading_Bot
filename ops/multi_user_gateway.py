@@ -45,6 +45,7 @@ DEFAULT_CONTAINER_LOG_MAX_SIZE = "10m"
 DEFAULT_CONTAINER_LOG_MAX_FILES = "3"
 DEFAULT_KEYCHAIN_SERVICE = "toss-trading-bot"
 DEFAULT_DISCORD_WEBHOOK_ENV = "DISCORD_TRADE_ALERT_WEBHOOK_URL"
+DEFAULT_DISCORD_CHANNEL_ENV = "DISCORD_ALLOWED_CHANNEL_ID"
 SECRET_CLIENT_ID = "toss_client_id"
 SECRET_CLIENT_SECRET = "toss_client_secret"
 TAILSCALE_USER_LOGIN_HEADER = "Tailscale-User-Login"
@@ -1127,10 +1128,11 @@ class UserGateway:
             "TOSS_CLIENT_ID": client_id,
             "TOSS_CLIENT_SECRET": client_secret,
         }
-        discord_webhook_url = str(os.environ.get(DEFAULT_DISCORD_WEBHOOK_ENV) or "").strip()
-        if discord_webhook_url:
-            container_env[DEFAULT_DISCORD_WEBHOOK_ENV] = discord_webhook_url
-            container_env_names.append(DEFAULT_DISCORD_WEBHOOK_ENV)
+        for name in (DEFAULT_DISCORD_WEBHOOK_ENV, DEFAULT_DISCORD_CHANNEL_ENV):
+            value = str(os.environ.get(name) or "").strip()
+            if value:
+                container_env[name] = value
+                container_env_names.append(name)
 
         existing = subprocess.run(
             ["docker", "ps", "-a", "--format", "{{.Names}}"],

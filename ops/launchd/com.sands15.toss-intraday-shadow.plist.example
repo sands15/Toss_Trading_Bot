@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TOSS_SHADOW_ALLOWED_CHANNEL_ID</key>
+    <string>REPLACE_WITH_ALLOWED_CHANNEL_ID</string>
+    <key>TOSS_SHADOW_ACCOUNT_FINGERPRINT</key>
+    <string>REPLACE_WITH_64_LOWERCASE_HEX_ACCOUNT_FINGERPRINT</string>
+    <key>TOSS_SHADOW_CONFIG_PATH</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/planner/intraday-simulation.yaml</string>
+    <key>TOSS_SHADOW_EXPERIMENT_HASH</key>
+    <string>REPLACE_WITH_64_LOWERCASE_HEX_EXPERIMENT_HASH</string>
+    <key>TOSS_SHADOW_KEYCHAIN_SLUG</key>
+    <string>REPLACE_WITH_USER_SLUG</string>
+    <key>TOSS_SHADOW_LOG_DIR</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/logs</string>
+    <key>TOSS_SHADOW_HEARTBEAT_PATH</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/heartbeats/planner/heartbeat.json</string>
+    <key>TOSS_SHADOW_STATE_DB</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/intraday.sqlite3</string>
+    <key>TOSS_SHADOW_SIMULATION_DB</key>
+    <string>/ABSOLUTE/PRIVATE/RUNTIME/intraday-paper.sqlite3</string>
+    <key>TOSS_SHADOW_SIMULATION_END_DATE</key>
+    <string>2026-09-30</string>
+    <key>TOSS_SHADOW_SIMULATION_ID</key>
+    <string>2026-09-forward-test</string>
+    <key>TOSS_SHADOW_SIMULATION_START_DATE</key>
+    <string>2026-08-31</string>
+  </dict>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>Label</key>
+  <string>com.sands15.toss-intraday-shadow</string>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/READ_ONLY/RELEASE/REPLACE_WITH_EXACT_COMMIT_SHA/ops/run-intraday-shadow.command</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/PRIVATE/RUNTIME/logs/intraday-shadow.stderr.log</string>
+  <key>StandardOutPath</key>
+  <string>/ABSOLUTE/PRIVATE/RUNTIME/logs/intraday-shadow.stdout.log</string>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/READ_ONLY/RELEASE/REPLACE_WITH_EXACT_COMMIT_SHA</string>
+</dict>
+</plist>

@@ -67,6 +67,8 @@ runtime:
 strategy:
   # turtle keeps the original Turtle signal runtime.
   # momentum enables the saved US relative-strength momentum runtime.
+  # intraday selects the separate shadow-only premarket planner; start from
+  # config/intraday.example.yaml because all economic values are mandatory.
   kind: turtle
   minimum_tick: 1
   n_method: turtle
