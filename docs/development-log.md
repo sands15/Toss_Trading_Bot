@@ -794,3 +794,32 @@ Mac synthetic release에서 두 wrapper 전체를 실행해 preflight 인자 전
 Windows 전체 회귀와 non-live gate도 다시 통과했다. 이 기록 시점에는 실패한 planner를 unload한
 상태이며, 새 SHA 설치와 실제 Aqua 재시작·heartbeat·public market handshake 검증 전까지 run 시작을
 주장하지 않는다.
+
+## 2026-08-31 — zsh Keychain account 경계 수정 및 한 달 simulation 시작
+
+Aqua LaunchAgent 진단에서 Keychain credential 자체는 일반 환경·clean environment·nested zsh 모두
+비대화식 조회에 성공했지만, 실제 wrapper와 동일한 lookup만 실패했다. 원인은 zsh가
+`$keychain_slug:toss_client_*`의 `:t`를 path modifier로 해석해 account 문자열을 변형한 것이었다.
+planner와 stream wrapper를 `${keychain_slug}:toss_client_*`로 고치고, unbraced parameter 뒤 colon
+suffix가 다시 들어오지 못하게 회귀 검사를 추가했다.
+
+Windows 전체 회귀와 compile/import/dependency 검사를 통과했고, Mac exact-SHA에서는 OS network deny와
+민감 환경 scrub이 포함된 non-live release gate `525 passed`, `pip check`, 두 wrapper의
+`/bin/zsh -n`을 통과했다. 범용 Mac 전체 pytest에서 나온 5건은 release venv에 의도적으로 설치하지 않은
+data용 `requests` 1건과 실제 Mac 기본 Keychain backend를 file backend로 가정한 gateway test 4건으로,
+이번 planner/stream release gate와 분리해 판정했다.
+
+설치돼 있던 legacy plist는 `/bin/zsh`와 script를 나눈 2-entry `ProgramArguments` 구조였으므로, 단순히
+첫 항목만 바꾸면 새 script가 두 번 전달돼 exit 70이 발생했다. 저장소 manifest 정본과 동일한 단일
+executable 배열로 두 plist를 원자 교체하고 release
+`8bc17c199bdcc9125db7d0f063945e048b8e12c7`를 Aqua session에서 시작했다.
+
+planner는 한 interval 뒤에도 heartbeat `OK`, mode `shadow`, `live_order_submission=false`, DB
+`quick_check=ok`를 유지했다. plan/paper SQLite를 독립 read-only connection으로 다시 검사했고,
+paper run은 `2026-08-31`~`2026-09-30` 양 끝을 포함한 기간, initial/current cash `USD 10,000`,
+allocation `0.90`, risk `0.00225`, target `0.012`, stop `0.006`, blocker 없음으로 잠겼다. broker order,
+order intent, execution order table은 모두 0건이다. 아직 selected-symbol context와 plan이 없는 장 전
+상태라 stream은 heartbeat 없이 healthy idle이며, context가 생길 때만 해당 한 종목의 public
+`trade:us`·`orderbook:us`를 구독한다. 진단용 LaunchAgent와 임시 probe/helper/status 파일은 검증 후
+삭제했다. 상세 데이터·체결 계약은 `docs/intraday-bracket-design.md`, 설치·운영 경계는
+`docs/macos-operations.md`가 정본이다.
