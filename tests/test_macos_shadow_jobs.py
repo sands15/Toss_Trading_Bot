@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import plistlib
 import re
+import subprocess
+import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from turtle_bot.notifier import DiscordTradeNotifier
 from turtle_bot.operations import _drain_intraday_notifications
@@ -27,6 +32,8 @@ SECRET_PLIST_MARKERS = {
     "TOKEN",
     "WEBHOOK",
 }
+
+_NESTED_SINGLE_QUOTE = "'\"'\"'"
 
 
 def _templates() -> dict[str, tuple[Path, dict[str, object]]]:
@@ -77,7 +84,17 @@ def test_all_five_wrappers_fail_closed_at_the_same_process_boundary() -> None:
         else:
             assert 'release_sha="${repo_root:t}"' in source
         assert '"$python_bin" -I' in source
-        for block in re.findall(r"'\n'\"'\"'\n(.*?)\n'\"'\"'", source, re.DOTALL):
+        nested_python = re.findall(
+            re.escape(f"-c {_NESTED_SINGLE_QUOTE}\n")
+            + r"(.*?)\n"
+            + re.escape(_NESTED_SINGLE_QUOTE),
+            source,
+            re.DOTALL,
+        )
+        direct_python = re.findall(
+            r'"\$python_bin" -I(?: -u)? -c \'\n(.*?)\n\'', source, re.DOTALL
+        )
+        for block in nested_python + direct_python:
             compile(block, wrapper_name, "exec")
         for forbidden in (
             "--live",
@@ -191,6 +208,25 @@ def test_secret_handoff_is_keychain_only_and_python_pops_environment() -> None:
     assert "expected_account_fingerprint=" in planner
     assert "config_path.lstat()" in planner
     assert "expected_simulation=" in planner
+    assert "/bin/zsh -f -c" not in planner
+    assert "/bin/zsh -f -s <<'TOSS_SHADOW_RUNTIME'" in planner
+    assert "unset TOSS_INTERNAL_REPO_ROOT" in planner
+
+    stream = (ROOT / "ops" / "run-toss-stream.command").read_text(
+        encoding="utf-8"
+    )
+    for source in (planner, stream):
+        assert source.rindex("exec /usr/bin/env -i") < source.index(
+            "security find-generic-password"
+        )
+        assert re.search(
+            r'^\s*TOSS_CLIENT_(?:ID|SECRET)="\$client_', source, re.MULTILINE
+        ) is None
+        assert 'export TOSS_CLIENT_ID="$client_id"' in source
+        assert 'export TOSS_CLIENT_SECRET="$client_secret"' in source
+    assert "/bin/zsh -f -c" not in stream
+    assert "/bin/zsh -f -s <<'TOSS_STREAM_RUNTIME'" in stream
+    assert "unset TOSS_INTERNAL_REPO_ROOT" in stream
 
     news = (ROOT / "ops" / "run-news-shadow.command").read_text(encoding="utf-8")
     assert news.index("news worker import does not match this release") < news.index(
@@ -202,6 +238,139 @@ def test_secret_handoff_is_keychain_only_and_python_pops_environment() -> None:
     assert "run_once(config, env=env)" in news
     assert "TOSS_CLIENT_ID" not in news
     assert "TOSS_CLIENT_SECRET" not in news
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS zsh and Keychain")
+@pytest.mark.parametrize(
+    ("wrapper_name", "release_character"),
+    [
+        ("run-intraday-shadow.command", "a"),
+        ("run-toss-stream.command", "b"),
+    ],
+)
+def test_nested_clean_shell_receives_all_nonsecret_arguments_on_macos(
+    tmp_path: Path,
+    wrapper_name: str,
+    release_character: str,
+) -> None:
+    release = (tmp_path / (release_character * 40)).resolve()
+    ops_dir = release / "ops"
+    python_bin = release / ".venv" / "bin" / "python"
+    ops_dir.mkdir(parents=True)
+    python_bin.parent.mkdir(parents=True)
+    wrapper = ops_dir / wrapper_name
+    wrapper.write_bytes((ROOT / "ops" / wrapper_name).read_bytes())
+    wrapper.chmod(0o700)
+    capture = release / "preflight-arguments.bin"
+    python_bin.write_text(
+        "#!/bin/zsh -f\n"
+        "set -eu\n"
+        'capture_path="${0:A:h:h:h}/preflight-arguments.bin"\n'
+        "/usr/bin/printf '%s\\000' \"$@\" > \"$capture_path\"\n",
+        encoding="utf-8",
+    )
+    python_bin.chmod(0o700)
+
+    runtime = tmp_path / f"runtime-{release_character}"
+    home = runtime / "home"
+    home.mkdir(parents=True)
+    simulation_id = "handoff-test"
+    start_date = "2026-08-01"
+    end_date = "2026-08-31"
+    simulation_db = runtime / "intraday-paper.sqlite3"
+    experiment_hash = "c" * 64
+    keychain_slug = f"handoff-{uuid.uuid4().hex}"
+    environment = {"HOME": str(home), "LANG": "en_US.UTF-8"}
+
+    if wrapper_name == "run-intraday-shadow.command":
+        config_path = runtime / "intraday-simulation.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("mode: shadow\n", encoding="utf-8")
+        config_path.chmod(0o600)
+        state_db = runtime / "intraday.sqlite3"
+        log_dir = runtime / "logs"
+        heartbeat_path = runtime / "heartbeats" / "planner" / "heartbeat.json"
+        account_fingerprint = "d" * 64
+        environment.update(
+            {
+                "TOSS_SHADOW_CONFIG_PATH": str(config_path),
+                "TOSS_SHADOW_STATE_DB": str(state_db),
+                "TOSS_SHADOW_LOG_DIR": str(log_dir),
+                "TOSS_SHADOW_ALLOWED_CHANNEL_ID": "123456789012345678",
+                "TOSS_SHADOW_HEARTBEAT_PATH": str(heartbeat_path),
+                "TOSS_SHADOW_SIMULATION_ID": simulation_id,
+                "TOSS_SHADOW_SIMULATION_START_DATE": start_date,
+                "TOSS_SHADOW_SIMULATION_END_DATE": end_date,
+                "TOSS_SHADOW_SIMULATION_DB": str(simulation_db),
+                "TOSS_SHADOW_EXPERIMENT_HASH": experiment_hash,
+                "TOSS_SHADOW_ACCOUNT_FINGERPRINT": account_fingerprint,
+                "TOSS_SHADOW_KEYCHAIN_SLUG": keychain_slug,
+            }
+        )
+        expected_tail = [
+            str(release),
+            str(config_path),
+            str(state_db),
+            simulation_id,
+            start_date,
+            end_date,
+            str(simulation_db),
+            experiment_hash,
+            account_fingerprint,
+        ]
+    else:
+        context_path = runtime / "news-context.json"
+        snapshot_path = runtime / "market-stream.json"
+        config_path = runtime / "intraday-simulation.yaml"
+        plan_db = runtime / "intraday.sqlite3"
+        heartbeat_path = runtime / "heartbeats" / "stream" / "heartbeat.json"
+        environment.update(
+            {
+                "TOSS_STREAM_CONTEXT_PATH": str(context_path),
+                "TOSS_STREAM_SNAPSHOT_PATH": str(snapshot_path),
+                "TOSS_STREAM_SIMULATION_CONFIG_PATH": str(config_path),
+                "TOSS_STREAM_PLAN_DB": str(plan_db),
+                "TOSS_STREAM_HEARTBEAT_PATH": str(heartbeat_path),
+                "TOSS_STREAM_SIMULATION_ID": simulation_id,
+                "TOSS_STREAM_SIMULATION_START_DATE": start_date,
+                "TOSS_STREAM_SIMULATION_END_DATE": end_date,
+                "TOSS_STREAM_SIMULATION_DB": str(simulation_db),
+                "TOSS_STREAM_EXPERIMENT_HASH": experiment_hash,
+                "TOSS_STREAM_KEYCHAIN_SLUG": keychain_slug,
+            }
+        )
+        expected_tail = [
+            str(release),
+            str(config_path),
+            str(context_path),
+            str(plan_db),
+            simulation_id,
+            start_date,
+            end_date,
+            str(simulation_db),
+            experiment_hash,
+        ]
+
+    completed = subprocess.run(
+        [str(wrapper)],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert completed.returncode == 69
+    assert completed.stdout == ""
+    assert "Toss client ID is unavailable from Keychain" in completed.stderr
+    assert "parameter not set" not in completed.stderr
+    captured = capture.read_bytes().split(b"\0")
+    assert captured.pop() == b""
+    decoded = [value.decode("utf-8") for value in captured]
+    assert decoded[:2] == ["-I", "-c"]
+    assert decoded[-9:] == expected_tail
+    assert len(decoded) == 12
 
 
 def test_missing_optional_trade_webhook_leaves_durable_outbox_pending(

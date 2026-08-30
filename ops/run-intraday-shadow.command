@@ -84,22 +84,7 @@ fi
 /usr/bin/env -i \
   HOME="${HOME:?missing HOME}" \
   LANG="en_US.UTF-8" \
-  /bin/zsh -f -c '
-    set -eu
-    umask 077
-    ulimit -c 0
-    repo_root="$1"
-    python_bin="$repo_root/.venv/bin/python"
-    config_path="$2"
-    state_db="$3"
-    simulation_id="$4"
-    simulation_start_date="$5"
-    simulation_end_date="$6"
-    simulation_db="$7"
-    experiment_hash="$8"
-    account_fingerprint="$9"
-    "$python_bin" -I -c '
-'"'"'
+  "$python_bin" -I -c '
 import os, resource, stat, sys
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 assert resource.getrlimit(resource.RLIMIT_CORE) == (0, 0)
@@ -138,10 +123,7 @@ _require_locked_simulation_config(
     state_db=sys.argv[3],
     expected_account_fingerprint=sys.argv[9],
 )
-'"'"' "$repo_root" "$config_path" "$state_db" "$simulation_id" \
-      "$simulation_start_date" "$simulation_end_date" "$simulation_db" \
-      "$experiment_hash" "$account_fingerprint"
-  ' intraday-shadow-preflight \
+' \
   "$repo_root" \
   "$config_path" \
   "$state_db" \
@@ -152,30 +134,51 @@ _require_locked_simulation_config(
   "$experiment_hash" \
   "$account_fingerprint" || exit $?
 
-# The final process starts from a clean environment. Shell locals are cleared
-# immediately after handoff; Python removes both env entries before any loop.
+# The runtime shell receives only non-secret named values from a clean
+# environment. Its source arrives on stdin so shell quoting cannot truncate the
+# handoff. Keychain values remain locals until export and never enter argv.
 exec /usr/bin/env -i \
   HOME="${HOME:?missing HOME}" \
   LANG="en_US.UTF-8" \
-  /bin/zsh -f -c '
+  TOSS_INTERNAL_REPO_ROOT="$repo_root" \
+  TOSS_INTERNAL_CONFIG_PATH="$config_path" \
+  TOSS_INTERNAL_STATE_DB="$state_db" \
+  TOSS_INTERNAL_LOG_DIR="$log_dir" \
+  TOSS_INTERNAL_KEYCHAIN_SLUG="$keychain_slug" \
+  TOSS_INTERNAL_CHANNEL_ID="$channel_id" \
+  TOSS_INTERNAL_HEARTBEAT_PATH="$heartbeat_path" \
+  TOSS_INTERNAL_SIMULATION_ID="$simulation_id" \
+  TOSS_INTERNAL_SIMULATION_START_DATE="$simulation_start_date" \
+  TOSS_INTERNAL_SIMULATION_END_DATE="$simulation_end_date" \
+  TOSS_INTERNAL_SIMULATION_DB="$simulation_db" \
+  TOSS_INTERNAL_EXPERIMENT_HASH="$experiment_hash" \
+  TOSS_INTERNAL_ACCOUNT_FINGERPRINT="$account_fingerprint" \
+  /bin/zsh -f -s <<'TOSS_SHADOW_RUNTIME'
     set -eu
     umask 077
     ulimit -c 0
-    repo_root="$1"
+    repo_root="${TOSS_INTERNAL_REPO_ROOT:?}"
     python_bin="$repo_root/.venv/bin/python"
-    config_path="$2"
-    state_db="$3"
-    log_dir="$4"
-    keychain_slug="$5"
-    channel_id="$6"
-    heartbeat_path="$7"
-    simulation_id="$8"
-    simulation_start_date="$9"
-    simulation_end_date="$10"
-    simulation_db="$11"
-    experiment_hash="$12"
-    account_fingerprint="$13"
+    config_path="${TOSS_INTERNAL_CONFIG_PATH:?}"
+    state_db="${TOSS_INTERNAL_STATE_DB:?}"
+    log_dir="${TOSS_INTERNAL_LOG_DIR:?}"
+    keychain_slug="${TOSS_INTERNAL_KEYCHAIN_SLUG:?}"
+    channel_id="${TOSS_INTERNAL_CHANNEL_ID:?}"
+    heartbeat_path="${TOSS_INTERNAL_HEARTBEAT_PATH:?}"
+    simulation_id="${TOSS_INTERNAL_SIMULATION_ID:?}"
+    simulation_start_date="${TOSS_INTERNAL_SIMULATION_START_DATE:?}"
+    simulation_end_date="${TOSS_INTERNAL_SIMULATION_END_DATE:?}"
+    simulation_db="${TOSS_INTERNAL_SIMULATION_DB:?}"
+    experiment_hash="${TOSS_INTERNAL_EXPERIMENT_HASH:?}"
+    account_fingerprint="${TOSS_INTERNAL_ACCOUNT_FINGERPRINT:?}"
     release_sha="${repo_root:t}"
+    unset TOSS_INTERNAL_REPO_ROOT TOSS_INTERNAL_CONFIG_PATH \
+      TOSS_INTERNAL_STATE_DB TOSS_INTERNAL_LOG_DIR \
+      TOSS_INTERNAL_KEYCHAIN_SLUG TOSS_INTERNAL_CHANNEL_ID \
+      TOSS_INTERNAL_HEARTBEAT_PATH TOSS_INTERNAL_SIMULATION_ID \
+      TOSS_INTERNAL_SIMULATION_START_DATE TOSS_INTERNAL_SIMULATION_END_DATE \
+      TOSS_INTERNAL_SIMULATION_DB TOSS_INTERNAL_EXPERIMENT_HASH \
+      TOSS_INTERNAL_ACCOUNT_FINGERPRINT
 
     ca_bundle=/etc/ssl/cert.pem
     if [[ ! -r "$ca_bundle" || ! -s "$ca_bundle" ]]; then
@@ -229,7 +232,6 @@ exec /usr/bin/env -i \
     trade_webhook=
     cd "$repo_root"
     exec "$python_bin" -I -u -c '
-'"'"'
 import os, resource, sqlite3, sys, time
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 assert resource.getrlimit(resource.RLIMIT_CORE) == (0, 0)
@@ -294,20 +296,7 @@ except BaseException:
     except HeartbeatError:
         pass
     raise
-'"'"' "$config_path" "$state_db" "$log_dir" "$heartbeat_path" "$release_sha" \
+' "$config_path" "$state_db" "$log_dir" "$heartbeat_path" "$release_sha" \
     "$simulation_id" "$simulation_start_date" "$simulation_end_date" \
     "$simulation_db" "$experiment_hash" "$account_fingerprint"
-  ' intraday-shadow-clean \
-  "$repo_root" \
-  "$config_path" \
-  "$state_db" \
-  "$log_dir" \
-  "$keychain_slug" \
-  "$channel_id" \
-  "$heartbeat_path" \
-  "$simulation_id" \
-  "$simulation_start_date" \
-  "$simulation_end_date" \
-  "$simulation_db" \
-  "$experiment_hash" \
-  "$account_fingerprint"
+TOSS_SHADOW_RUNTIME

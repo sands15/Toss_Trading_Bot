@@ -777,3 +777,20 @@ active expectation과 missing/idle/invalid context 조합은 `STREAM_CONTEXT_INV
 `STREAM_EXPECTATION_INVALID`다.
 상세 데이터·체결·지표·합격 계약은
 `docs/intraday-bracket-design.md`, 설치 경계는 `docs/macos-operations.md`가 정본이다.
+
+## 2026-08-31 — macOS LaunchAgent clean handoff 보정
+
+exact-SHA Mac 설치 후 planner가 Python preflight 전에 `zsh: parameter not set`으로 종료되는 것을
+실제 Aqua LaunchAgent에서 확인했다. 원인은 중첩 `zsh -c` source가 single quote에 의해 여러 argv로
+분할된 것이었다. planner preflight는 secret 없는 `env -i -> Python` 직접 실행으로 바꾸고,
+planner/stream runtime은 non-secret internal 값만 clean `zsh -s`에 전달한 뒤 quoted heredoc source로
+실행하도록 통일했다. inner shell이 internal 환경을 local로 복사해 unset한 다음 Keychain을 읽고,
+credential은 shell local에서 export한 뒤 local을 비우고 Python을 직접 exec한다. 따라서 client
+credential은 `/usr/bin/env` 또는 Python argv, plist와 로그에 들어가지 않으며 Python의 기존 pop
+경계와 exact-SHA/config/simulation/account lock도 유지된다.
+
+Mac synthetic release에서 두 wrapper 전체를 실행해 preflight 인자 전달, runtime Keychain lookup
+도달, stdout 비움, `parameter not set` 부재, 없는 합성 Keychain 항목의 안전한 exit 69를 확인했다.
+Windows 전체 회귀와 non-live gate도 다시 통과했다. 이 기록 시점에는 실패한 planner를 unload한
+상태이며, 새 SHA 설치와 실제 Aqua 재시작·heartbeat·public market handshake 검증 전까지 run 시작을
+주장하지 않는다.
