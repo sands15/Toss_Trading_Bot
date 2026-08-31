@@ -1550,16 +1550,20 @@ def run_paper_service(
     env_values = env if env is not None else environ
     rate_limits = RateLimitQueue(now=now)
     store: SQLiteStateStore | None = None
+    cached_transport_key: tuple[type | None, int] | None = None
+    cached_transport: TossTransport | None = None
+    cached_client_key: tuple[str, str, str | None, str, int] | None = None
+    cached_client: TossClient | None = None
     try:
         while True:  # pragma: no branch - one pass when once=True
             config = load_config(config_path)
-            active_transport = (
-                SimulationReadOnlyTossTransport(transport)
+            transport_guard = (
+                SimulationReadOnlyTossTransport
                 if simulation_lock is not None
                 or expected_mode == "shadow" and config.intraday.simulation_enabled
-                else ShadowReadOnlyTossTransport(transport)
+                else ShadowReadOnlyTossTransport
                 if expected_mode == "shadow"
-                else transport
+                else None
             )
             service_mode = _runtime_mode(config)
             if expected_mode == "shadow":
@@ -1576,6 +1580,52 @@ def run_paper_service(
                     "paper/shadow service refuses configs with toss.live_enabled=true"
                 )
 
+            transport_key = (transport_guard, id(transport))
+            if transport_key != cached_transport_key:
+                cached_transport = (
+                    transport_guard(transport) if transport_guard is not None else transport
+                )
+                cached_transport_key = transport_key
+                cached_client = None
+                cached_client_key = None
+            active_transport = cached_transport
+
+            toss_config = getattr(config, "toss", None)
+            client_id = (
+                env_values.get(toss_config.client_id_env)
+                if toss_config is not None
+                else None
+            )
+            client_secret = (
+                env_values.get(toss_config.client_secret_env)
+                if toss_config is not None
+                else None
+            )
+            if toss_config is not None and client_id and client_secret:
+                client_key = (
+                    client_id,
+                    client_secret,
+                    (
+                        str(toss_config.account_seq)
+                        if toss_config.account_seq is not None
+                        else None
+                    ),
+                    (toss_config.base_url or TOSS_BASE_URL).rstrip("/"),
+                    id(active_transport),
+                )
+                if client_key != cached_client_key:
+                    cached_client = _toss_client_from_config(
+                        config,
+                        env=env_values,
+                        transport=active_transport,
+                        rate_limits=rate_limits,
+                        now=now,
+                    )
+                    cached_client_key = client_key
+            else:
+                cached_client = None
+                cached_client_key = None
+
             if store is None:
                 ensure_runtime_dirs(state_db=state_db, log_dir=log_dir)
                 store = SQLiteStateStore(state_db)
@@ -1590,6 +1640,7 @@ def run_paper_service(
                 config_path=config_path,
                 store=store,
                 env=env_values,
+                client=cached_client,
                 live_consent=live_consent,
                 transport=active_transport,
                 rate_limits=rate_limits,
@@ -1837,6 +1888,7 @@ def _paper_service_iteration(
     env: Mapping[str, str],
     transport: TossTransport | None,
     rate_limits: RateLimitQueue | None = None,
+    client: TossClient | None = None,
     live_consent: Mapping[str, str] | None = None,
     effective_interval_seconds: int,
     now,
@@ -1865,18 +1917,14 @@ def _paper_service_iteration(
         )
         return snapshot
 
-    credentials = TossCredentials(
-        client_id=env[config.toss.client_id_env],
-        client_secret=env[config.toss.client_secret_env],
-    )
-    client = TossClient(
-        credentials=credentials,
-        account_seq=config.toss.account_seq,
-        base_url=config.toss.base_url or TOSS_BASE_URL,
-        transport=transport,
-        rate_limits=rate_limits,
-        now=now,
-    )
+    if client is None:
+        client = _toss_client_from_config(
+            config,
+            env=env,
+            transport=transport,
+            rate_limits=rate_limits,
+            now=now,
+        )
     if config.strategy_kind == "intraday":
         return _intraday_shadow_iteration(
             config=config,
@@ -4804,6 +4852,9 @@ def _intraday_exception_diagnostic(exc: Exception) -> dict[str, Any]:
     status = getattr(exc, "status", None)
     if isinstance(status, int) and not isinstance(status, bool):
         diagnostic["http_status"] = status
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", code):
+        diagnostic["error_code"] = code
     return diagnostic
 
 

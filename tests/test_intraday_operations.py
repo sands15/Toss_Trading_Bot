@@ -208,6 +208,57 @@ def test_service_rejects_invalid_effective_interval_before_io(tmp_path: Path) ->
     assert transport.requests == []
 
 
+def test_service_reuses_one_oauth_token_across_unchanged_iterations(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class StopLoop(Exception):
+        pass
+
+    config_path = tmp_path / "config.yaml"
+    _write_intraday_config(
+        config_path,
+        base_url="https://openapi.tossinvest.com",
+    )
+    transport = FakeTransport(
+        [
+            _token(),
+            TossHttpResponse(200, {}, {"result": {}}),
+            TossHttpResponse(200, {}, {"result": {}}),
+        ]
+    )
+    clients = []
+
+    def fake_iteration(**kwargs):
+        clients.append(kwargs["client"])
+        kwargs["client"].get_market_calendar("US", date="2026-08-28")
+        return operations.HealthSnapshot(mode="shadow")
+
+    def stop_after_second_iteration(_seconds: float) -> None:
+        if len(clients) == 2:
+            raise StopLoop
+
+    monkeypatch.setattr(operations, "_paper_service_iteration", fake_iteration)
+
+    with pytest.raises(StopLoop):
+        run_paper_service(
+            config_path=config_path,
+            state_db=tmp_path / "state.sqlite3",
+            log_dir=tmp_path / "logs",
+            expected_mode="shadow",
+            env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+            transport=transport,
+            sleep=stop_after_second_iteration,
+            now=lambda: NOW,
+        )
+
+    assert clients[0] is clients[1]
+    assert (
+        sum(request.url.endswith("/oauth2/token") for request in transport.requests) == 1
+    )
+    assert sum(request.method == "GET" for request in transport.requests) == 2
+
+
 def test_shadow_service_revalidates_hot_swapped_config_before_next_iteration(
     tmp_path: Path,
     monkeypatch,
@@ -223,6 +274,7 @@ def test_shadow_service_revalidates_hot_swapped_config_before_next_iteration(
     def fake_iteration(**_kwargs):
         nonlocal iteration_count
         iteration_count += 1
+        _kwargs["client"].get_market_calendar("US", date="2026-08-28")
         return operations.HealthSnapshot(mode="shadow")
 
     def swap_config(_seconds: float) -> None:
@@ -233,7 +285,9 @@ def test_shadow_service_revalidates_hot_swapped_config_before_next_iteration(
         )
 
     monkeypatch.setattr(operations, "_paper_service_iteration", fake_iteration)
-    transport = FakeTransport([])
+    transport = FakeTransport(
+        [_token(), TossHttpResponse(200, {}, {"result": {}})]
+    )
 
     with pytest.raises(RuntimeError, match="toss.live_enabled must be false"):
         run_paper_service(
@@ -247,7 +301,10 @@ def test_shadow_service_revalidates_hot_swapped_config_before_next_iteration(
         )
 
     assert iteration_count == 1
-    assert transport.requests == []
+    assert (
+        sum(request.url.endswith("/oauth2/token") for request in transport.requests) == 1
+    )
+    assert sum(request.method == "GET" for request in transport.requests) == 1
     with SQLiteStateStore(state_db) as store:
         assert [
             event["message"] for event in store.list_runtime_events(limit=10)
@@ -2756,6 +2813,31 @@ def test_intraday_generic_failure_never_exposes_exception_text(
     assert bodies
     assert canary not in bodies[0].decode("utf-8")
     assert "SUPERSECRET" not in stored_text
+
+
+def test_intraday_exception_diagnostic_allows_only_safe_error_code() -> None:
+    safe = operations._intraday_exception_diagnostic(
+        operations.TossApiError(
+            401,
+            code="invalid_client",
+            message="Authorization: Bearer SUPERSECRET",
+        )
+    )
+    unsafe = operations._intraday_exception_diagnostic(
+        operations.TossApiError(
+            401,
+            code="invalid_client SUPERSECRET",
+            message="Authorization: Bearer SUPERSECRET",
+        )
+    )
+
+    assert safe == {
+        "exception_type": "TossApiError",
+        "http_status": 401,
+        "error_code": "invalid_client",
+    }
+    assert unsafe == {"exception_type": "TossApiError", "http_status": 401}
+    assert "SUPERSECRET" not in json.dumps([safe, unsafe])
 
 
 def test_intraday_after_open_stays_blocked_from_execution_and_places_no_order(tmp_path) -> None:

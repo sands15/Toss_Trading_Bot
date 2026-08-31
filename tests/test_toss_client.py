@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+import gzip
+from io import BytesIO
 from typing import Any, Mapping
+from urllib.error import HTTPError
 
 import pytest
 
@@ -17,6 +20,7 @@ from turtle_bot.toss_client import (
     TossClient,
     TossCredentials,
     TossHttpResponse,
+    TossResponseDecodeError,
     UrllibTossTransport,
 )
 
@@ -59,6 +63,39 @@ class FakeTransport:
         if not self.responses:
             raise AssertionError("no fake response queued")
         return self.responses.pop(0)
+
+
+class FakeUrllibResponse:
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status: int = 200,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        self.body = body
+        self.status = status
+        self.headers = dict(headers or {})
+
+    def read(self) -> bytes:
+        return self.body
+
+    def __enter__(self) -> FakeUrllibResponse:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+
+class FakeOpener:
+    def __init__(self, outcome: FakeUrllibResponse | BaseException) -> None:
+        self.outcome = outcome
+
+    def open(self, _request: Any, *, timeout: int) -> FakeUrllibResponse:
+        assert timeout == 15
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
 
 
 def _token_payload(token: str = "tok") -> dict[str, Any]:
@@ -451,6 +488,89 @@ def test_get_rankings_uses_official_read_only_contract_and_decimal_fields():
         "count": 20,
     }
     assert ACCOUNT_HEADER not in request.headers
+
+
+def test_urllib_transport_decodes_gzip_success_json() -> None:
+    response = FakeUrllibResponse(
+        gzip.compress(b'{"result":{"symbol":"AAPL"}}'),
+        headers={"Content-Encoding": "gzip"},
+    )
+
+    result = UrllibTossTransport(opener=FakeOpener(response)).request(
+        "GET",
+        "https://openapi.tossinvest.com/api/v1/prices",
+        headers={},
+        query={"symbols": "AAPL"},
+    )
+
+    assert result.status == 200
+    assert result.payload == {"result": {"symbol": "AAPL"}}
+
+
+def test_urllib_transport_decodes_observed_gzip_401_oauth_json() -> None:
+    url = "https://openapi.tossinvest.com/oauth2/token"
+    error = HTTPError(
+        url,
+        401,
+        "Unauthorized",
+        {"Content-Encoding": "gzip"},
+        BytesIO(gzip.compress(b'{"error":{"code":"unauthorized"}}')),
+    )
+
+    result = UrllibTossTransport(opener=FakeOpener(error)).request(
+        "POST",
+        url,
+        headers={},
+        form_body={"grant_type": "client_credentials"},
+    )
+
+    assert result.status == 401
+    assert result.payload == {"error": {"code": "unauthorized"}}
+
+
+def test_urllib_transport_sanitizes_non_json_http_error() -> None:
+    marker = b"PRIVATE-UPSTREAM-BODY"
+    url = "https://openapi.tossinvest.com/api/v1/commissions"
+    error = HTTPError(url, 502, "Bad Gateway", {}, BytesIO(b"\xff" + marker))
+
+    result = UrllibTossTransport(opener=FakeOpener(error)).request(
+        "GET",
+        url,
+        headers={},
+    )
+
+    assert result.status == 502
+    assert result.payload == {"error": {"code": "non-json-error"}}
+    assert marker.decode() not in repr(result)
+
+
+@pytest.mark.parametrize(
+    ("headers", "body", "reason"),
+    [
+        ({"Content-Encoding": "br"}, b"PRIVATE-BODY", "unsupported-content-encoding"),
+        ({"Content-Encoding": "gzip"}, b"PRIVATE-BODY", "gzip-decompression-failed"),
+        ({}, b"PRIVATE-BODY", "invalid-json"),
+    ],
+)
+def test_urllib_transport_fails_closed_without_body_in_decode_errors(
+    headers: Mapping[str, str],
+    body: bytes,
+    reason: str,
+) -> None:
+    response = FakeUrllibResponse(body, headers=headers)
+
+    with pytest.raises(TossResponseDecodeError) as raised:
+        UrllibTossTransport(opener=FakeOpener(response)).request(
+            "GET",
+            "https://openapi.tossinvest.com/api/v1/prices?symbols=AAPL",
+            headers={},
+        )
+
+    assert raised.value.status == 200
+    assert raised.value.path == "/api/v1/prices"
+    assert raised.value.reason == reason
+    assert "PRIVATE-BODY" not in str(raised.value)
+    assert "PRIVATE-BODY" not in repr(vars(raised.value))
 
 
 def test_list_stocks_uses_tradeable_universe_filters_without_account_header():

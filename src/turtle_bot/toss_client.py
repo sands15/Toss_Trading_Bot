@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import gzip
 import json
 import re
+import zlib
 from typing import Any, Mapping, Protocol
 from urllib import parse, request
 from urllib.error import HTTPError
@@ -146,6 +148,78 @@ class _NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
+class TossResponseDecodeError(RuntimeError):
+    """Sanitized failure to decode a Toss HTTP response."""
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        url: str,
+        content_encoding: str,
+        reason: str,
+    ) -> None:
+        self.status = status
+        self.path = parse.urlsplit(url).path or "/"
+        self.content_encoding = content_encoding
+        self.reason = reason
+        super().__init__(
+            f"Toss response {reason}: HTTP {status} {self.path} "
+            f"(content-encoding={content_encoding})"
+        )
+
+
+def _decode_response_payload(
+    raw: bytes,
+    *,
+    headers: Mapping[str, Any],
+    status: int,
+    url: str,
+    error_response: bool,
+) -> Any:
+    raw_encoding = next(
+        (
+            str(value).strip().lower()
+            for key, value in headers.items()
+            if str(key).lower() == "content-encoding"
+        ),
+        "",
+    )
+    safe_encoding = raw_encoding or "identity"
+    if not re.fullmatch(r"[a-z0-9._-]{1,32}", safe_encoding):
+        safe_encoding = "invalid"
+    if safe_encoding not in {"identity", "gzip"}:
+        raise TossResponseDecodeError(
+            status=status,
+            url=url,
+            content_encoding=safe_encoding,
+            reason="unsupported-content-encoding",
+        )
+    if safe_encoding == "gzip":
+        try:
+            raw = gzip.decompress(raw)
+        except (OSError, EOFError, zlib.error):
+            raise TossResponseDecodeError(
+                status=status,
+                url=url,
+                content_encoding=safe_encoding,
+                reason="gzip-decompression-failed",
+            ) from None
+    if not raw:
+        return {"error": {"code": "non-json-error"}} if error_response else None
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        if error_response:
+            return {"error": {"code": "non-json-error"}}
+        raise TossResponseDecodeError(
+            status=status,
+            url=url,
+            content_encoding=safe_encoding,
+            reason="invalid-json",
+        ) from None
+
+
 class UrllibTossTransport:
     def __init__(self, *, opener: Any | None = None) -> None:
         self._opener = opener or request.build_opener(_NoRedirect())
@@ -178,22 +252,31 @@ class UrllibTossTransport:
         )
         try:
             with self._opener.open(req, timeout=15) as response:
-                raw_body = response.read().decode("utf-8")
-                payload = json.loads(raw_body) if raw_body else None
+                response_headers = dict(response.headers.items())
+                payload = _decode_response_payload(
+                    response.read(),
+                    headers=response_headers,
+                    status=response.status,
+                    url=full_url,
+                    error_response=False,
+                )
                 return TossHttpResponse(
                     status=response.status,
-                    headers=dict(response.headers.items()),
+                    headers=response_headers,
                     payload=payload,
                 )
         except HTTPError as exc:
-            raw_body = exc.read().decode("utf-8")
-            try:
-                payload = json.loads(raw_body) if raw_body else None
-            except json.JSONDecodeError:
-                payload = {"error": {"code": "non-json-error", "message": raw_body}}
+            response_headers = dict(exc.headers.items()) if exc.headers else {}
+            payload = _decode_response_payload(
+                exc.read(),
+                headers=response_headers,
+                status=exc.code,
+                url=full_url,
+                error_response=True,
+            )
             return TossHttpResponse(
                 status=exc.code,
-                headers=dict(exc.headers.items()),
+                headers=response_headers,
                 payload=payload,
             )
 
