@@ -844,3 +844,36 @@ order intent, execution order table은 모두 0건이다. 아직 selected-symbol
   사용한 bot token과 Discord ID는 출력·로그·저장소에 남기지 않았고 1회용 Aqua setup/verification
   helper와 결과 파일은 검증 후 제거했다. 실제 사용자 interaction 전송은 수행하지 않았으며, 사용자
   계정에서 지정 채널의 `/현황`을 한 번 호출하는 UI smoke만 남아 있다.
+
+## 2026-08-31 — 자동선정 무후보 coverage와 `/현황` schema v2 배포
+
+자동선정 결과가 비어도 첫 시도에서 하루를 끝내지 않는다. 실제 service interval을 기준으로 다음
+반복이 계획 마감에 닿거나 넘어가는 마지막 유효 시도에서만, 모든 정상 전략 조건을 통과한 종목이
+없으면 그 날짜를 immutable `NO_CANDIDATE`로 기록한다. 그 전의 빈 결과는 재시도하며 이후 후보가
+생기면 정상 계획을 잠근다. daily/premarket candle 부족·stale·future와 quote/orderbook 데이터
+품질 오류는 다른 후보를 계속 검사하되, 끝까지 계획이 없으면 첫 구체 오류를 다시 발생시키고
+coverage를 만들지 않는다.
+
+paper DB에는 run/date unique `paper_no_candidate_sessions`를 additive하게 추가했다. 계획·휴장과
+상호 배타적이고 재시작 시 같은 날짜 기록은 idempotent하다. 월 coverage에는 관망일을 포함하지만,
+실제 plan이 한 건도 없는 기간은 계속 `INCOMPLETE`라서 전략 표본 0개를 성공으로 가장하지 않는다.
+공개 `paper-status.json`은 schema version 2로 올려 no-candidate count와 최신 covered day를 싣고,
+`/현황`은 최신 관망일을 `조건 충족 종목 없음`으로 표시한다. 최종 관망은 runtime event와 `/현황`에
+남지만 별도 Discord 관망 알림은 아직 없다. 사용자는 이전 schema의 `/현황` 실제 호출이 정상이라고
+확인했고, 이번 schema v2는 writer-reader-renderer 회귀와 Mac의 fresh status artifact로 검증했다.
+
+로컬 전체 회귀는 `816 passed, 6 skipped`, Windows non-live gate는 `573 passed, 5 skipped`, compileall과
+dependency check도 통과했다. exact commit `535efda7feed7f677e58e917bf688e3a848710fb`를 Mac의 side-by-side
+release로 설치했고 Mac network-denied non-live gate `578 passed`, dependency·wrapper syntax·Git
+무결성 검사를 통과했다. 활성 계획·context·expectation이 모두 없는 계획 창 전 안전 시점에 planner,
+stream, approval 세 job을 함께 정지하고 두 SQLite DB를 online backup API로 백업·`quick_check`한 뒤
+같은 SHA로 전환했다. planner heartbeat `OK`, approval `IDLE`, stream healthy idle, status schema 2,
+두 DB `quick_check=ok`, 가상현금 연속성, plan·broker order·intent·execution 0건과
+`live_order_submission=false`를 재확인했다.
+
+첫 전환에서는 설치 plist의 `ProgramArguments` 길이를 별도로 검증하지 않아 두 번째 인수가 남았고,
+세 wrapper가 의도대로 `EX_SOFTWARE`로 fail-closed했다. DB·계획·주문 변경은 0건이었다. 세 job을 다시
+내린 뒤 각 plist를 단일 wrapper 인수로 고치고 길이 1·mode 0600·lint를 검증해 재시작했다. 이후
+배포 절차는 array item 치환 성공을 가정하지 않고 최종 인수 개수를 반드시 검사한다. 이 시점에도
+설치된 topology는 planner·stream·approval `3/5`이며 news와 watchdog은 미설치다. 따라서
+exact-five 완료나 live 준비 완료로 기록하지 않으며 상태는 계속 `LIVE_NO_GO`다.
