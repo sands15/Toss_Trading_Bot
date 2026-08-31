@@ -133,6 +133,32 @@ def test_issue_token_uses_client_credentials_form_body():
     }
 
 
+def test_invalid_client_is_not_retried_until_the_client_is_recreated():
+    transport = FakeTransport(
+        [
+            TossHttpResponse(
+                401,
+                {},
+                {
+                    "error": "invalid_client",
+                    "error_description": "PRIVATE-UPSTREAM-MESSAGE",
+                },
+            )
+        ]
+    )
+    client = _client(transport)
+
+    with pytest.raises(TossApiError) as first:
+        client.issue_token()
+    with pytest.raises(TossApiError) as second:
+        client.issue_token()
+
+    assert first.value.status == second.value.status == 401
+    assert first.value.code == second.value.code == "invalid_client"
+    assert len(transport.requests) == 1
+    assert "PRIVATE-UPSTREAM-MESSAGE" not in str(second.value)
+
+
 def test_get_candles_normalizes_decimal_candles():
     transport = FakeTransport(
         [

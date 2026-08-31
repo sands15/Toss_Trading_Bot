@@ -423,6 +423,7 @@ class TossClient:
         self.rate_limits = rate_limits or RateLimitQueue(now=now)
         self._now = now
         self._token: TossToken | None = None
+        self._invalid_client = False
 
     @property
     def token(self) -> TossToken | None:
@@ -431,6 +432,8 @@ class TossClient:
     def issue_token(self) -> TossToken:
         if self.credentials is None:
             raise ValueError("Toss credentials are required to issue a token")
+        if self._invalid_client:
+            raise TossApiError(401, code="invalid_client")
 
         response = self.transport.request(
             "POST",
@@ -443,7 +446,12 @@ class TossClient:
             },
         )
         self._capture_rate_limit("auth", response.headers)
-        self._raise_for_error(response)
+        try:
+            self._raise_for_error(response)
+        except TossApiError as exc:
+            if exc.status == 401 and exc.code == "invalid_client":
+                self._invalid_client = True
+            raise
 
         payload = _expect_mapping(response.payload)
         expires_in = int(payload.get("expires_in", 0))
