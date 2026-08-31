@@ -156,8 +156,15 @@ class DashboardTradingLoopStopped(RuntimeError):
 class IntradayPlanBlocked(RuntimeError):
     """A fail-closed, user-actionable reason why no daily plan was saved."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        paper_no_trade: bool = False,
+    ) -> None:
         self.code = code
+        self.paper_no_trade = paper_no_trade
         super().__init__(message)
 
 
@@ -1517,6 +1524,12 @@ def run_paper_service(
     paper_status_sink: Callable[..., None] | None = None,
     now=lambda: datetime.now(timezone.utc),
 ) -> HealthSnapshot:
+    if (
+        isinstance(interval_seconds, bool)
+        or not isinstance(interval_seconds, int)
+        or interval_seconds < 1
+    ):
+        raise ValueError("interval_seconds must be a positive integer")
     if expected_mode not in {None, "shadow"}:
         raise ValueError("expected_mode must be None or shadow")
     simulation_lock = _normalize_expected_simulation(expected_simulation)
@@ -1580,6 +1593,7 @@ def run_paper_service(
                 live_consent=live_consent,
                 transport=active_transport,
                 rate_limits=rate_limits,
+                effective_interval_seconds=interval_seconds,
                 now=now,
             )
             if paper_status_sink is not None:
@@ -1617,10 +1631,11 @@ def _publish_intraday_paper_status(
     )
     try:
         summary = paper_store.summary(as_of=snapshot.generated_at)
-        days = summary.get("days")
+        coverage = summary.get("coverage")
+        covered = coverage.get("covered") if isinstance(coverage, Mapping) else None
         latest_day = (
-            _paper_daily_public_payload(days[-1])
-            if isinstance(days, list) and days and isinstance(days[-1], Mapping)
+            _paper_daily_public_payload(paper_store.daily_summary(covered[-1]))
+            if isinstance(covered, list) and covered and isinstance(covered[-1], str)
             else None
         )
         sink(
@@ -1823,6 +1838,7 @@ def _paper_service_iteration(
     transport: TossTransport | None,
     rate_limits: RateLimitQueue | None = None,
     live_consent: Mapping[str, str] | None = None,
+    effective_interval_seconds: int,
     now,
 ) -> HealthSnapshot:
     account_alias = _account_alias_from_config_path(config_path)
@@ -1868,6 +1884,7 @@ def _paper_service_iteration(
             store=store,
             env=env,
             account_alias=account_alias,
+            effective_interval_seconds=effective_interval_seconds,
             now=now,
         )
     market_data = TossReadOnlyMarketDataProvider(
@@ -2062,6 +2079,7 @@ def _intraday_shadow_iteration(
     store: SQLiteStateStore,
     env: Mapping[str, str],
     account_alias: str,
+    effective_interval_seconds: int,
     now,
 ) -> HealthSnapshot:
     """Create one immutable premarket plan without constructing an order runtime."""
@@ -2201,6 +2219,18 @@ def _intraday_shadow_iteration(
                 schedule=schedule,
                 checked_at=checked_at,
                 simulation_enabled=paper_store is not None,
+            )
+
+        if (
+            paper_store is not None
+            and paper_store.daily_summary(schedule.session_date)["status"]
+            == "NO_CANDIDATE"
+        ):
+            return HealthSnapshot(
+                mode="shadow",
+                ready=True,
+                blockers=(),
+                generated_at=checked_at,
             )
 
         earliest = schedule.regular_open - timedelta(
@@ -2532,6 +2562,32 @@ def _intraday_shadow_iteration(
             generated_at=captured_at,
         )
     except IntradayPlanBlocked as exc:
+        no_trade_at = _intraday_now(now)
+        if (
+            paper_store is not None
+            and exc.paper_no_trade
+            and no_trade_at
+            + timedelta(seconds=effective_interval_seconds)
+            >= deadline
+        ):
+            paper_store.record_no_candidate(
+                session_date,
+                recorded_at=no_trade_at,
+            )
+            store.record_runtime_event(
+                "INFO",
+                "intraday_paper_no_candidate",
+                {
+                    "session_date": session_date.isoformat(),
+                    "status": "NO_CANDIDATE",
+                },
+            )
+            return HealthSnapshot(
+                mode="shadow",
+                ready=True,
+                blockers=(),
+                generated_at=no_trade_at,
+            )
         if (
             exc.code == "intraday_market_holiday"
             and paper_store is not None
@@ -2957,6 +3013,7 @@ def _select_automatic_intraday_plan(
         raise IntradayPlanBlocked(
             "intraday_no_eligible_candidate",
             "no ranking candidate passed the automatic selection thresholds",
+            paper_no_trade=True,
         )
 
     tradeable_markets = _intraday_tradeable_us_stock_symbols(
@@ -2974,11 +3031,13 @@ def _select_automatic_intraday_plan(
         raise IntradayPlanBlocked(
             "intraday_no_eligible_candidate",
             "no ranking candidate belongs to the current tradeable US universe",
+            paper_no_trade=True,
         )
     details = _strict_intraday_stock_details(
         client.get_stocks(tuple(item["symbol"] for item in review)),
         requested_symbols={item["symbol"] for item in review},
     )
+    first_data_error: IntradayPlanBlocked | None = None
     for candidate in review:
         symbol = candidate["symbol"]
         stock = details.get(symbol)
@@ -3004,17 +3063,27 @@ def _select_automatic_intraday_plan(
             before=schedule.regular_open,
             adjusted=False,
         )
-        daily = _strict_intraday_daily_metrics(
-            daily_page.candles,
-            symbol=symbol,
-            session_date=schedule.session_date,
-            min_average_daily_value=(
-                config.intraday.selection_min_average_daily_value
-            ),
-            max_average_daily_range_fraction=(
-                config.intraday.selection_max_average_daily_range_fraction
-            ),
-        )
+        try:
+            daily = _strict_intraday_daily_metrics(
+                daily_page.candles,
+                symbol=symbol,
+                session_date=schedule.session_date,
+                min_average_daily_value=(
+                    config.intraday.selection_min_average_daily_value
+                ),
+                max_average_daily_range_fraction=(
+                    config.intraday.selection_max_average_daily_range_fraction
+                ),
+            )
+        except IntradayPlanBlocked as exc:
+            if exc.code in {
+                "intraday_daily_candles_incomplete",
+                "intraday_daily_candles_stale",
+                "intraday_daily_candles_future",
+            }:
+                first_data_error = first_data_error or exc
+                continue
+            raise
         if daily is None:
             continue
 
@@ -3025,16 +3094,26 @@ def _select_automatic_intraday_plan(
             before=minute_captured_at,
             premarket_open=schedule.premarket_open,
         )
-        premarket = _strict_intraday_premarket_metrics(
-            minute_candles,
-            symbol=symbol,
-            captured_at=_intraday_now(now),
-            schedule=schedule,
-            max_age_seconds=config.intraday.selection_rank_max_age_seconds,
-            max_range_fraction=(
-                config.intraday.selection_max_premarket_range_fraction
-            ),
-        )
+        try:
+            premarket = _strict_intraday_premarket_metrics(
+                minute_candles,
+                symbol=symbol,
+                captured_at=_intraday_now(now),
+                schedule=schedule,
+                max_age_seconds=config.intraday.selection_rank_max_age_seconds,
+                max_range_fraction=(
+                    config.intraday.selection_max_premarket_range_fraction
+                ),
+            )
+        except IntradayPlanBlocked as exc:
+            if exc.code in {
+                "intraday_premarket_candles_incomplete",
+                "intraday_premarket_candles_stale",
+                "intraday_premarket_candles_future",
+            }:
+                first_data_error = first_data_error or exc
+                continue
+            raise
         if premarket is None:
             continue
 
@@ -3082,6 +3161,13 @@ def _select_automatic_intraday_plan(
                 "intraday_spread_too_wide",
                 "intraday_last_mid_deviation",
             }:
+                if exc.code in {
+                    "intraday_price_stale",
+                    "intraday_orderbook_stale",
+                    "intraday_orderbook_empty",
+                    "intraday_orderbook_crossed",
+                }:
+                    first_data_error = first_data_error or exc
                 continue
             raise
         _validate_intraday_timestamp(
@@ -3149,9 +3235,12 @@ def _select_automatic_intraday_plan(
             captured_at,
         )
 
+    if first_data_error is not None:
+        raise first_data_error
     raise IntradayPlanBlocked(
         "intraday_no_eligible_candidate",
         "no reviewed ranking candidate passed all automatic selection checks",
+        paper_no_trade=True,
     )
 
 
@@ -3455,6 +3544,11 @@ def _strict_intraday_daily_metrics(
     eastern = ZoneInfo("America/New_York")
     for candle in valid:
         candle_date = candle.timestamp.astimezone(eastern).date()
+        if candle_date > session_date:
+            raise IntradayPlanBlocked(
+                "intraday_daily_candles_future",
+                "daily candle date is after the planned session",
+            )
         if candle_date >= session_date:
             continue
         if candle_date in by_date:
@@ -3464,10 +3558,16 @@ def _strict_intraday_daily_metrics(
         by_date[candle_date] = candle
     completed = [by_date[key] for key in sorted(by_date, reverse=True)]
     if len(completed) < _INTRADAY_DAILY_CANDLE_COUNT:
-        return None
+        raise IntradayPlanBlocked(
+            "intraday_daily_candles_incomplete",
+            "daily candle history is shorter than the required window",
+        )
     completed = completed[:_INTRADAY_DAILY_CANDLE_COUNT]
     if session_date - completed[0].timestamp.astimezone(eastern).date() > timedelta(days=7):
-        return None
+        raise IntradayPlanBlocked(
+            "intraday_daily_candles_stale",
+            "latest completed daily candle is stale",
+        )
     divisor = Decimal(_INTRADAY_DAILY_CANDLE_COUNT)
     average_value = sum(
         (candle.close * candle.volume for candle in completed), Decimal("0")
@@ -3504,6 +3604,11 @@ def _strict_intraday_premarket_metrics(
         expected_adjusted=False,
         require_positive_volume=False,
     )
+    if any(candle.timestamp > captured_at for candle in valid):
+        raise IntradayPlanBlocked(
+            "intraday_premarket_candles_future",
+            "premarket candle timestamp is in the future",
+        )
     completed = [
         candle
         for candle in valid
@@ -3512,19 +3617,27 @@ def _strict_intraday_premarket_metrics(
     ]
     completed.sort(key=lambda candle: candle.timestamp)
     if len(completed) < _INTRADAY_MIN_PREMARKET_CANDLES:
-        return None
+        raise IntradayPlanBlocked(
+            "intraday_premarket_candles_incomplete",
+            "premarket candle history is shorter than the required window",
+        )
     latest_end = completed[-1].timestamp + timedelta(minutes=1)
     age = (captured_at - latest_end).total_seconds()
     total_volume = sum((candle.volume for candle in completed), Decimal("0"))
     session_high = max(candle.high for candle in completed)
     session_low = min(candle.low for candle in completed)
     range_fraction = (session_high - session_low) / completed[-1].close
-    if (
-        age < 0
-        or age > max_age_seconds
-        or total_volume <= 0
-        or range_fraction > max_range_fraction
-    ):
+    if age < 0:
+        raise IntradayPlanBlocked(
+            "intraday_premarket_candles_future",
+            "latest completed premarket candle ends in the future",
+        )
+    if age > max_age_seconds:
+        raise IntradayPlanBlocked(
+            "intraday_premarket_candles_stale",
+            "latest completed premarket candle is stale",
+        )
+    if total_volume <= 0 or range_fraction > max_range_fraction:
         return None
     return {
         "completed_premarket_candles": len(completed),
@@ -4867,6 +4980,7 @@ def _paper_month_public_payload(summary: Mapping[str, Any]) -> dict[str, Any]:
         "max_drawdown": summary.get("max_closed_equity_drawdown_usd"),
         "exit_reason_counts": summary.get("exit_reason_counts"),
         "no_entry_sessions": summary.get("no_entry_count"),
+        "no_candidate_sessions": summary.get("no_candidate_count"),
         "invalid_sessions": summary.get("invalid_result_count"),
         "unresolved_positions": summary.get("unresolved_position_count"),
         "waiting_plans": summary.get("waiting_plan_count"),
@@ -4906,7 +5020,7 @@ def _paper_daily_public_payload(summary: Mapping[str, Any]) -> dict[str, Any]:
         "cash_end": summary.get("cash_after"),
         "accepted_events": summary.get("accepted_event_count"),
         "journaled_frames": summary.get("journaled_frame_count"),
-        "data_gaps": summary.get("data_gap_count"),
+        "data_gaps": summary.get("data_gap_count", 0),
         "first_event_at": summary.get("first_event_at"),
         "last_event_at": summary.get("last_event_at"),
         "fee_sources": summary.get("fee_sources"),

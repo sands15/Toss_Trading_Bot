@@ -2052,6 +2052,7 @@ _PAPER_DAY_LABELS = {
     "OPEN": "포지션 보유 중",
     "CLOSED": "청산 완료",
     "NO_ENTRY": "진입 없음",
+    "NO_CANDIDATE": "조건 충족 종목 없음",
     "INVALID": "데이터 무효",
     "UNRESOLVED": "미해결",
     "MARKET_CLOSED": "휴장",
@@ -2133,7 +2134,8 @@ def render_paper_status(snapshot: Mapping[str, Any]) -> str:
             f" · 미기록 {snapshot['coverage_missing_count']}일"
         ),
         (
-            f"미진입 {snapshot['no_entry_count']} · 대기 {snapshot['waiting_plan_count']}"
+            f"미진입 {snapshot['no_entry_count']} · 관망 {snapshot['no_candidate_count']}"
+            f" · 대기 {snapshot['waiting_plan_count']}"
             f" · 무효 {snapshot['invalid_result_count']}"
             f" · 미해결 {snapshot['unresolved_position_count']}"
         ),

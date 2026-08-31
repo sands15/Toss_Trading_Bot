@@ -28,7 +28,7 @@ _MONTH_STATUSES = frozenset(
     {"UNRESOLVED", "OPEN", "WAITING", "INVALID", "BLOCKED", "ACTIVE", "INCOMPLETE", "COMPLETE"}
 )
 _DAY_STATUSES = frozenset(
-    {"WAITING_ENTRY", "OPEN", "UNRESOLVED", "CLOSED", "INVALID", "NO_ENTRY", "MARKET_CLOSED", "NO_PLAN"}
+    {"WAITING_ENTRY", "OPEN", "UNRESOLVED", "CLOSED", "INVALID", "NO_ENTRY", "NO_CANDIDATE", "MARKET_CLOSED", "NO_PLAN"}
 )
 _TOP_LEVEL_KEYS = frozenset(
     {
@@ -56,6 +56,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "max_drawdown_usd",
         "max_drawdown_fraction",
         "no_entry_count",
+        "no_candidate_count",
         "invalid_result_count",
         "unresolved_position_count",
         "waiting_plan_count",
@@ -141,7 +142,7 @@ class PaperStatusWriter:
             coverage_covered = _count(month_summary.get("coverage_covered"))
             coverage_missing = _count(month_summary.get("coverage_missing"))
             payload: dict[str, object] = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "release_sha": self.release_sha,
                 "boot_id_hash": self.boot_id_hash,
                 "mode": "shadow",
@@ -165,6 +166,7 @@ class PaperStatusWriter:
                 "max_drawdown_usd": _decimal_string(month_summary.get("max_drawdown"), nonnegative=True),
                 "max_drawdown_fraction": _decimal_string(month_summary.get("max_drawdown_fraction"), fraction=True),
                 "no_entry_count": _count(month_summary.get("no_entry_sessions")),
+                "no_candidate_count": _count(month_summary.get("no_candidate_sessions")),
                 "invalid_result_count": _count(month_summary.get("invalid_sessions")),
                 "unresolved_position_count": _count(month_summary.get("unresolved_positions")),
                 "waiting_plan_count": _count(month_summary.get("waiting_plans")),
@@ -296,7 +298,7 @@ def _latest_day(value: Mapping[str, object] | None) -> dict[str, object] | None:
         return None
     status_code = _enum(value.get("status"), _DAY_STATUSES)
     symbol = value.get("symbol")
-    if status_code in {"MARKET_CLOSED", "NO_PLAN"}:
+    if status_code in {"NO_CANDIDATE", "MARKET_CLOSED", "NO_PLAN"}:
         if symbol is not None:
             raise ValueError
         clean_symbol = None
@@ -326,7 +328,7 @@ def _validate_payload(
 ) -> None:
     if set(payload) != _TOP_LEVEL_KEYS:
         raise ValueError
-    if payload.get("schema_version") != 1 or type(payload.get("schema_version")) is not int:
+    if payload.get("schema_version") != 2 or type(payload.get("schema_version")) is not int:
         raise ValueError
     if payload.get("mode") != "shadow" or payload.get("live_order_submission") is not False:
         raise ValueError
@@ -369,6 +371,7 @@ def _validate_payload(
     _decimal_string(payload.get("max_drawdown_usd"), nonnegative=True)
     _decimal_string(payload.get("max_drawdown_fraction"), fraction=True)
     _count(payload.get("no_entry_count"))
+    no_candidates = _count(payload.get("no_candidate_count"))
     _count(payload.get("invalid_result_count"))
     _count(payload.get("unresolved_position_count"))
     _count(payload.get("waiting_plan_count"))
@@ -376,6 +379,8 @@ def _validate_payload(
     covered = _count(payload.get("coverage_covered_count"))
     missing = _count(payload.get("coverage_missing_count"))
     if covered > expected or missing != expected - covered:
+        raise ValueError
+    if no_candidates > covered:
         raise ValueError
 
     latest = payload.get("latest_day")
@@ -386,8 +391,10 @@ def _validate_payload(
         if not start <= latest_date <= end:
             raise ValueError
         status_code = _enum(latest.get("status"), _DAY_STATUSES)
+        if status_code == "NO_CANDIDATE" and no_candidates == 0:
+            raise ValueError
         symbol = latest.get("symbol")
-        if status_code in {"MARKET_CLOSED", "NO_PLAN"}:
+        if status_code in {"NO_CANDIDATE", "MARKET_CLOSED", "NO_PLAN"}:
             if symbol is not None:
                 raise ValueError
         elif not isinstance(symbol, str) or not _SYMBOL.fullmatch(symbol):

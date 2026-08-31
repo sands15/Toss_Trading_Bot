@@ -228,6 +228,15 @@ class IntradayPaperStore:
         ).fetchone()
         if market_closed is not None:
             raise PaperSimulationBlocked("session is already recorded as MARKET_CLOSED")
+        no_candidate = self._conn.execute(
+            """
+            SELECT 1 FROM paper_no_candidate_sessions
+            WHERE run_id = ? AND session_date = ?
+            """,
+            (self.config.run_id, session.isoformat()),
+        ).fetchone()
+        if no_candidate is not None:
+            raise PaperSimulationBlocked("session is already recorded as NO_CANDIDATE")
         latest = self._conn.execute(
             "SELECT MAX(session_date) FROM paper_plans WHERE run_id = ?",
             (self.config.run_id,),
@@ -349,6 +358,15 @@ class IntradayPaperStore:
             ).fetchone()
             if plan is not None:
                 raise PaperSimulationError("session already has a simulation plan")
+            no_candidate = self._conn.execute(
+                """
+                SELECT 1 FROM paper_no_candidate_sessions
+                WHERE run_id = ? AND session_date = ?
+                """,
+                (self.config.run_id, session.isoformat()),
+            ).fetchone()
+            if no_candidate is not None:
+                raise PaperSimulationError("session is already recorded as NO_CANDIDATE")
             self._conn.execute(
                 """
                 INSERT OR IGNORE INTO paper_market_closed_sessions (
@@ -369,6 +387,48 @@ class IntradayPaperStore:
             "session_date": session.isoformat(),
             "status": "MARKET_CLOSED",
             "recorded_at": str(row["recorded_at"]),
+        }
+
+    def record_no_candidate(
+        self,
+        session_date: date | str,
+        *,
+        recorded_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Idempotently cover one evaluated session with no eligible candidate."""
+
+        session = _date(session_date, "session_date")
+        at = _utc_datetime(recorded_at or datetime.now(timezone.utc), "recorded_at")
+        with self._write():
+            existing = self._conn.execute(
+                """
+                SELECT recorded_at FROM paper_no_candidate_sessions
+                WHERE run_id = ? AND session_date = ?
+                """,
+                (self.config.run_id, session.isoformat()),
+            ).fetchone()
+            if existing is None:
+                self.assert_ready(session)
+                self._conn.execute(
+                    """
+                    INSERT INTO paper_no_candidate_sessions (
+                        run_id, session_date, recorded_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (self.config.run_id, session.isoformat(), _iso(at)),
+                )
+                existing = self._conn.execute(
+                    """
+                    SELECT recorded_at FROM paper_no_candidate_sessions
+                    WHERE run_id = ? AND session_date = ?
+                    """,
+                    (self.config.run_id, session.isoformat()),
+                ).fetchone()
+        return {
+            "run_id": self.config.run_id,
+            "session_date": session.isoformat(),
+            "status": "NO_CANDIDATE",
+            "recorded_at": str(existing["recorded_at"]),
         }
 
     def load_plan(self, plan_id: str) -> dict[str, Any]:
@@ -827,6 +887,20 @@ class IntradayPaperStore:
             (self.config.run_id, session.isoformat()),
         ).fetchone()
         if row is None:
+            no_candidate = self._conn.execute(
+                """
+                SELECT recorded_at FROM paper_no_candidate_sessions
+                WHERE run_id = ? AND session_date = ?
+                """,
+                (self.config.run_id, session.isoformat()),
+            ).fetchone()
+            if no_candidate is not None:
+                return {
+                    "run_id": self.config.run_id,
+                    "session_date": session.isoformat(),
+                    "status": "NO_CANDIDATE",
+                    "recorded_at": str(no_candidate["recorded_at"]),
+                }
             closed = self._conn.execute(
                 """
                 SELECT recorded_at FROM paper_market_closed_sessions
@@ -873,7 +947,17 @@ class IntradayPaperStore:
                 (self.config.run_id,),
             )
         }
-        covered_dates = planned_dates | market_closed_dates
+        no_candidate_dates = {
+            str(row["session_date"])
+            for row in self._conn.execute(
+                """
+                SELECT session_date FROM paper_no_candidate_sessions
+                WHERE run_id = ? ORDER BY session_date
+                """,
+                (self.config.run_id,),
+            )
+        }
+        covered_dates = planned_dates | market_closed_dates | no_candidate_dates
         missing_dates = [value for value in expected_dates if value not in covered_dates]
         clean_pnl = sum(
             (_stored_decimal(row["realized_pnl"], "realized_pnl") for row in clean),
@@ -1000,6 +1084,7 @@ class IntradayPaperStore:
             "expectancy_usd": _optional_dstr(expectancy),
             "exit_reason_counts": dict(sorted(exit_reason_counts.items())),
             "no_entry_count": sum(row["status"] == "NO_ENTRY" for row in rows),
+            "no_candidate_count": len(no_candidate_dates),
             "accepted_event_count": sum(int(row["accepted_event_count"]) for row in rows),
             "journaled_frame_count": sum(int(row["journaled_frame_count"]) for row in rows),
             "data_gap_count": sum(int(row["data_gap_count"]) for row in rows),
@@ -1009,6 +1094,7 @@ class IntradayPaperStore:
                 "missing": missing_dates,
                 "planned": sorted(planned_dates),
                 "market_closed": sorted(market_closed_dates),
+                "no_candidate": sorted(no_candidate_dates),
                 "expected_count": len(expected_dates),
                 "covered_count": len(expected_dates) - len(missing_dates),
                 "missing_count": len(missing_dates),
@@ -1148,6 +1234,13 @@ class IntradayPaperStore:
                 FOREIGN KEY (run_id, plan_id) REFERENCES paper_plans(run_id, plan_id)
             );
             CREATE TABLE IF NOT EXISTS paper_market_closed_sessions (
+                run_id TEXT NOT NULL,
+                session_date TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, session_date),
+                FOREIGN KEY (run_id) REFERENCES paper_runs(run_id)
+            );
+            CREATE TABLE IF NOT EXISTS paper_no_candidate_sessions (
                 run_id TEXT NOT NULL,
                 session_date TEXT NOT NULL,
                 recorded_at TEXT NOT NULL,

@@ -189,6 +189,25 @@ def test_shadow_service_hard_lock_rejects_all_unsafe_flags_before_db_or_transpor
     assert not log_dir.exists()
 
 
+def test_service_rejects_invalid_effective_interval_before_io(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_intraday_config(config_path)
+    transport = FakeTransport([])
+
+    for invalid in (True, 0, -1, 1.5):
+        with pytest.raises(ValueError, match="positive integer"):
+            run_paper_service(
+                config_path=config_path,
+                state_db=tmp_path / "state.sqlite3",
+                log_dir=tmp_path / "logs",
+                interval_seconds=invalid,
+                once=True,
+                transport=transport,
+            )
+
+    assert transport.requests == []
+
+
 def test_shadow_service_revalidates_hot_swapped_config_before_next_iteration(
     tmp_path: Path,
     monkeypatch,
@@ -455,6 +474,30 @@ def _write_automatic_intraday_config(
     path.write_text(raw, encoding="utf-8")
 
 
+def _enable_one_day_simulation(path: Path, paper_db: Path) -> None:
+    raw = path.read_text(encoding="utf-8").replace(
+        "base_url: https://example.test",
+        "base_url: https://openapi.tossinvest.com",
+    ).replace(
+        "    minimum_plan_lead_minutes: 15\n",
+        "    minimum_plan_lead_minutes: 60\n",
+    ).replace(
+        "    approval_envelope_path: null\n",
+        (
+            "    approval_envelope_path: null\n"
+            "    simulation:\n"
+            "      enabled: true\n"
+            "      id: no-candidate-test\n"
+            "      start_date: 2026-08-28\n"
+            "      end_date: 2026-08-28\n"
+            "      initial_cash: 10000\n"
+            "      slippage_fraction: 0.0005\n"
+            f"      db_path: {json.dumps(str(paper_db.resolve()))}\n"
+        ),
+    )
+    path.write_text(raw, encoding="utf-8")
+
+
 def _candle(timestamp: str) -> dict[str, Any]:
     return {
         "timestamp": timestamp,
@@ -616,6 +659,7 @@ def _run(
     config_name: str = "intraday.yaml",
     env: Mapping[str, str] | None = None,
     clock=None,
+    interval_seconds: int = 60,
 ):
     config_path = tmp_path / config_name
     if not config_path.exists():
@@ -625,6 +669,7 @@ def _run(
         config_path=config_path,
         state_db=state_db,
         log_dir=tmp_path / "logs",
+        interval_seconds=interval_seconds,
         once=True,
         env={
             "TOSS_CLIENT_ID": "id",
@@ -923,6 +968,7 @@ def test_paper_status_sink_receives_only_public_month_and_latest_day(
         "current_cash_usd": "10000",
         "realized_pnl_usd": "0",
         "trade_count": 0,
+        "no_candidate_count": 1,
         "waiting_plan_count": 1,
         "coverage": {
             "expected_count": 21,
@@ -930,6 +976,8 @@ def test_paper_status_sink_receives_only_public_month_and_latest_day(
             "missing_count": 20,
             "missing": ["2026-08-03"],
             "market_closed": [],
+            "no_candidate": ["2026-08-29"],
+            "covered": ["2026-08-29"],
         },
         "days": [
             {
@@ -962,6 +1010,15 @@ def test_paper_status_sink_receives_only_public_month_and_latest_day(
         def summary(self, *, as_of: datetime) -> dict[str, Any]:
             assert as_of == NOW
             return summary
+
+        def daily_summary(self, session_date: str) -> dict[str, Any]:
+            assert session_date == "2026-08-29"
+            return {
+                "run_id": "august-forward-test",
+                "session_date": session_date,
+                "status": "NO_CANDIDATE",
+                "recorded_at": NOW.isoformat(),
+            }
 
         def close(self) -> None:
             closed.append(True)
@@ -1011,11 +1068,20 @@ def test_paper_status_sink_receives_only_public_month_and_latest_day(
     assert metadata == {
         "planner_ready": False,
         "blocker_codes": ("intraday_plan_window_not_started",),
-        "latest_day": operations._paper_daily_public_payload(summary["days"][-1]),
+        "latest_day": operations._paper_daily_public_payload(
+            {
+                "run_id": "august-forward-test",
+                "session_date": "2026-08-29",
+                "status": "NO_CANDIDATE",
+            }
+        ),
     }
     assert "simulation_account_key" not in month
     assert "days" not in month
     assert "plan_id" not in metadata["latest_day"]
+    assert month["no_candidate_sessions"] == 1
+    assert metadata["latest_day"]["symbol"] is None
+    assert metadata["latest_day"]["data_gaps"] == 0
     serialized = json.dumps(received, sort_keys=True)
     assert "private-simulation-account-key" not in serialized
     assert "private-plan-id-old" not in serialized
@@ -1478,6 +1544,481 @@ def test_intraday_automatic_warning_change_before_lock_fails_closed(
     assert all(request.method == "GET" for request in warning_requests)
     with SQLiteStateStore(state_db) as store:
         assert store.list_intraday_plans() == []
+
+
+def test_simulation_records_and_reuses_no_candidate_as_covered_no_trade_day(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    early_at = NOW - timedelta(minutes=1, seconds=1)
+    early_responses = _automatic_successful_responses(
+        ranked_at="2026-08-28T12:28:50+00:00"
+    )
+    early_responses[7].payload["result"]["rankings"] = []
+    early_transport = FakeTransport(
+        [
+            early_responses[0],
+            early_responses[1],
+            early_responses[6],
+            early_responses[7],
+        ]
+    )
+
+    early, state_db = _run(
+        tmp_path,
+        early_transport,
+        at=early_at,
+        config_name="simulation.yaml",
+    )
+
+    config = load_config(config_path)
+    paper_config = operations._intraday_paper_config(config)
+    assert early.ready is False
+    assert early.blockers == ("intraday_no_eligible_candidate",)
+    with IntradayPaperStore(paper_db, paper_config) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_PLAN"
+
+    final_responses = _automatic_successful_responses()
+    final_responses[7].payload["result"]["rankings"] = []
+    final_transport = FakeTransport(
+        [
+            final_responses[0],
+            final_responses[1],
+            final_responses[6],
+            final_responses[7],
+        ]
+    )
+    final, _ = _run(
+        tmp_path,
+        final_transport,
+        config_name="simulation.yaml",
+    )
+
+    assert final.ready is True
+    assert final.blockers == ()
+    with IntradayPaperStore(paper_db, paper_config) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_CANDIDATE"
+        summary = paper.summary(as_of=datetime(2026, 8, 29, tzinfo=timezone.utc))
+        assert summary["status"] == "INCOMPLETE"
+        assert summary["coverage"]["no_candidate"] == ["2026-08-28"]
+        assert summary["coverage"]["missing"] == []
+
+    second_transport = FakeTransport([_token(), _calendar()])
+    second, repeated_state_db = _run(
+        tmp_path,
+        second_transport,
+        config_name="simulation.yaml",
+    )
+
+    assert repeated_state_db == state_db
+    assert second.ready is True
+    assert second.blockers == ()
+    assert all(
+        not request.url.endswith("/api/v1/rankings")
+        for request in second_transport.requests
+    )
+
+
+@pytest.mark.parametrize(
+    ("deadline_offset_seconds", "ranked_at", "ready", "blocker", "day_status"),
+    [
+        (-61, "2026-08-28T12:28:50+00:00", False, "intraday_no_eligible_candidate", "NO_PLAN"),
+        (-60, "2026-08-28T12:28:50+00:00", True, None, "NO_CANDIDATE"),
+        (0, "2026-08-28T12:29:50+00:00", True, None, "NO_CANDIDATE"),
+        (1, "2026-08-28T12:29:50+00:00", False, "intraday_plan_deadline_missed", "NO_PLAN"),
+    ],
+)
+def test_no_candidate_final_attempt_deadline_boundaries(
+    tmp_path,
+    monkeypatch,
+    deadline_offset_seconds: int,
+    ranked_at: str,
+    ready: bool,
+    blocker: str | None,
+    day_status: str,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    responses = _automatic_successful_responses(ranked_at=ranked_at)
+    responses[7].payload["result"]["rankings"] = []
+    queued = (
+        [responses[0], responses[1]]
+        if deadline_offset_seconds > 0
+        else [responses[0], responses[1], responses[6], responses[7]]
+    )
+
+    snapshot, _ = _run(
+        tmp_path,
+        FakeTransport(queued),
+        at=NOW + timedelta(seconds=deadline_offset_seconds),
+        config_name="simulation.yaml",
+    )
+
+    assert snapshot.ready is ready
+    assert snapshot.blockers == (() if blocker is None else (blocker,))
+    config = load_config(config_path)
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == day_status
+
+
+def test_simulation_can_select_later_after_an_early_no_candidate(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    early_responses = _automatic_successful_responses(
+        ranked_at="2026-08-28T12:27:50+00:00"
+    )
+    early_responses[7].payload["result"]["rankings"] = []
+
+    early, _ = _run(
+        tmp_path,
+        FakeTransport(
+            [
+                early_responses[0],
+                early_responses[1],
+                early_responses[6],
+                early_responses[7],
+            ]
+        ),
+        at=NOW - timedelta(minutes=2),
+        config_name="simulation.yaml",
+    )
+    responses = _automatic_successful_responses()
+    selected, state_db = _run(
+        tmp_path,
+        FakeTransport(
+            [
+                responses[0],
+                responses[1],
+                responses[6],
+                *responses[7:15],
+                *responses[19:22],
+            ]
+        ),
+        config_name="simulation.yaml",
+    )
+
+    assert early.ready is False
+    assert selected.ready is True
+    with SQLiteStateStore(state_db) as store:
+        assert [plan["symbol"] for plan in store.list_intraday_plans()] == ["AAPL"]
+    config = load_config(config_path)
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "WAITING_ENTRY"
+
+
+def test_simulation_does_not_cover_no_candidate_when_market_data_is_stale(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    responses = _automatic_successful_responses(
+        price_timestamp="2026-08-28T12:00:00+00:00"
+    )
+    transport = FakeTransport(
+        [
+            responses[0],
+            responses[1],
+            responses[6],
+            *responses[7:15],
+            *responses[19:22],
+        ]
+    )
+
+    snapshot, _ = _run(
+        tmp_path,
+        transport,
+        config_name="simulation.yaml",
+    )
+
+    assert snapshot.ready is False
+    assert snapshot.blockers == ("intraday_price_stale",)
+    config = load_config(config_path)
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_PLAN"
+        assert paper.summary(as_of=NOW)["coverage"]["missing"] == ["2026-08-28"]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("daily_incomplete", "intraday_daily_candles_incomplete"),
+        ("daily_stale", "intraday_daily_candles_stale"),
+        ("daily_future", "intraday_daily_candles_future"),
+        ("premarket_incomplete", "intraday_premarket_candles_incomplete"),
+        ("premarket_stale", "intraday_premarket_candles_stale"),
+        ("premarket_future", "intraday_premarket_candles_future"),
+    ],
+)
+def test_simulation_candle_data_quality_failure_never_becomes_coverage(
+    tmp_path,
+    monkeypatch,
+    failure: str,
+    expected_code: str,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    responses = _automatic_successful_responses()
+    daily = responses[13].payload["result"]["candles"]
+    premarket = responses[14].payload["result"]["candles"]
+    if failure == "daily_incomplete":
+        responses[13].payload["result"]["candles"] = daily[:-1]
+    elif failure == "daily_stale":
+        responses[13].payload["result"]["candles"] = [
+            {
+                **_candle(
+                    (datetime(2026, 8, 20, 4, tzinfo=timezone.utc) - timedelta(days=index)).isoformat()
+                ),
+                "volume": "1000000",
+            }
+            for index in range(20)
+        ]
+    elif failure == "daily_future":
+        daily[0]["timestamp"] = "2026-09-01T04:00:00+00:00"
+    elif failure == "premarket_incomplete":
+        responses[14].payload["result"]["candles"] = premarket[:2]
+    elif failure == "premarket_stale":
+        responses[14].payload["result"]["candles"] = [
+            _candle(value)
+            for value in (
+                "2026-08-28T08:00:00+00:00",
+                "2026-08-28T12:00:00+00:00",
+                "2026-08-28T12:01:00+00:00",
+                "2026-08-28T12:02:00+00:00",
+            )
+        ]
+    else:
+        premarket.append(_candle("2026-08-28T12:31:00+00:00"))
+
+    snapshot, _ = _run(
+        tmp_path,
+        FakeTransport(
+            [responses[0], responses[1], responses[6], *responses[7:15]]
+        ),
+        config_name="simulation.yaml",
+    )
+
+    assert snapshot.ready is False
+    assert snapshot.blockers == (expected_code,)
+    config = load_config(config_path)
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_PLAN"
+        assert paper.summary(as_of=NOW)["coverage"]["missing"] == ["2026-08-28"]
+
+
+def test_simulation_uses_effective_service_interval_for_final_attempt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    responses = _automatic_successful_responses(
+        ranked_at="2026-08-28T12:28:20+00:00"
+    )
+    responses[7].payload["result"]["rankings"] = []
+
+    snapshot, _ = _run(
+        tmp_path,
+        FakeTransport([responses[0], responses[1], responses[6], responses[7]]),
+        at=NOW - timedelta(minutes=1, seconds=30),
+        config_name="simulation.yaml",
+        interval_seconds=120,
+    )
+
+    assert snapshot.ready is True
+    config = load_config(config_path)
+    assert config.runtime.interval_seconds == 60
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_CANDIDATE"
+
+
+def test_automatic_selection_continues_after_first_candidate_data_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    first = _automatic_successful_responses()
+    second = _automatic_successful_responses()
+    first[7].payload["result"]["rankings"].append(
+        {
+            **first[7].payload["result"]["rankings"][0],
+            "rank": 2,
+            "symbol": "MSFT",
+        }
+    )
+    first[8].payload["result"].append(
+        {
+            "symbol": "MSFT",
+            "securityType": "STOCK",
+            "isCommonShare": True,
+            "isinCode": "US5949181045",
+        }
+    )
+    first[11].payload["result"].append(
+        {
+            **first[11].payload["result"][0],
+            "symbol": "MSFT",
+        }
+    )
+    first[13].payload["result"]["candles"] = first[13].payload["result"]["candles"][:-1]
+    second[19].payload["result"][0]["symbol"] = "MSFT"
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport(
+            [
+                first[0], first[1], first[6], *first[7:14],
+                second[12], second[13], second[14],
+                second[19], second[20], second[21],
+            ]
+        ),
+        config_name="simulation.yaml",
+    )
+
+    assert snapshot.ready is True
+    with SQLiteStateStore(state_db) as store:
+        assert [plan["symbol"] for plan in store.list_intraday_plans()] == ["MSFT"]
+
+
+def test_mixed_data_error_and_threshold_rejection_preserves_first_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    first = _automatic_successful_responses()
+    second = _automatic_successful_responses(
+        warnings=[{"warningType": "INVESTMENT_CAUTION"}]
+    )
+    first[7].payload["result"]["rankings"].append(
+        {
+            **first[7].payload["result"]["rankings"][0],
+            "rank": 2,
+            "symbol": "MSFT",
+        }
+    )
+    first[8].payload["result"].append(
+        {
+            "symbol": "MSFT",
+            "securityType": "STOCK",
+            "isCommonShare": True,
+            "isinCode": "US5949181045",
+        }
+    )
+    first[11].payload["result"].append(
+        {
+            **first[11].payload["result"][0],
+            "symbol": "MSFT",
+        }
+    )
+    first[13].payload["result"]["candles"] = first[13].payload["result"]["candles"][:-1]
+
+    snapshot, _ = _run(
+        tmp_path,
+        FakeTransport(
+            [first[0], first[1], first[6], *first[7:14], second[12]]
+        ),
+        config_name="simulation.yaml",
+    )
+
+    assert snapshot.ready is False
+    assert snapshot.blockers == ("intraday_daily_candles_incomplete",)
+    config = load_config(config_path)
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_PLAN"
+
+
+@pytest.mark.parametrize(
+    "threshold",
+    ["daily_value", "daily_range", "premarket_volume", "premarket_range"],
+)
+def test_strategy_threshold_rejection_is_coverable_no_candidate(
+    tmp_path,
+    monkeypatch,
+    threshold: str,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    responses = _automatic_successful_responses()
+    if threshold == "daily_value":
+        for candle in responses[13].payload["result"]["candles"]:
+            candle["volume"] = "1"
+    elif threshold == "daily_range":
+        for candle in responses[13].payload["result"]["candles"]:
+            candle.update(highPrice="110", lowPrice="90")
+    elif threshold == "premarket_volume":
+        for candle in responses[14].payload["result"]["candles"]:
+            candle["volume"] = "0"
+    else:
+        for candle in responses[14].payload["result"]["candles"]:
+            candle.update(highPrice="110", lowPrice="90")
+
+    snapshot, _ = _run(
+        tmp_path,
+        FakeTransport(
+            [responses[0], responses[1], responses[6], *responses[7:15]]
+        ),
+        config_name="simulation.yaml",
+    )
+
+    assert snapshot.ready is True
+    config = load_config(config_path)
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_CANDIDATE"
 
 
 def test_intraday_exports_only_locked_symbol_as_atomic_news_context(tmp_path) -> None:

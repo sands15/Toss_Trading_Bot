@@ -737,6 +737,7 @@ def test_month_coverage_never_completes_without_every_expected_weekday(
             "missing": ["2026-08-31", "2026-09-01"],
             "planned": [],
             "market_closed": [],
+            "no_candidate": [],
             "expected_count": 2,
             "covered_count": 0,
             "missing_count": 2,
@@ -771,6 +772,34 @@ def test_month_coverage_never_completes_without_every_expected_weekday(
 
         with pytest.raises(PaperSimulationError, match="already has"):
             store.record_market_closed(date(2026, 9, 1), recorded_at=OPEN)
+
+
+def test_no_candidate_is_immutable_coverage_but_zero_plan_run_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    config = _config(end_date=SESSION)
+    with IntradayPaperStore(tmp_path / "paper.sqlite3", config) as store:
+        first = store.record_no_candidate(SESSION, recorded_at=OPEN)
+        repeated = store.record_no_candidate(
+            SESSION,
+            recorded_at=OPEN + timedelta(hours=1),
+        )
+
+        assert repeated == first
+        assert store.daily_summary(SESSION) == first
+        summary = store.month_summary(
+            as_of=datetime(2026, 9, 1, tzinfo=UTC)
+        )
+        assert summary["status"] == "INCOMPLETE"
+        assert summary["plan_count"] == 0
+        assert summary["no_candidate_count"] == 1
+        assert summary["coverage"]["no_candidate"] == [SESSION.isoformat()]
+        assert summary["coverage"]["missing"] == []
+
+        with pytest.raises(PaperSimulationBlocked, match="NO_CANDIDATE"):
+            store.ensure_plan(_plan(config), registered_at=OPEN)
+        with pytest.raises(PaperSimulationError, match="NO_CANDIDATE"):
+            store.record_market_closed(SESSION, recorded_at=OPEN)
 
 
 def test_open_plan_is_reported_as_open_not_complete(tmp_path: Path) -> None:

@@ -43,6 +43,7 @@ def _month(**overrides: object) -> dict[str, object]:
         "max_drawdown": "12",
         "max_drawdown_fraction": "0.0012",
         "no_entry_sessions": 1,
+        "no_candidate_sessions": 1,
         "invalid_sessions": 0,
         "unresolved_positions": 0,
         "waiting_plans": 0,
@@ -122,11 +123,13 @@ def test_writer_publishes_exact_safe_schema_atomically_and_reader_accepts_it(tmp
         "win_rate", "total_fees_usd", "max_drawdown_usd", "max_drawdown_fraction",
         "no_entry_count", "invalid_result_count", "unresolved_position_count",
         "waiting_plan_count", "coverage_expected_count", "coverage_covered_count",
-        "coverage_missing_count", "latest_day",
+        "coverage_missing_count", "no_candidate_count", "latest_day",
     }
+    assert payload["schema_version"] == 2
     assert payload["mode"] == "shadow"
     assert payload["live_order_submission"] is False
     assert payload["current_cash_usd"] == "9990"
+    assert payload["no_candidate_count"] == 1
     assert payload["latest_day"] == {
         "session_date": "2026-09-01",
         "symbol": "AAPL",
@@ -186,6 +189,7 @@ def test_writer_normalizes_blockers_without_leaking_human_configuration(tmp_path
         lambda value: value.__setitem__("mode", "live"),
         lambda value: value.__setitem__("live_order_submission", True),
         lambda value: value.__setitem__("coverage_missing_count", 20),
+        lambda value: value.__setitem__("no_candidate_count", 3),
         lambda value: value["latest_day"].__setitem__("plan_id", "leak"),
     ],
 )
@@ -201,7 +205,7 @@ def test_reader_rejects_duplicates_nonfinite_oversize_and_symlink(tmp_path: Path
     writer = _writer(tmp_path)
     writer.write(_month(), planner_ready=True, blocker_codes=[])
 
-    writer.path.write_bytes(b'{"schema_version":1,"schema_version":1}')
+    writer.path.write_bytes(b'{"schema_version":2,"schema_version":2}')
     with pytest.raises(PaperStatusError, match="paper_status_invalid"):
         _read(writer.path)
     writer.path.write_bytes(b'{"value":NaN}')
@@ -264,6 +268,12 @@ def test_reader_binds_release_boot_and_freshness(tmp_path: Path) -> None:
         (_month(), True, ["blocked"], None),
         (_month(), True, [], _day(symbol="aapl")),
         (_month(), True, [], _day(session_date="2026-10-01")),
+        (
+            _month(no_candidate_sessions=0),
+            True,
+            [],
+            _day(status="NO_CANDIDATE", symbol=None),
+        ),
     ],
 )
 def test_writer_rejects_noncanonical_or_inconsistent_public_values(
@@ -275,6 +285,28 @@ def test_writer_rejects_noncanonical_or_inconsistent_public_values(
 ) -> None:
     with pytest.raises(PaperStatusError, match="paper_status_value_invalid"):
         _writer(tmp_path).write(month, planner_ready=ready, blocker_codes=blockers, latest_day=day)
+
+
+@pytest.mark.parametrize("status", ["NO_CANDIDATE", "MARKET_CLOSED"])
+def test_non_trading_latest_day_has_no_symbol(tmp_path: Path, status: str) -> None:
+    writer = _writer(tmp_path)
+    writer.write(
+        _month(),
+        planner_ready=True,
+        blocker_codes=[],
+        latest_day=_day(
+            status=status,
+            symbol=None,
+            net_pnl="0",
+            fees="0",
+            cash_start=None,
+            cash_end=None,
+        ),
+    )
+
+    latest = _read(writer.path)["latest_day"]
+    assert latest["status"] == status
+    assert latest["symbol"] is None
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership and mode contract")

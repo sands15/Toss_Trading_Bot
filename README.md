@@ -201,8 +201,10 @@ race를 제거할 수 없으므로 이것도 별도 live 승격 blocker입니다
 
 실제 돈을 넣기 전 단계로 미국 시장 session date `2026-08-31`~`2026-09-30` 양 끝을 포함하는
 forward simulation을 구현했다. 초기값은 설정 가능한 **가상 USD 10,000**이다. planner는 매일
-시장 calendar를 확인하고, 기간 안의 평일은 immutable plan 또는 `MARKET_CLOSED`로 coverage에
-기록한다. 실제 holdings·buying power·계좌/주문 내역과 personal WebSocket은 차단되고 수량은 가상
+시장 calendar를 확인하고, 기간 안의 평일은 immutable plan, `MARKET_CLOSED`, 또는 마지막 유효
+선정 반복의 `NO_CANDIDATE`로 coverage에 기록한다. 조기 후보 0건은 재시도하며 candle 부족·stale·
+future 및 quote/orderbook data-quality 실패는 coverage를 만들지 않는다. 실제 holdings·buying
+power·계좌/주문 내역과 personal WebSocket은 차단되고 수량은 가상
 cash에서만 정한다. 계좌 header가 필요한 commission schedule GET만 예외이며 모든 public market
 read에는 account header를 보내지 않는다. 실제 주문 생성·정정·취소는 호출하지 않는다.
 calendar의 `preMarket`와 `regularMarket` key가 둘 다 존재하면서 값도 둘 다 명시적 null일 때만
@@ -255,19 +257,23 @@ daily Discord payload는 status, 수량, entry/exit 가격·시각·사유, gros
 시작/종료 cash, accepted event·journal frame·data-gap 수, first/last event와 clean metric 포함 여부를
 보낸다. 기간 종료 payload는 summary status, initial/current cash, final equity, realized/clean P&L과
 return, 거래·승·패·승률, 평균 승/패, expectancy, profit factor, fee, MDD, exit reason, no-entry,
-invalid·unresolved·waiting 수, expected/covered/missing/holiday coverage와 journal 정책을 보낸다.
+no-candidate·invalid·unresolved·waiting 수, expected/covered/missing/holiday/no-candidate coverage와
+journal 정책을 보낸다.
 Discord 한 줄 알림은 그중 핵심 상태·자산·손익·거래·fee·MDD·무효/미해결/누락 수를 표시한다.
 reconnect percentile, uptime, MAE/MFE, exposure, 종목 분포는 아직 지표가 아니다. paper engine은
 Discord 승인 receipt를 기다리거나 소비하지 않는다.
 
-planner는 매 반복 뒤 공개용 월간 요약과 최신 일일 요약만 allowlist한 `paper-status.json`을 승인
+planner는 매 반복 뒤 공개용 월간 요약과 최신 covered day만 allowlist한 schema version 2
+`paper-status.json`을 승인
 envelope 옆에 owner-only `0600`으로 원자 교체한다. approval worker는 거래 SQLite나 `turtle_bot`을
 읽지 않고 이 파일만 strict 검증해 `/현황`에 사용한다. release SHA·현재 boot hash·130초 freshness,
 `mode=shadow`, `live_order_submission=false` 중 하나라도 맞지 않으면 상세 원인 없이 현황 unavailable로
 응답한다. 허용되지 않은 사용자·서버·채널에서는 파일도 읽지 않고 아무 응답도 보내지 않는다.
 
-월 요약은 모든 예상 평일이 plan 또는 `MARKET_CLOSED`로 덮여야만 coverage가 완성된다. 기간 종료
-뒤 누락일이 있거나 plan이 하나도 없으면 `INCOMPLETE`이며 `COMPLETE`로 가장하지 않는다. `WAITING`,
+월 요약은 모든 예상 평일이 plan, `MARKET_CLOSED`, 또는 `NO_CANDIDATE`로 덮여야만 coverage가
+완성된다. `NO_CANDIDATE` count와 최신 관망/휴장일은 `/현황`에 표시되지만 별도 관망 알림은 아직
+보내지 않는다. 기간 종료 뒤 누락일이 있거나 plan이 하나도 없으면 `INCOMPLETE`이며 `COMPLETE`로
+가장하지 않는다. `WAITING`,
 `OPEN`, `UNRESOLVED`, `INVALID`, `BLOCKED`는 각각 더 구체적인 비정상/비종료 상태로 우선 보고된다.
 
 Mac에서는 기존 exact-five non-live topology를 유지한다. planner·stream·approval·news 네 job이

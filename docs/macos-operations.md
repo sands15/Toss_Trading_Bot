@@ -452,11 +452,15 @@ screenshots.
 The planned forward observation window is inclusive US market session dates
 `2026-08-31` through `2026-09-30`. The default opening balance is a configurable,
 simulation-only `USD 10,000`; it is never synchronized from the Toss account.
-For each expected weekday, the planner records either an immutable plan or an
-idempotent `MARKET_CLOSED` coverage row after checking the Toss calendar. If Mac
-deployment finishes after the first date, do not backfill ticks, plans, holidays,
-or fills. Those uncovered weekdays remain listed as missing and the post-period
-summary is `INCOMPLETE` rather than a successful month.
+For each expected weekday, the planner records an immutable plan, an idempotent
+`MARKET_CLOSED` row after checking the Toss calendar, or `NO_CANDIDATE` after the
+last useful planner iteration finds no symbol that passes the strategy thresholds.
+An earlier empty selection remains retryable so a later candidate can still be
+planned. Incomplete, stale, or future daily/premarket candles and invalid quote or
+orderbook data remain fail-closed and never create coverage. If Mac deployment
+finishes after the first date, do not backfill ticks, plans, holidays, or fills.
+Those uncovered weekdays remain listed as missing and the post-period summary is
+`INCOMPLETE` rather than a successful month.
 
 `MARKET_CLOSED` requires both `preMarket` and `regularMarket` keys to be present
 and both values to be explicit null. A missing key is
@@ -560,17 +564,25 @@ before/after, accepted-event/journal-frame/gap counts, first/last event time, fe
 sources, and clean-metric inclusion. After the inclusive end date, the status-keyed
 run payload includes status, initial/current cash and final equity, realized and
 clean P&L/return, trade/win/loss counts, win rate, average win/loss, expectancy,
-profit factor, total fees, MDD, exit reasons, no-entry/invalid/unresolved/waiting
-counts, expected/covered/missing/market-closed coverage, journal counters, and the
-fee/journal policy. The rendered one-line Discord message shows the most important
+profit factor, total fees, MDD, exit reasons,
+no-entry/no-candidate/invalid/unresolved/waiting counts,
+expected/covered/missing/market-closed/no-candidate coverage, journal counters,
+and the fee/journal policy. The rendered one-line Discord message shows the most important
 subset. A non-`COMPLETE` run report is warning-level.
 
-All expected weekdays must be covered by a plan or `MARKET_CLOSED` row. After the
-end date, missing coverage or zero actual plans yields `INCOMPLETE`. `WAITING`,
+All expected weekdays must be covered by a plan, `MARKET_CLOSED`, or
+`NO_CANDIDATE` row. `NO_CANDIDATE` proves that the final usable selection pass ran;
+it is not a fabricated plan or trade. After the end date, missing coverage or zero
+actual plans still yields `INCOMPLETE`. `WAITING`,
 `OPEN`, `UNRESOLVED`, `INVALID`, and `BLOCKED` take precedence when they describe a
 more concrete condition. MAE/MFE, exposure, symbol distribution, uptime/reconnect
 percentiles, and separate slippage drag are not implemented. Discord retries use
 the main outbox and do not repeat a fill or ledger entry.
+
+`/현황` schema version 2 exposes the no-candidate count and uses the latest covered
+day, including `NO_CANDIDATE` or `MARKET_CLOSED`, rather than the latest plan only.
+The final no-candidate decision currently writes a durable runtime event and this
+owner-private status artifact; it does not enqueue a separate Discord alert.
 
 Local implementation and regression verification are complete. Mac deployment is
 still pending: do not start the dated run until plist/wrapper lint, the exact-five

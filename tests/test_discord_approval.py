@@ -736,7 +736,7 @@ def _fake_discord_module() -> object:
 
 def _paper_status_snapshot() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "release_sha": "a" * 40,
         "boot_id_hash": "b" * 64,
         "mode": "shadow",
@@ -760,6 +760,7 @@ def _paper_status_snapshot() -> dict[str, object]:
         "max_drawdown_usd": "10",
         "max_drawdown_fraction": "0.001",
         "no_entry_count": 0,
+        "no_candidate_count": 1,
         "invalid_result_count": 0,
         "unresolved_position_count": 0,
         "waiting_plan_count": 0,
@@ -862,11 +863,31 @@ def test_status_command_responds_ephemerally_only_in_exact_context(
         assert "한 달 모의투자 현황" in message
         assert "$10,025.50" in message
         assert "+$25.50" in message
+        assert "관망 1" in message
         assert "실주문: 꺼짐" in message
         assert kwargs["ephemeral"] is True
         assert kwargs["allowed_mentions"] is client.client_kwargs["allowed_mentions"]
 
     asyncio.run(scenario())
+
+
+def test_status_renderer_labels_no_candidate_latest_day() -> None:
+    snapshot = _paper_status_snapshot()
+    snapshot["latest_day"] = {
+        "session_date": "2026-08-31",
+        "symbol": None,
+        "status": "NO_CANDIDATE",
+        "net_pnl_usd": "0",
+        "fees_usd": "0",
+        "cash_start_usd": None,
+        "cash_end_usd": None,
+        "data_gap_count": 0,
+    }
+
+    rendered = worker.render_paper_status(snapshot)
+
+    assert "2026-08-31 · - · 조건 충족 종목 없음" in rendered
+    assert "관망 1" in rendered
 
 
 def test_status_command_hides_reader_failures_in_allowed_context(

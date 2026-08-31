@@ -2304,7 +2304,9 @@ planner용 private manifest와 stream용 account-free manifest는 서로 다른 
 둔다. stream manifest의 account alias/sequence는 비어 있지만 두 manifest의 hash 대상 값은 같고,
 동일한 plan DB·paper DB·resolved absolute context 경로를 가리켜야 한다. simulation config는 이
 context가 absolute `news-context.json`으로 resolve되지 않으면 거부한다. planner는 당일 market calendar를 조회해
-기간 안의 평일마다 immutable plan 또는 idempotent `MARKET_CLOSED` row를 기록한다. 날짜 범위·
+기간 안의 평일마다 immutable plan, idempotent `MARKET_CLOSED`, 또는 마지막 유효 자동선정 반복의
+`NO_CANDIDATE` row를 기록한다. 조기 후보 0건은 재시도하고 daily/premarket candle 부족·stale·future
+및 quote/orderbook data-quality 실패는 coverage를 만들지 않는다. 날짜 범위·
 오름차순·하루 한 plan은 DB 등록 시 강제한다. 초기 자본 기본값은 simulation-only `USD 10,000`이며
 확정된 entry/exit cash event만 다음 plan의 available cash를 바꾼다.
 
@@ -2409,11 +2411,19 @@ data-gap count, first/last event time과 entry/exit fee source다. `CLOSED`와 `
 포함하고 `INVALID`, `OPEN`, `UNRESOLVED`는 제외한다. MAE/MFE, 보유 시간, daily return, exposure,
 uptime/reconnect/freshness percentile과 별도 slippage drag field는 없다.
 
+자동 선정에서 계획 마감 전의 후보 0건은 확정하지 않고 다음 planner 반복에서 다시 평가한다. 다음
+반복이 마감 뒤가 되는 마지막 유효 시도에서도 모든 정상 전략 threshold를 통과한 후보가 없을 때만
+그 날짜를 immutable `NO_CANDIDATE`로 기록한다. daily/premarket candle 부족·stale·future 또는
+quote/orderbook data-quality 실패는 다른 후보 검사를 계속하되, 끝까지 plan이 없으면 첫 구체 오류를
+다시 발생시키며 coverage를 만들지 않는다. 평균 거래대금·변동폭·거래량 같은 정상 threshold 탈락은
+`NO_CANDIDATE` 판단에 포함한다.
+
 내부 month summary는 initial/current/final cash, realized/clean P&L과 return, cash 및 closed-equity
 drawdown, total fee, plan/clean trade/invalid/unresolved/no-entry 수, wins/losses, win rate, average
 win/loss, profit factor, expectancy, exit-reason count, accepted observation/journaled frame/data-gap 수를
-계산한다. coverage에는 기간의 모든 평일 expected/covered/missing 목록과 수, planned 목록 및
-`MARKET_CLOSED` 목록이 포함된다. 선택 종목 분포, exposure, journal coverage percentage와
+계산한다. coverage에는 기간의 모든 평일 expected/covered/missing 목록과 수, planned 목록,
+`MARKET_CLOSED` 및 `NO_CANDIDATE` 목록이 포함되고 month summary는 no-candidate count를 별도로
+계산한다. 선택 종목 분포, exposure, journal coverage percentage와
 reconnect/stale 통계는 계산하지 않는다. 미청산 `OPEN` 또는 `UNRESOLVED`가 있으면 final equity와
 return은 null이다.
 
@@ -2421,7 +2431,8 @@ Discord daily payload는 status, quantity, entry/exit price·time·reason, gross
 cash before/after, accepted observation·journal frame·gap count, first/last event, fee source와 clean 포함
 여부를 공개한다. end date 뒤 status-keyed run payload는 status, initial/current cash, final equity,
 realized/clean P&L·return, trade/win/loss·win rate·average win/loss·expectancy·profit factor, fee/MDD,
-exit reason, no-entry·invalid·unresolved·waiting, expected/covered/missing/market-closed coverage,
+exit reason, no-entry·no-candidate·invalid·unresolved·waiting,
+expected/covered/missing/market-closed/no-candidate coverage,
 journal/gap 수와 fee/journal policy를 공개한다. Discord 표시 문자열은 이 payload에서 핵심 수치만
 축약한다. `COMPLETE`가 아닌 run report는 warn level이다. fill/invalid alert와 두 report는 simulation
 DB outbox에서 main notification outbox로 idempotent하게 전달되며 Discord 실패 시 main outbox가
@@ -2429,8 +2440,8 @@ DB outbox에서 main notification outbox로 idempotent하게 전달되며 Discor
 article 알림 계약은 별개다.
 
 month status는 구체적인 미종료/오류 상태를 우선한다: `UNRESOLVED`, `OPEN`, `WAITING`, `INVALID`,
-`BLOCKED`, 기간 중 `ACTIVE` 순이다. 기간 종료 뒤 plan 또는 `MARKET_CLOSED`로 덮이지 않은 평일이
-있거나 실제 plan이 하나도 없으면 `INCOMPLETE`다. 모든 coverage가 있고 최소 한 plan이 있으며 위
+`BLOCKED`, 기간 중 `ACTIVE` 순이다. 기간 종료 뒤 plan, `MARKET_CLOSED`, `NO_CANDIDATE`로 덮이지
+않은 평일이 있거나 실제 plan이 하나도 없으면 `INCOMPLETE`다. 모든 coverage가 있고 최소 한 plan이 있으며 위
 상태가 없을 때만 `COMPLETE`다.
 
 ### 14.5 합격 gate와 배포 상태
@@ -2448,7 +2459,7 @@ smoke와 실제 public feed 확인을 추가로 통과해야 한다.
 | invalid data | entry 전 gap은 INVALID, OPEN gap exit는 clean 제외, close 미해결은 UNRESOLVED·후속 plan 차단, fabricated close 0 |
 | durability | SQLite WAL/FULL, periodic tick·128-frame flush·127-frame 최대 tail, disconnect flush, boundary coverage·TTL liveness/orphan finalization, restart·topic-silence gap과 replay 검증 |
 | reports | daily/month internal summary, coverage·INCOMPLETE와 축약 durable notification, Discord 재시도 시 fill/ledger 중복 0 |
-| period | inclusive date validation과 날짜 오름차순 plan; 평일별 plan 또는 `MARKET_CLOSED`, missing/zero-plan은 `INCOMPLETE`, 과거 합성 0 |
+| period | inclusive date validation과 날짜 오름차순 plan; 평일별 plan·`MARKET_CLOSED`·최종 유효 시도의 `NO_CANDIDATE`, data-quality coverage 0, missing/zero-plan은 `INCOMPLETE`, 과거 합성 0 |
 | release | planner/account-free stream 별도 manifest와 동일 experiment lock, 기존 exact-five 유지, simulator용 여섯 번째 daemon 0, live writer/consumer/dashboard 0 |
 
 Mac의 기존 다섯 job 중 planner가 virtual cash sizing·plan·daily/month report를 맡고 selected-symbol
@@ -2463,6 +2474,11 @@ state DB sibling `stream-expectation.json`을 context보다 먼저 쓰고, regul
 두 path를 받아 active expectation과 context가 일치할 때만 stream을 required로 평가하며 정상
 post-close idle은 healthy로 처리한다. watchdog의 Discord sender는
 아직 연결되지 않았다.
+
+owner-private `/현황` artifact는 schema version 2이며 no-candidate count와 최신 covered day를
+공개한다. 최신 날짜가 `NO_CANDIDATE` 또는 `MARKET_CLOSED`여도 해당 daily summary가 표시된다.
+최종 `NO_CANDIDATE`는 durable runtime event와 `/현황`에는 남지만 별도 Discord 알림 outbox에는
+아직 넣지 않았다.
 
 현재 상태는 정확히 **LOCAL_IMPLEMENTATION_VERIFIED / MAC_DEPLOYMENT_PENDING / LIVE_NO_GO**다.
 Mac plist/wrapper lint, exact-SHA 설치, 실제 public Toss WS baseline·journal smoke와 redacted Discord
