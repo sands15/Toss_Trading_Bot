@@ -321,6 +321,22 @@ Toss credentials and cannot submit/cancel orders. If no second node is
 available, the deployment must explicitly remain shadow-only rather than claim
 outage alerting that the Mac cannot provide while offline.
 
+Recommended deadman default: the Mac sends one outbound redacted heartbeat per
+minute and the independent node alerts only during the configured active window
+after five consecutive misses. The node has no broker credential, order method,
+write-capable SSH key, or public inbound path to the Mac. This is a design
+default, not evidence that an external deadman is currently installed.
+
+Recommended storage defaults: after the close, create SQLite online backups of
+the planner, paper, and news databases at previously absent paths; require
+`quick_check=ok`, mode 0600, and SHA-256 before retention. Keep 35 daily and 6
+weekly copies plus an off-device Time Machine or equivalent copy. Never cloud-sync
+a live `.sqlite3`/WAL pair directly. Warn below either 20% free or 10 GiB, become
+critical below either 10% or 5 GiB, and rotate ordinary logs daily or at 10 MiB
+with 30 compressed generations using native `newsyslog`. The planner can own the
+post-close backup and the watchdog can own disk thresholds; these defaults do
+not justify a sixth custom daemon.
+
 ### Non-live implementation boundary
 
 The current requested milestone explicitly excludes every real-account order

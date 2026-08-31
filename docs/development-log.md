@@ -877,3 +877,34 @@ stream, approval 세 job을 함께 정지하고 두 SQLite DB를 online backup A
 배포 절차는 array item 치환 성공을 가정하지 않고 최종 인수 개수를 반드시 검사한다. 이 시점에도
 설치된 topology는 planner·stream·approval `3/5`이며 news와 watchdog은 미설치다. 따라서
 exact-five 완료나 live 준비 완료로 기록하지 않으며 상태는 계속 `LIVE_NO_GO`다.
+
+## 2026-08-31 — OAuth gzip 진단, 토큰 재사용과 planner 안전 정지
+
+미국 장전 plan window 첫 자동선정에서 planner가 `intraday_read_or_integrity_failure`로 막혔다. 본문,
+credential, 계정값을 출력하지 않는 1회용 Aqua LaunchAgent probe로 traceback basename/line, route,
+HTTP status와 allowlisted header만 확인했다. 실제 원인은 `POST /oauth2/token`의
+`401 + Content-Encoding: gzip` 오류 본문을 기존 urllib transport가 압축 해제 없이 UTF-8 decode해
+원래 상태를 `UnicodeDecodeError`로 가린 것이었다. gzip을 풀어 JSON error code만 다시 확인한 결과는
+`invalid_client`였다. 임시 job/script/result와 bundle은 모두 제거했다.
+
+transport는 identity/gzip을 strict 처리하고 JSON bytes를 직접 파싱한다. 비 JSON HTTP 오류는 원문
+없이 generic code와 HTTP status만 보존하며, unsupported encoding·깨진 gzip·성공 응답의 invalid JSON은
+본문을 담지 않는 전용 예외로 fail-closed한다. 서비스 loop는 config/shadow lock을 매번 다시 검사하되
+설정이 같은 동안 `TossClient`와 access token을 메모리에서 재사용한다. credential/account/base URL 또는
+transport guard가 바뀌면 client를 폐기한다. `401 invalid_client`는 같은 process에서 network 재시도하지
+않아 매분 OAuth를 두드리지 않으며, 안전한 error code만 내부 진단에 남긴다. 이는 한 client당 유효 token
+하나이고 재발급이 이전 token을 무효화한다는 공식 계약에도 맞춘다.
+
+Windows 전체 회귀는 `825 passed, 6 skipped`, scrubbed non-live gate는 `582 passed, 5 skipped`였고,
+Mac exact-SHA `e18c19fe67ae084ec0b5a6ddd36af89372e0e253` gate는 network-denied
+`587 passed`, `pip check`, compileall, exact import, clean Git/fsck를 통과했다. 이 release는
+side-by-side로만 준비했다. 기존 planner는 plan 0건, paper plan 0건, DB `quick_check=ok`를 확인하고
+unload했다. approval은 기존 release에서 실행 중이고 stream은 no-context idle이다. Toss Open API
+client ID/secret 재발급 또는 client 활성화와 비노출 one-shot 성공 전에는 plist를 새 SHA로 전환하거나
+planner를 재시작하지 않는다. 따라서 현재 한 달 run은 정상 시작/완료로 간주하지 않으며 누락을
+합성하지 않는다.
+
+다음 병렬 실험은 현재 run을 중간 분할하지 않고 새 cohort에서 고정 두 레인, 총 가상현금 50:50,
+서로 다른 symbol, 레인 간 이체 없음, 한 WebSocket의 네 exact topic, 두 sub-run ledger로 시작한다.
+두 plan/cohort를 한 transaction으로 잠그고 레인별 결과와 합산 portfolio, distinct session을 따로
+보고한다. 세부 계약은 `docs/intraday-bracket-design.md` 14.6절을 정본으로 둔다.

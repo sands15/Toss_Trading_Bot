@@ -2480,12 +2480,40 @@ owner-private `/현황` artifact는 schema version 2이며 no-candidate count와
 최종 `NO_CANDIDATE`는 durable runtime event와 `/현황`에는 남지만 별도 Discord 알림 outbox에는
 아직 넣지 않았다.
 
-현재 상태는 정확히 **LOCAL_IMPLEMENTATION_VERIFIED / MAC_DEPLOYMENT_PENDING / LIVE_NO_GO**다.
-Mac plist/wrapper lint, exact-SHA 설치, 실제 public Toss WS baseline·journal smoke와 redacted Discord
-daily/final smoke가 끝나기 전에는 `2026-08-31` run을 시작했다고 주장하지 않는다. 시작이 늦으면
+현재 상태는 정확히 **LOCAL_IMPLEMENTATION_VERIFIED / MAC_RELEASE_STAGED_AUTH_BLOCKED / LIVE_NO_GO**다.
+Mac에는 non-live gate를 통과한 수정 release가 side-by-side로 준비됐지만, 기존 Toss OAuth client가
+`401 invalid_client`로 거부돼 planner를 plan 0건 상태에서 내렸다. 새 자격증명을 비노출 one-shot으로
+검증한 뒤에만 세 installed job을 같은 SHA로 전환한다. 실제 public Toss WS baseline·journal smoke와
+redacted Discord daily/final smoke가 끝나기 전에는 정상 run을 시작했다고 주장하지 않는다. 시작이 늦으면
 과거 누락 frame, plan, 휴장 또는 fill을 합성하지 않고 실제 plan이 생긴 날짜부터
 `2026-09-30`까지만 관측한다. 누락 평일은 coverage의 missing 목록에 남고 종료 상태는
 `INCOMPLETE`다. 이 결과만으로 live 승격하지 않는다.
+
+### 14.6 다음 실험의 2레인 병렬 가상체결
+
+현재 단일 레인 run의 기간·초기 현금·experiment hash는 중간에 바꾸지 않는다. 2레인은 새 실험에서만
+고정 `A/B` 두 개로 시작하며 총 가상현금은 최초 한 번 `50:50`으로 나눈다. 레인 간 이체·재조정은
+금지하고 각 레인의 allocation/risk 규칙을 자기 현금에 적용한다. 같은 날 두 레인은 반드시 서로 다른
+symbol이어야 하며, 한 종목만 적격이면 다른 레인의 현금을 빌리지 않고 나머지를
+`NO_CANDIDATE`로 남긴다.
+
+selector는 한 ranking snapshot에서 상위 두 적격 종목을 고르고 두 plan과 날짜별 cohort manifest를
+한 SQLite transaction으로 잠근다. manifest는 각 레인의 `PLAN`, `NO_CANDIDATE`,
+`MARKET_CLOSED`와 plan identity를 보유하며 `symbol_a != symbol_b`를 DB 제약으로 강제한다. A만 저장된
+반쪽 cohort는 허용하지 않는다. data-quality 실패는 해당 레인의 coverage를 만들지 않으며, cohort
+coverage는 두 레인이 모두 확정됐을 때만 완료다. 현재 paper schema의 하루 한 plan 제약을 우회하려고
+한 run에 두 plan을 넣지 않고 `cohort-...-a`, `cohort-...-b` 두 sub-run과 별도 cash ledger를 사용한다.
+
+stream은 새 daemon이나 두 번째 socket을 추가하지 않는다. 한 process·한 WebSocket에서 두 종목의
+`trade:us`와 `orderbook:us`, 총 네 topic을 exact ACK한 뒤 immutable `topic -> lane` 표로 한 frame을
+정확히 한 레인에만 전달한다. OAuth·연결·ACK·process·paper DB write 실패는 cohort 공통 장애이고,
+식별 가능한 한 symbol의 stale/malformed/silence는 그 레인만 invalid 처리한다. reconnect generation과
+REST baseline, queue, stream instance identity는 레인별로 분리한다.
+
+월 보고서는 A, B, 합산 portfolio를 따로 표시하고 총 거래 수와 distinct trading session 수를 함께
+낸다. 같은 날의 두 거래는 같은 market regime와 ranking snapshot을 공유하므로 독립 표본 두 개로
+간주하지 않는다. 첫 구현 범위는 고정 2레인·50:50·단일 socket뿐이며 동적 N레인, 성과 기반 현금 이동,
+다중 socket은 실제 병목 증거가 생기기 전에는 추가하지 않는다.
 
 ## 공식 참고
 
