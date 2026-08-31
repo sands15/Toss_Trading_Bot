@@ -240,6 +240,70 @@ def test_discord_intraday_paper_reports_are_explicitly_virtual() -> None:
     assert b"10012.34" in body
 
 
+def test_discord_two_lane_plan_and_month_report_keep_lane_identity() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
+    )
+
+    assert notifier.notify(
+        "intraday_paper_plan_created",
+        payload={
+            "account_alias": "미국주식 계좌",
+            "lane": "A",
+            "symbol": "AAPL",
+            "quantity": "1",
+            "entry_trigger": "100",
+            "entry_limit": "100.10",
+            "target_trigger": "102",
+            "stop_trigger": "98.50",
+            "stop_limit": "98.40",
+            "planned_risk": "1.80",
+            "reward_risk_ratio": "1.1",
+            "entry_start": "2026-08-31T09:35:00-04:00",
+            "entry_expiry": "2026-08-31T10:30:00-04:00",
+        },
+    )
+    assert "레인 A".encode("utf-8") in sent[-1][1]
+
+    assert notifier.notify(
+        "intraday_paper_run_report",
+        payload={
+            "simulation_lanes": 2,
+            "status": "COMPLETE",
+            "initial_cash": "10000",
+            "final_equity": "10025",
+            "net_pnl": "25",
+            "return_fraction": "0.0025",
+            "trades": 2,
+            "total_fees": "1",
+            "max_drawdown_fraction": "0.001",
+            "invalid_sessions": 0,
+            "unresolved_positions": 0,
+            "coverage_missing": 0,
+            "distinct_trading_session_count": 1,
+            "lanes": {
+                "A": {
+                    "status": "COMPLETE",
+                    "current_cash": "5010",
+                    "net_pnl": "10",
+                    "trades": 1,
+                },
+                "B": {
+                    "status": "COMPLETE",
+                    "current_cash": "5015",
+                    "net_pnl": "15",
+                    "trades": 1,
+                },
+            },
+        },
+    )
+    body = sent[-1][1]
+    assert "서로 다른 거래일 1일".encode("utf-8") in body
+    assert "레인 A COMPLETE".encode("utf-8") in body
+    assert "레인 B COMPLETE".encode("utf-8") in body
+
+
 def test_discord_intraday_blocker_is_explicitly_non_live() -> None:
     sent: list[tuple[str, bytes, float]] = []
     notifier = _discord_notifier(
@@ -258,6 +322,57 @@ def test_discord_intraday_blocker_is_explicitly_non_live() -> None:
 
     assert "계획 차단".encode("utf-8") in sent[0][1]
     assert "실주문 없음".encode("utf-8") in sent[0][1]
+
+
+def test_discord_maintenance_alerts_are_redacted_and_actionable() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    notifier = _discord_notifier(
+        sender=lambda url, body, timeout: sent.append((url, body, timeout))
+    )
+
+    assert notifier.notify(
+        "intraday_maintenance_disk_warning",
+        level="warn",
+        payload={
+            "session_date": "2026-08-31",
+            "level": "warning",
+            "free_bytes": 8 * 1024**3,
+            "free_fraction": "0.15",
+            "path": "must-not-leak",
+        },
+    )
+    assert "저장공간 주의".encode("utf-8") in sent[-1][1]
+    assert b"8.0 GiB" in sent[-1][1]
+    assert b"15.0%" in sent[-1][1]
+    assert b"must-not-leak" not in sent[-1][1]
+
+    assert notifier.notify(
+        "intraday_maintenance_failure",
+        level="error",
+        payload={
+            "session_date": "2026-08-31",
+            "code": "sqlite_backup_failed",
+            "exception": "must-not-leak",
+        },
+    )
+    assert "유지보수 실패".encode("utf-8") in sent[-1][1]
+    assert b"sqlite_backup_failed" in sent[-1][1]
+    assert b"must-not-leak" not in sent[-1][1]
+
+    assert notifier.notify(
+        "intraday_backup_invalidated",
+        level="error",
+        payload={
+            "session_date": "2026-08-30",
+            "database": "paper",
+            "code": "backup_artifact_invalid",
+            "path": "must-not-leak",
+        },
+    )
+    assert "백업 손상 감지".encode("utf-8") in sent[-1][1]
+    assert "가상체결 원장".encode("utf-8") in sent[-1][1]
+    assert "다음 계획 차단".encode("utf-8") in sent[-1][1]
+    assert b"must-not-leak" not in sent[-1][1]
 
 
 def test_health_payload_is_read_only_without_binding() -> None:

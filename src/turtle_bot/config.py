@@ -127,6 +127,7 @@ class IntradayConfig:
     simulation_initial_cash: Decimal | None = None
     simulation_slippage_fraction: Decimal | None = None
     simulation_db_path: str | None = None
+    simulation_lanes: int = 1
 
 
 @dataclass(frozen=True)
@@ -224,6 +225,14 @@ def intraday_simulation_experiment_hash(config: TradingConfig) -> str:
             return [normalize(item) for item in value]
         return value
 
+    intraday_payload = {
+        name: normalize(getattr(config.intraday, name))
+        for name in _INTRADAY_EXPERIMENT_FIELDS
+    }
+    # Keep legacy one-lane experiment hashes stable. A two-lane cohort is a
+    # different experiment and therefore explicitly enters the immutable hash.
+    if config.intraday.simulation_lanes != 1:
+        intraday_payload["simulation_lanes"] = config.intraday.simulation_lanes
     payload = {
         "schema_version": 1,
         "strategy_kind": config.strategy_kind,
@@ -234,10 +243,7 @@ def intraday_simulation_experiment_hash(config: TradingConfig) -> str:
             "symbols": normalize(config.runtime.symbols),
             "interval_seconds": config.runtime.interval_seconds,
         },
-        "intraday": {
-            name: normalize(getattr(config.intraday, name))
-            for name in _INTRADAY_EXPERIMENT_FIELDS
-        },
+        "intraday": intraday_payload,
     }
     encoded = json.dumps(
         payload,
@@ -307,6 +313,14 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
 def _to_int(value: Any, default: int) -> int:
     parsed = _to_optional_int(value)
     return default if parsed is None else parsed
+
+
+def _to_strict_int(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    if type(value) is not int:
+        raise ValueError("integer configuration value must be an exact integer")
+    return value
 
 
 def _momentum_max_exposure_pct(momentum: Mapping[str, Any]) -> Decimal:
@@ -633,6 +647,7 @@ def load_config(path: str | Path | None = None) -> TradingConfig:
                 simulation.get("db_path"),
                 base_dir=p.parent.resolve(),
             ),
+            simulation_lanes=_to_strict_int(simulation.get("lanes"), 1),
         ),
         minimum_tick=_to_decimal(strategy.get("minimum_tick"), Decimal("1")),
         strategy_kind=str(strategy.get("kind", "turtle")).strip().lower(),

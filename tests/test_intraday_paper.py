@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -14,6 +15,8 @@ from turtle_bot.intraday_paper import (
     IntradayPaperStore,
     PaperSimulationBlocked,
     PaperSimulationError,
+    PaperStreamInstanceInactive,
+    assert_simulation_topology,
     simulation_account_key,
 )
 
@@ -36,7 +39,12 @@ def _config(**changes: object) -> IntradayPaperConfig:
     return IntradayPaperConfig(**values)  # type: ignore[arg-type]
 
 
-def _plan(config: IntradayPaperConfig, *, session: date = SESSION) -> dict[str, object]:
+def _plan(
+    config: IntradayPaperConfig,
+    *,
+    session: date = SESSION,
+    symbol: str = "AAPL",
+) -> dict[str, object]:
     account = simulation_account_key(config)
     plan_id = f"intraday-{session:%Y%m%d}"
     base_open = OPEN + timedelta(days=(session - SESSION).days)
@@ -47,9 +55,9 @@ def _plan(config: IntradayPaperConfig, *, session: date = SESSION) -> dict[str, 
         "mode": "shadow",
         "status": "SHADOW_PLANNED",
         "live_order_submission": False,
-        "symbol": "AAPL",
+        "symbol": symbol,
         "quantity": 10,
-        "available_cash": "10000",
+        "available_cash": format(config.initial_cash_usd, "f"),
         "entry_start": (base_open + timedelta(minutes=1)).isoformat(),
         "entry_expiry": (base_open + timedelta(minutes=30)).isoformat(),
         "force_exit_at": (base_open + timedelta(hours=6, minutes=15)).isoformat(),
@@ -74,7 +82,7 @@ def _plan(config: IntradayPaperConfig, *, session: date = SESSION) -> dict[str, 
         "plan_id": plan_id,
         "account_key": account,
         "session_date": session,
-        "symbol": "AAPL",
+        "symbol": symbol,
         "mode": "shadow",
         "plan_hash": hashlib.sha256(encoded.encode()).hexdigest(),
         "payload": payload,
@@ -193,6 +201,757 @@ def test_store_is_wal_durable_and_run_config_is_immutable(tmp_path: Path) -> Non
     changed = _config(initial_cash_usd=Decimal("9999"))
     with pytest.raises(PaperSimulationError, match="different immutable config"):
         IntradayPaperStore(path, changed)
+
+
+@pytest.mark.parametrize("table_name", ["intraday_runs", "news_articles", "unrelated"])
+@pytest.mark.parametrize("entrypoint", ["store", "topology"])
+def test_paper_entrypoints_reject_foreign_schema_before_mutation(
+    tmp_path: Path,
+    table_name: str,
+    entrypoint: str,
+) -> None:
+    path = tmp_path / f"{entrypoint}-{table_name}.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(f"CREATE TABLE {table_name} (id TEXT PRIMARY KEY)")
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(PaperSimulationError, match="not paper-owned"):
+        if entrypoint == "store":
+            IntradayPaperStore(path, _config())
+        else:
+            assert_simulation_topology(path, simulation_id="foreign", lanes=1)
+
+    assert path.read_bytes() == original_bytes
+    with sqlite3.connect(path) as connection:
+        assert {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        } == {table_name}
+
+
+@pytest.mark.parametrize("entrypoint", ["store", "topology"])
+def test_paper_entrypoints_reject_foreign_key_orphans_before_mutation(
+    tmp_path: Path,
+    entrypoint: str,
+) -> None:
+    path = tmp_path / f"{entrypoint}-orphan.sqlite3"
+    config = _config(run_id=f"orphan-{entrypoint}")
+    with IntradayPaperStore(path, config) as store:
+        store.ensure_plan(_plan(config), registered_at=OPEN)
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            "DELETE FROM paper_runs WHERE run_id = ?",
+            (config.run_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO paper_simulation_topology_runs (
+                run_id, simulation_id, lane
+            ) VALUES ('orphan-topology-run', 'missing-simulation', 'SINGLE')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO market_frames (
+                run_id, plan_id, event_kind, event_hash,
+                event_at, frame_json, accepted_at
+            ) VALUES (
+                'missing-run', 'missing-plan', 'trade', 'orphan-frame',
+                ?, '{}', ?
+            )
+            """,
+            (OPEN.isoformat(), OPEN.isoformat()),
+        )
+        connection.execute(
+            """
+            INSERT INTO paper_cohorts (
+                cohort_id, lane_a_run_id, lane_b_run_id,
+                lane_a_initial_cash, lane_b_initial_cash,
+                start_date, end_date,
+                lane_a_config_hash, lane_b_config_hash, created_at
+            ) VALUES (
+                'orphan-cohort', 'missing-lane-a', 'missing-lane-b',
+                '10000', '10000', ?, ?, 'hash-a', 'hash-b', ?
+            )
+            """,
+            (
+                SESSION.isoformat(),
+                date(2026, 9, 30).isoformat(),
+                OPEN.isoformat(),
+            ),
+        )
+        violations_before = tuple(connection.execute("PRAGMA foreign_key_check"))
+    original_bytes = path.read_bytes()
+    assert {str(row[0]) for row in violations_before} >= {
+        "paper_simulation_topology_runs",
+        "paper_plans",
+        "market_frames",
+        "paper_cash_ledger",
+        "paper_cohorts",
+    }
+
+    with pytest.raises(PaperSimulationError, match="foreign key check failed"):
+        if entrypoint == "store":
+            IntradayPaperStore(path, _config(run_id=f"new-{entrypoint}"))
+        else:
+            assert_simulation_topology(path, simulation_id="new", lanes=1)
+
+    assert path.read_bytes() == original_bytes
+    with sqlite3.connect(path) as connection:
+        assert tuple(connection.execute("PRAGMA foreign_key_check")) == (
+            violations_before
+        )
+
+
+def _forge_paper_table_sql(
+    path: Path,
+    *,
+    table: str,
+    original: str,
+    replacement: str,
+) -> None:
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        assert row is not None and isinstance(row[0], str)
+        normalized = " ".join(row[0].split())
+        assert original in normalized
+        forged = normalized.replace(original, replacement, 1)
+        connection.execute("PRAGMA writable_schema = ON")
+        connection.execute(
+            "UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = ?",
+            (forged, table),
+        )
+        connection.execute("PRAGMA writable_schema = OFF")
+        version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+        connection.execute(f"PRAGMA schema_version = {version + 1}")
+
+
+@pytest.mark.parametrize("entrypoint", ["store", "topology"])
+@pytest.mark.parametrize(
+    ("table", "original", "replacement"),
+    [
+        (
+            "paper_simulation_topologies",
+            "lanes INTEGER NOT NULL CHECK (lanes IN (1, 2))",
+            "lanes INTEGER NOT NULL",
+        ),
+        (
+            "paper_cohort_sessions",
+            "CHECK ( lane_a_status <> 'PLAN' OR lane_b_status <> 'PLAN' "
+            "OR lane_a_symbol <> lane_b_symbol )",
+            "CHECK (1)",
+        ),
+        (
+            "paper_simulation_topologies",
+            "simulation_id TEXT PRIMARY KEY",
+            "simulation_id TEXT PRIMARY KEY ON CONFLICT REPLACE",
+        ),
+        (
+            "market_frames",
+            "frame_id INTEGER PRIMARY KEY AUTOINCREMENT",
+            "frame_id INTEGER PRIMARY KEY",
+        ),
+    ],
+    ids=("lanes-check", "cohort-symbol-check", "pk-conflict", "autoincrement"),
+)
+def test_paper_entrypoints_reject_forged_table_sql_before_mutation(
+    tmp_path: Path,
+    entrypoint: str,
+    table: str,
+    original: str,
+    replacement: str,
+) -> None:
+    path = tmp_path / f"{entrypoint}-{table}.sqlite3"
+    with IntradayPaperStore(path, _config(run_id=f"owner-{entrypoint}")):
+        pass
+    _forge_paper_table_sql(
+        path,
+        table=table,
+        original=original,
+        replacement=replacement,
+    )
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(PaperSimulationError, match="not paper-owned"):
+        if entrypoint == "store":
+            IntradayPaperStore(path, _config(run_id=f"new-{entrypoint}"))
+        else:
+            assert_simulation_topology(path, simulation_id="new", lanes=1)
+
+    assert path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("entrypoint", ["store", "topology"])
+def test_paper_entrypoints_reject_forged_index_xinfo_before_mutation(
+    tmp_path: Path,
+    entrypoint: str,
+) -> None:
+    path = tmp_path / f"{entrypoint}-index.sqlite3"
+    with IntradayPaperStore(path, _config(run_id=f"owner-{entrypoint}")):
+        pass
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX idx_paper_frames_plan_time")
+        connection.execute(
+            """
+            CREATE INDEX idx_paper_frames_plan_time
+            ON market_frames(run_id COLLATE NOCASE, plan_id, event_at)
+            """
+        )
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(PaperSimulationError, match="not paper-owned"):
+        if entrypoint == "store":
+            IntradayPaperStore(path, _config(run_id=f"new-{entrypoint}"))
+        else:
+            assert_simulation_topology(path, simulation_id="new", lanes=1)
+
+    assert path.read_bytes() == original_bytes
+
+
+def test_paper_store_rejects_hardlink_without_mutating_target(tmp_path: Path) -> None:
+    target = tmp_path / "planner.sqlite3"
+    with sqlite3.connect(target) as connection:
+        connection.execute("CREATE TABLE intraday_runs (id TEXT PRIMARY KEY)")
+    original_bytes = target.read_bytes()
+    alias = tmp_path / "intraday-paper.sqlite3"
+    try:
+        alias.hardlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+
+    with pytest.raises(PaperSimulationError, match="path is not isolated"):
+        IntradayPaperStore(alias, _config())
+
+    assert target.read_bytes() == original_bytes
+    assert alias.read_bytes() == original_bytes
+
+
+def test_paper_store_rejects_symlink_without_mutating_target(tmp_path: Path) -> None:
+    target = tmp_path / "news.sqlite3"
+    with sqlite3.connect(target) as connection:
+        connection.execute("CREATE TABLE news_articles (id TEXT PRIMARY KEY)")
+    original_bytes = target.read_bytes()
+    alias = tmp_path / "intraday-paper.sqlite3"
+    try:
+        alias.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unavailable: {exc}")
+
+    with pytest.raises(PaperSimulationError, match="path is not isolated"):
+        IntradayPaperStore(alias, _config())
+    assert target.read_bytes() == original_bytes
+
+
+def test_paper_store_rejects_non_regular_path(tmp_path: Path) -> None:
+    directory = tmp_path / "paper-directory"
+    directory.mkdir()
+    with pytest.raises(PaperSimulationError, match="path is not isolated"):
+        IntradayPaperStore(directory, _config())
+
+
+def test_empty_and_topology_only_paper_databases_are_compatible(
+    tmp_path: Path,
+) -> None:
+    empty = tmp_path / "empty.sqlite3"
+    with sqlite3.connect(empty):
+        pass
+    with IntradayPaperStore(empty, _config(run_id="empty")) as store:
+        assert store.current_cash() == Decimal("10000")
+
+    topology_only = tmp_path / "topology-only.sqlite3"
+    assert_simulation_topology(
+        topology_only,
+        simulation_id="topology-only",
+        lanes=1,
+    )
+    with sqlite3.connect(topology_only) as connection:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert tables == {
+        "paper_simulation_topologies",
+        "paper_simulation_topology_runs",
+    }
+    with IntradayPaperStore(
+        topology_only,
+        _config(run_id="topology-only"),
+    ) as store:
+        assert store.current_cash() == Decimal("10000")
+
+
+def test_legacy_paper_schema_migrates_and_reopens(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    config = _config(run_id="legacy")
+    with IntradayPaperStore(path, config):
+        pass
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DROP TABLE paper_cohort_sessions")
+        connection.execute("DROP TABLE paper_cohorts")
+        connection.execute("DROP TABLE paper_simulation_topology_runs")
+        connection.execute("DROP TABLE paper_simulation_topologies")
+        connection.execute(
+            "ALTER TABLE paper_stream_instances DROP COLUMN last_seen_at"
+        )
+
+    with IntradayPaperStore(path, config):
+        pass
+    with IntradayPaperStore(path, config) as reopened:
+        assert reopened.current_cash() == Decimal("10000")
+        stream_columns = {
+            str(row[1])
+            for row in reopened._conn.execute(
+                "PRAGMA table_info(paper_stream_instances)"
+            )
+        }
+        assert "last_seen_at" in stream_columns
+        assert {
+            str(row[0])
+            for row in reopened._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        } >= {
+            "paper_simulation_topologies",
+            "paper_simulation_topology_runs",
+            "paper_cohorts",
+            "paper_cohort_sessions",
+        }
+
+
+def test_backup_quiescence_requires_terminal_plan_and_closed_stream(
+    tmp_path: Path,
+) -> None:
+    _config_value, store, plan_id = _registered(tmp_path)
+    try:
+        assert store.session_is_quiescent_for_backup(SESSION) is False
+        assert store.run_is_quiescent_for_backup() is False
+        store.begin_stream_instance(plan_id, "backup-race", started_at=OPEN)
+        store.record_data_gap(
+            plan_id,
+            "stream_coverage_incomplete",
+            at=OPEN + timedelta(minutes=1),
+        )
+        assert store.load_plan(plan_id)["status"] == "INVALID"
+        assert store.session_is_quiescent_for_backup(SESSION) is False
+        assert store.run_is_quiescent_for_backup() is False
+
+        store.end_stream_instance(
+            "backup-race",
+            ended_at=OPEN + timedelta(minutes=2),
+            reason="context_inactive",
+        )
+        assert store.session_is_quiescent_for_backup(SESSION) is True
+        assert store.run_is_quiescent_for_backup() is True
+        assert store.session_is_quiescent_for_backup(
+            SESSION + timedelta(days=1)
+        ) is False
+    finally:
+        store.close()
+
+
+def test_existing_simulation_id_cannot_switch_lane_topology(tmp_path: Path) -> None:
+    one_lane_path = tmp_path / "one-lane.sqlite3"
+    with IntradayPaperStore(
+        one_lane_path,
+        _config(run_id="immutable-topology"),
+    ):
+        pass
+    assert_simulation_topology(
+        one_lane_path, simulation_id="immutable-topology", lanes=1
+    )
+    with pytest.raises(PaperSimulationBlocked, match="different lane topology"):
+        assert_simulation_topology(
+            one_lane_path, simulation_id="immutable-topology", lanes=2
+        )
+
+    two_lane_path = tmp_path / "two-lane.sqlite3"
+    lane_a = _config(run_id="immutable-topology-a")
+    lane_b = _config(run_id="immutable-topology-b")
+    with IntradayPaperStore(two_lane_path, lane_a) as store:
+        store.ensure_two_lane_cohort(
+            cohort_id="immutable-topology", lane_b_config=lane_b
+        )
+    assert_simulation_topology(
+        two_lane_path, simulation_id="immutable-topology", lanes=2
+    )
+    with pytest.raises(PaperSimulationBlocked, match="different lane topology"):
+        assert_simulation_topology(
+            two_lane_path, simulation_id="immutable-topology", lanes=1
+        )
+
+
+def test_topology_atomically_owns_derived_run_names_without_banning_legacy_suffixes(
+    tmp_path: Path,
+) -> None:
+    for index in range(4):
+        path = tmp_path / f"race-{index}.sqlite3"
+
+        def claim(simulation_id: str, lanes: int) -> str:
+            try:
+                assert_simulation_topology(
+                    path, simulation_id=simulation_id, lanes=lanes
+                )
+            except PaperSimulationBlocked:
+                return "blocked"
+            return "claimed"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = tuple(
+                executor.map(
+                    lambda args: claim(*args),
+                    (("overlap", 2), ("overlap-a", 1)),
+                )
+            )
+        assert sorted(results) == ["blocked", "claimed"]
+
+    legacy = tmp_path / "legacy-suffix.sqlite3"
+    with IntradayPaperStore(legacy, _config(run_id="legacy-a")):
+        pass
+    assert_simulation_topology(legacy, simulation_id="legacy-a", lanes=1)
+    with pytest.raises(PaperSimulationBlocked, match="different lane topology"):
+        assert_simulation_topology(legacy, simulation_id="legacy", lanes=2)
+
+
+def test_two_lane_stores_can_open_concurrently_on_a_fresh_wal_database(
+    tmp_path: Path,
+) -> None:
+    for index in range(12):
+        path = tmp_path / f"fresh-cohort-{index}.sqlite3"
+        assert_simulation_topology(path, simulation_id=f"fresh-{index}", lanes=2)
+        configs = (
+            _config(run_id=f"fresh-{index}-a"),
+            _config(run_id=f"fresh-{index}-b"),
+        )
+
+        def open_store(config: IntradayPaperConfig) -> Decimal:
+            with IntradayPaperStore(path, config) as store:
+                return store.current_cash()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            balances = tuple(executor.map(open_store, configs))
+        assert balances == (Decimal("10000"), Decimal("10000"))
+
+
+def test_reaped_stream_cannot_flush_a_buffered_tail_after_backup_quiescence(
+    tmp_path: Path,
+) -> None:
+    config, paused, plan_id = _registered(tmp_path)
+    peer = IntradayPaperStore(tmp_path / "paper.sqlite3", config)
+    instance_id = "paused-before-backup"
+    try:
+        paused.begin_stream_instance(plan_id, instance_id, started_at=OPEN)
+        event_at = OPEN + timedelta(minutes=2)
+        paused.queue_payload(
+            plan_id,
+            _stream(event_at),
+            event_kind="trade",
+            now=event_at,
+            stream_instance_id=instance_id,
+        )
+        peer.record_data_gap(
+            plan_id,
+            "stream_coverage_incomplete",
+            at=event_at,
+        )
+        assert peer.reap_stale_terminal_streams(
+            at=event_at + timedelta(seconds=6)
+        ) == 1
+        assert peer.run_is_quiescent_for_backup() is True
+
+        with pytest.raises(PaperStreamInstanceInactive):
+            paused.flush_pending(stream_instance_id=instance_id)
+        paused.discard_pending()
+        assert peer.load_plan(plan_id)["journaled_frame_count"] == 0
+    finally:
+        paused.discard_pending()
+        paused.close()
+        peer.close()
+
+
+def test_two_lane_cohort_has_separate_immutable_cash_accounts(tmp_path: Path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    lane_a = _config(
+        run_id="cohort-A",
+        end_date=SESSION,
+        initial_cash_usd=Decimal("6000"),
+    )
+    lane_b = _config(
+        run_id="cohort-B",
+        end_date=SESSION,
+        initial_cash_usd=Decimal("4000"),
+    )
+    with IntradayPaperStore(path, lane_a) as store:
+        first = store.ensure_two_lane_cohort(
+            cohort_id="cohort-20260831",
+            lane_b_config=lane_b,
+            created_at=OPEN,
+        )
+        repeated = store.ensure_two_lane_cohort(
+            cohort_id="cohort-20260831",
+            lane_b_config=lane_b,
+            created_at=OPEN + timedelta(hours=1),
+        )
+
+        assert repeated == first
+        assert first["lanes"]["A"]["run_id"] == "cohort-A"
+        assert first["lanes"]["A"]["initial_cash_usd"] == "6000"
+        assert first["lanes"]["B"]["run_id"] == "cohort-B"
+        assert first["lanes"]["B"]["initial_cash_usd"] == "4000"
+
+        different_b = _config(
+            run_id="cohort-C",
+            end_date=SESSION,
+            initial_cash_usd=Decimal("4000"),
+        )
+        with pytest.raises(PaperSimulationError, match="different immutable config"):
+            store.ensure_two_lane_cohort(
+                cohort_id="cohort-20260831",
+                lane_b_config=different_b,
+            )
+
+    with sqlite3.connect(path) as connection:
+        runs = connection.execute(
+            "SELECT run_id, initial_cash, current_cash FROM paper_runs ORDER BY run_id"
+        ).fetchall()
+        ledger = connection.execute(
+            "SELECT run_id, amount FROM paper_cash_ledger ORDER BY run_id"
+        ).fetchall()
+        assert runs == [
+            ("cohort-A", "6000", "6000"),
+            ("cohort-B", "4000", "4000"),
+        ]
+        assert ledger == [("cohort-A", "6000"), ("cohort-B", "4000")]
+
+
+def test_two_lane_cohort_session_is_atomic_idempotent_and_complete(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "paper.sqlite3"
+    lane_a = _config(run_id="cohort-A", end_date=SESSION)
+    lane_b = _config(run_id="cohort-B", end_date=SESSION)
+    with IntradayPaperStore(path, lane_a) as store:
+        store.ensure_two_lane_cohort(
+            cohort_id="cohort-20260831", lane_b_config=lane_b
+        )
+        first = store.record_cohort_session(
+            cohort_id="cohort-20260831",
+            session_date=SESSION,
+            lane_a_status="NO_CANDIDATE",
+            lane_b_status="NO_CANDIDATE",
+            recorded_at=OPEN,
+        )
+        repeated = store.record_cohort_session(
+            cohort_id="cohort-20260831",
+            session_date=SESSION,
+            lane_a_status="NO_CANDIDATE",
+            lane_b_status="NO_CANDIDATE",
+            recorded_at=OPEN + timedelta(hours=1),
+        )
+
+        assert repeated == first
+        assert first["lanes"]["A"]["status"] == "NO_CANDIDATE"
+        assert first["lanes"]["B"]["status"] == "NO_CANDIDATE"
+        assert store.cohort_coverage("cohort-20260831") == {
+            "cohort_id": "cohort-20260831",
+            "status": "COMPLETE",
+            "start_date": SESSION.isoformat(),
+            "end_date_inclusive": SESSION.isoformat(),
+            "expected": [SESSION.isoformat()],
+            "covered": [SESSION.isoformat()],
+            "missing": [],
+            "expected_count": 1,
+            "covered_count": 1,
+            "missing_count": 0,
+            "lanes": {
+                "A": {
+                    "run_id": "cohort-A",
+                    "initial_cash_usd": "10000",
+                    "covered": [SESSION.isoformat()],
+                    "missing": [],
+                },
+                "B": {
+                    "run_id": "cohort-B",
+                    "initial_cash_usd": "10000",
+                    "covered": [SESSION.isoformat()],
+                    "missing": [],
+                },
+            },
+        }
+        with pytest.raises(PaperSimulationError, match="different immutable data"):
+            store.record_cohort_session(
+                cohort_id="cohort-20260831",
+                session_date=SESSION,
+                lane_a_status="PLAN",
+                lane_a_plan_id="different-plan",
+                lane_a_symbol="AAPL",
+                lane_b_status="NO_CANDIDATE",
+            )
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM paper_no_candidate_sessions"
+        ).fetchone()[0] == 2
+        assert connection.execute(
+            "SELECT COUNT(*) FROM paper_cohort_sessions"
+        ).fetchone()[0] == 1
+
+
+def test_exhausted_lane_can_record_terminal_no_candidate_coverage(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "paper.sqlite3"
+    lane_a = _config(run_id="cash-split-a", end_date=SESSION)
+    lane_b = _config(run_id="cash-split-b", end_date=SESSION)
+    with IntradayPaperStore(path, lane_a) as store:
+        store.ensure_two_lane_cohort(
+            cohort_id="cash-split", lane_b_config=lane_b
+        )
+        with store._write():
+            store._conn.execute(
+                "UPDATE paper_runs SET current_cash = '0' WHERE run_id = ?",
+                (lane_a.run_id,),
+            )
+
+        result = store.record_cohort_session(
+            cohort_id="cash-split",
+            session_date=SESSION,
+            lane_a_status="NO_CANDIDATE",
+            lane_b_status="NO_CANDIDATE",
+            recorded_at=OPEN,
+        )
+
+        assert result["lanes"]["A"]["status"] == "NO_CANDIDATE"
+        assert store.cohort_coverage("cash-split")["missing_count"] == 0
+
+
+def test_two_lane_cohort_supports_plan_and_no_candidate(tmp_path: Path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    lane_a = _config(run_id="cohort-A", end_date=SESSION)
+    lane_b = _config(run_id="cohort-B", end_date=SESSION)
+    with IntradayPaperStore(path, lane_a) as store:
+        store.ensure_two_lane_cohort(
+            cohort_id="cohort-20260831", lane_b_config=lane_b
+        )
+        plan = _plan(lane_a, symbol="AAPL")
+        store.ensure_plan(plan, registered_at=OPEN)
+        result = store.record_cohort_session(
+            cohort_id="cohort-20260831",
+            session_date=SESSION,
+            lane_a_status="PLAN",
+            lane_a_plan_id=str(plan["plan_id"]),
+            lane_a_symbol="AAPL",
+            lane_b_status="NO_CANDIDATE",
+            recorded_at=OPEN,
+        )
+
+        assert result["lanes"]["A"] == {
+            "run_id": "cohort-A",
+            "status": "PLAN",
+            "plan_id": plan["plan_id"],
+            "symbol": "AAPL",
+        }
+        assert result["lanes"]["B"]["status"] == "NO_CANDIDATE"
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            """
+            SELECT run_id, session_date FROM paper_no_candidate_sessions
+            """
+        ).fetchall() == [("cohort-B", SESSION.isoformat())]
+
+
+def test_two_lane_cohort_rolls_back_first_lane_when_second_conflicts(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "paper.sqlite3"
+    lane_a = _config(run_id="cohort-A", end_date=SESSION)
+    lane_b = _config(run_id="cohort-B", end_date=SESSION)
+    with IntradayPaperStore(path, lane_a) as store:
+        store.ensure_two_lane_cohort(
+            cohort_id="cohort-20260831", lane_b_config=lane_b
+        )
+        with IntradayPaperStore(path, lane_b) as lane_b_store:
+            lane_b_store.record_market_closed(SESSION, recorded_at=OPEN)
+
+        with pytest.raises(PaperSimulationError, match="MARKET_CLOSED"):
+            store.record_cohort_session(
+                cohort_id="cohort-20260831",
+                session_date=SESSION,
+                lane_a_status="NO_CANDIDATE",
+                lane_b_status="NO_CANDIDATE",
+                recorded_at=OPEN,
+            )
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM paper_no_candidate_sessions
+            WHERE run_id = 'cohort-A'
+            """
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM paper_cohort_sessions"
+        ).fetchone()[0] == 0
+
+
+def test_two_lane_cohort_database_rejects_same_plan_symbol(tmp_path: Path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    lane_a = _config(run_id="cohort-A", end_date=SESSION)
+    lane_b = _config(run_id="cohort-B", end_date=SESSION)
+    with IntradayPaperStore(path, lane_a) as store:
+        store.ensure_two_lane_cohort(
+            cohort_id="cohort-20260831", lane_b_config=lane_b
+        )
+
+    with sqlite3.connect(path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            connection.execute(
+                """
+                INSERT INTO paper_cohort_sessions (
+                    cohort_id, session_date,
+                    lane_a_status, lane_a_plan_id, lane_a_symbol,
+                    lane_b_status, lane_b_plan_id, lane_b_symbol, recorded_at
+                ) VALUES (?, ?, 'PLAN', 'plan-a', 'AAPL',
+                    'PLAN', 'plan-b', 'AAPL', ?)
+                """,
+                ("cohort-20260831", SESSION.isoformat(), OPEN.isoformat()),
+            )
+
+
+def test_two_lane_cohort_partial_manifest_is_incomplete(tmp_path: Path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    lane_a = _config(run_id="cohort-A", end_date=SESSION)
+    lane_b = _config(run_id="cohort-B", end_date=SESSION)
+    with IntradayPaperStore(path, lane_a) as store:
+        store.ensure_two_lane_cohort(
+            cohort_id="cohort-20260831", lane_b_config=lane_b
+        )
+        store.record_no_candidate(SESSION, recorded_at=OPEN)
+        store._conn.execute(
+            """
+            INSERT INTO paper_cohort_sessions (
+                cohort_id, session_date, lane_a_status, recorded_at
+            ) VALUES (?, ?, 'NO_CANDIDATE', ?)
+            """,
+            ("cohort-20260831", SESSION.isoformat(), OPEN.isoformat()),
+        )
+
+        coverage = store.cohort_coverage("cohort-20260831")
+
+        assert coverage["status"] == "INCOMPLETE"
+        assert coverage["covered"] == []
+        assert coverage["missing"] == [SESSION.isoformat()]
+        assert coverage["lanes"]["A"]["covered"] == [SESSION.isoformat()]
+        assert coverage["lanes"]["B"]["missing"] == [SESSION.isoformat()]
 
 
 def test_warmup_journals_each_frame_without_false_gap(tmp_path: Path) -> None:

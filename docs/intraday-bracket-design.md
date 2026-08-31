@@ -2472,24 +2472,26 @@ publish하고 다섯 번째 watchdog은 네 heartbeat와 launchd 상태를 평�
 state DB sibling `stream-expectation.json`을 context보다 먼저 쓰고, regular close 전 context
 생성·갱신만 실행/재실행 trigger로 만든다. close 이후에는 context를 다시 쓰지 않는다. watchdog은
 두 path를 받아 active expectation과 context가 일치할 때만 stream을 required로 평가하며 정상
-post-close idle은 healthy로 처리한다. watchdog의 Discord sender는
-아직 연결되지 않았다.
+post-close idle은 healthy로 처리한다. watchdog의 redacted Discord sender는 코드에 연결됐지만
+Mac LaunchAgent에는 아직 설치하지 않았다.
 
-owner-private `/현황` artifact는 schema version 2이며 no-candidate count와 최신 covered day를
-공개한다. 최신 날짜가 `NO_CANDIDATE` 또는 `MARKET_CLOSED`여도 해당 daily summary가 표시된다.
-최종 `NO_CANDIDATE`는 durable runtime event와 `/현황`에는 남지만 별도 Discord 알림 outbox에는
-아직 넣지 않았다.
+owner-private `/현황` artifact는 단일 레인에서 schema version 2를 유지하고, 새 두 레인 cohort에서만
+schema version 3을 쓴다. v2는 no-candidate count와 최신 covered day를 공개한다. v3는 그 합산값에
+A/B별 status·현금·실현손익·return·거래·coverage·최신 day와 distinct trading session 수를 더한다.
+최신 날짜가 `NO_CANDIDATE` 또는 `MARKET_CLOSED`여도 해당 daily summary가 표시된다. 최종
+`NO_CANDIDATE`는 durable runtime event와 `/현황`에는 남지만 별도 Discord 알림 outbox에는 아직
+넣지 않았다.
 
-현재 상태는 정확히 **LOCAL_IMPLEMENTATION_VERIFIED / MAC_RELEASE_STAGED_AUTH_BLOCKED / LIVE_NO_GO**다.
-Mac에는 non-live gate를 통과한 수정 release가 side-by-side로 준비됐지만, 기존 Toss OAuth client가
-`401 invalid_client`로 거부돼 planner를 plan 0건 상태에서 내렸다. 새 자격증명을 비노출 one-shot으로
-검증한 뒤에만 세 installed job을 같은 SHA로 전환한다. 실제 public Toss WS baseline·journal smoke와
-redacted Discord daily/final smoke가 끝나기 전에는 정상 run을 시작했다고 주장하지 않는다. 시작이 늦으면
-과거 누락 frame, plan, 휴장 또는 fill을 합성하지 않고 실제 plan이 생긴 날짜부터
+현재 상태는 정확히 **LOCAL_CODE_IMPLEMENTED / MAC_NOT_DEPLOYED_AUTH_BLOCKED / LIVE_NO_GO**다.
+Mac의 기존 planner는 Toss OAuth 인증 차단 뒤 plan 0건 상태에서 내려가 있고, 이번 2레인·maintenance·
+watchdog 변경은 설치하지 않았다. API credential 재발급도 수행하지 않았다. 인증이 복구된 뒤에도
+동일 exact-SHA의 non-live gate, 실제 public Toss WS baseline·journal smoke와 redacted Discord
+daily/final smoke가 끝나기 전에는 정상 run을 시작했다고 주장하지 않는다. 시작이 늦으면 과거 누락
+frame, plan, 휴장 또는 fill을 합성하지 않고 실제 plan이 생긴 날짜부터
 `2026-09-30`까지만 관측한다. 누락 평일은 coverage의 missing 목록에 남고 종료 상태는
 `INCOMPLETE`다. 이 결과만으로 live 승격하지 않는다.
 
-### 14.6 다음 실험의 2레인 병렬 가상체결
+### 14.6 새 실험 전용 2레인 병렬 가상체결
 
 현재 단일 레인 run의 기간·초기 현금·experiment hash는 중간에 바꾸지 않는다. 2레인은 새 실험에서만
 고정 `A/B` 두 개로 시작하며 총 가상현금은 최초 한 번 `50:50`으로 나눈다. 레인 간 이체·재조정은
@@ -2500,20 +2502,55 @@ symbol이어야 하며, 한 종목만 적격이면 다른 레인의 현금을 �
 selector는 한 ranking snapshot에서 상위 두 적격 종목을 고르고 두 plan과 날짜별 cohort manifest를
 한 SQLite transaction으로 잠근다. manifest는 각 레인의 `PLAN`, `NO_CANDIDATE`,
 `MARKET_CLOSED`와 plan identity를 보유하며 `symbol_a != symbol_b`를 DB 제약으로 강제한다. A만 저장된
-반쪽 cohort는 허용하지 않는다. data-quality 실패는 해당 레인의 coverage를 만들지 않으며, cohort
-coverage는 두 레인이 모두 확정됐을 때만 완료다. 현재 paper schema의 하루 한 plan 제약을 우회하려고
+반쪽 cohort는 허용하지 않는다. data-quality 실패가 하나라도 있으면 일부 결과를 잠그지 않고 cohort
+전체를 재시도하며, cohort coverage는 두 레인이 모두 확정됐을 때만 완료다. 적격 종목이 하나뿐인
+정상 최종 시도는 한 레인 `PLAN`, 다른 레인 `NO_CANDIDATE`로 원자 확정한다. 현재 paper schema의 하루 한 plan 제약을 우회하려고
 한 run에 두 plan을 넣지 않고 `cohort-...-a`, `cohort-...-b` 두 sub-run과 별도 cash ledger를 사용한다.
 
-stream은 새 daemon이나 두 번째 socket을 추가하지 않는다. 한 process·한 WebSocket에서 두 종목의
-`trade:us`와 `orderbook:us`, 총 네 topic을 exact ACK한 뒤 immutable `topic -> lane` 표로 한 frame을
-정확히 한 레인에만 전달한다. OAuth·연결·ACK·process·paper DB write 실패는 cohort 공통 장애이고,
-식별 가능한 한 symbol의 stale/malformed/silence는 그 레인만 invalid 처리한다. reconnect generation과
-REST baseline, queue, stream instance identity는 레인별로 분리한다.
+planner의 news context schema v2는 잠긴 실제 `PLAN` symbol 1~2개만 A/B 순서의 immutable 목록으로 내보낸다.
+news worker는 context 전체를 claim과 전송 직전에 다시 검사해 각 symbol의 새 기사를 따로 처리하고,
+각 Discord POST 전에 허용 채널을 다시 확인한다. schema v1 단일 symbol은 기존 run 호환용으로 계속
+읽는다.
+
+stream은 새 daemon이나 두 번째 socket을 추가하지 않는다. 한 process·한 WebSocket에서 실제 `PLAN`
+symbol 각각의 `trade:us`와 `orderbook:us`만 선언하고 전체 exact ACK를 요구한다. 두 plan이면 네 topic,
+`PLAN + NO_CANDIDATE`면 한 symbol의 두 topic이다. immutable `topic -> lane` 표는 한 frame을 정확히 한
+레인에만 전달한다. OAuth·연결·ACK·process·paper DB write 실패는 cohort 공통 장애이고, 식별 가능한
+한 symbol의 stale/malformed/silence는 그 레인만 invalid 처리한다. reconnect generation과 REST baseline,
+queue, stream instance identity는 레인별로 분리하며 같은 process의 아직 유효한 OAuth token은 재사용한다.
 
 월 보고서는 A, B, 합산 portfolio를 따로 표시하고 총 거래 수와 distinct trading session 수를 함께
 낸다. 같은 날의 두 거래는 같은 market regime와 ranking snapshot을 공유하므로 독립 표본 두 개로
 간주하지 않는다. 첫 구현 범위는 고정 2레인·50:50·단일 socket뿐이며 동적 N레인, 성과 기반 현금 이동,
 다중 socket은 실제 병목 증거가 생기기 전에는 추가하지 않는다.
+
+이 계약은 planner/cohort DB, 두 paper sub-run, context v2, 단일 socket router와 `/현황` schema v3까지
+로컬 코드와 targeted 회귀로 구현됐다. `simulation.lanes`는 정확히 1 또는 2만 허용하고 두 레인은 automatic
+selection만 허용한다. 기존 lanes=1 experiment hash와 schema v2 출력은 호환성을 위해 바꾸지 않는다.
+실제 Mac 설치·public feed·뉴스/Discord 전송은 아직 검증하지 않았고 실주문 경로와 live 승격은 계속
+닫혀 있다.
+
+장 종료 운영 코드는 planner·paper와 존재하는 news DB의 online backup/원본·사본 `quick_check`/SHA-256,
+35 daily+6 older weekly 보존, 두 planner log의 10 MiB·30 gzip 세대 회전, 20% 또는 10 GiB warning과
+10% 또는 5 GiB critical 디스크 검사를 서로 독립 phase로 수행한다. calendar 인증 실패 시에도 simulation
+기간 안의 뉴욕 평일 17시 이후에는 maintenance만 허용하고 plan·coverage는 만들지 않는다. watchdog은
+기존 승인 봇 credential을 Keychain에서 exec 직전에 읽어 단일 허용 채널의 redacted 상태 변화만 보내며,
+매 POST 전에 channel identity를 다시 검증한다. 이것은 동일 Mac의 process 감시이고 외부 노드 deadman은
+별도 미구현 경계다.
+
+backup completion은 날짜별 restore-set 세대다. planner와 paper의 cross-DB 복구 쓰기 전 old paper 세대를
+먼저 durable invalidation하고, 재백업은 기존 정상 pair도 격리한 뒤 planner·paper·설정된 news 전부를 새로
+만든다. 한 source라도 실패하면 retention은 실행하지 않되 log·disk phase는 계속한다. retention 입력은
+모든 source에 실제로 존재하는 날짜 교집합이라 alias별 보존 기간이 갈라지지 않으며, 승인된 삭제 marker는
+planner DB snapshot과 독립적으로 남아 오래된 snapshot 복원 뒤에도 삭제 의도를 유지한다. 다음 날 계획을
+쓰기 전에는 직전 covered session의 전체 backup catalog를 다시 검사하고 unresolved validation failure를
+막는다. 뉴스 설정의 DB는 context와 같은 디렉터리의 정확한 `news.sqlite3`만 허용한다.
+
+planner·paper·news DB는 canonical path와 `(device, inode)`가 모두 달라야 하며 symlink·hardlink·foreign
+schema는 어떤 migration보다 먼저 거부한다. log rotation은 log별 OS lock, directory-fsynced phase journal,
+staged generation publish를 사용한다. gzip을 만든 뒤 detached source inode를 unlink하지 않고 같은 보존
+세대의 hidden raw companion으로 이동해 이미 열려 있던 writer의 late append를 보존하고, 다음 pass가
+resumable temp로 gzip을 다시 맞춘다. raw와 gzip은 30세대 이동·만료를 함께 수행한다.
 
 ## 공식 참고
 

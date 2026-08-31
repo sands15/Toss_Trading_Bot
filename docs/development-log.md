@@ -900,11 +900,74 @@ Mac exact-SHA `e18c19fe67ae084ec0b5a6ddd36af89372e0e253` gate는 network-denied
 `587 passed`, `pip check`, compileall, exact import, clean Git/fsck를 통과했다. 이 release는
 side-by-side로만 준비했다. 기존 planner는 plan 0건, paper plan 0건, DB `quick_check=ok`를 확인하고
 unload했다. approval은 기존 release에서 실행 중이고 stream은 no-context idle이다. Toss Open API
-client ID/secret 재발급 또는 client 활성화와 비노출 one-shot 성공 전에는 plist를 새 SHA로 전환하거나
-planner를 재시작하지 않는다. 따라서 현재 한 달 run은 정상 시작/완료로 간주하지 않으며 누락을
+기존 client의 활성화나 다른 인증 차단 해소를 비노출 one-shot으로 확인하기 전에는 plist를 새 SHA로
+전환하거나 planner를 재시작하지 않는다. 따라서 현재 한 달 run은 정상 시작/완료로 간주하지 않으며 누락을
 합성하지 않는다.
 
 다음 병렬 실험은 현재 run을 중간 분할하지 않고 새 cohort에서 고정 두 레인, 총 가상현금 50:50,
 서로 다른 symbol, 레인 간 이체 없음, 한 WebSocket의 네 exact topic, 두 sub-run ledger로 시작한다.
 두 plan/cohort를 한 transaction으로 잠그고 레인별 결과와 합산 portfolio, distinct session을 따로
 보고한다. 세부 계약은 `docs/intraday-bracket-design.md` 14.6절을 정본으로 둔다.
+
+## 2026-09-01 — 고정 2레인 paper simulation·운영 보강 로컬 구현
+
+현재 단일 레인 run의 기간·현금·experiment hash는 건드리지 않았다. 새 실험에서만
+`simulation.lanes: 2`를 허용하고 총 가상현금을 고정 A/B 두 레인에 50:50으로 나눈다. 두 레인은
+서로 다른 run ID와 현금 원장을 사용하며 이체·성과 재배분은 없다. selector는 한 ranking snapshot을
+공유하되 서로 다른 최대 두 종목을 고른다. 두 결과와 cohort manifest는 한 transaction으로 잠기므로
+반쪽 cohort가 남지 않는다. 적격 종목이 하나뿐이면 `PLAN + NO_CANDIDATE`가 정상 cohort이고,
+시장 휴장은 양쪽 모두 `MARKET_CLOSED`다. candle·quote·orderbook 데이터 품질 오류는 일부 레인만
+coverage로 확정하지 않고 cohort 전체를 재시도 대상으로 남긴다. 단일 레인의 기존 hash·status 계약은
+그대로 유지한다.
+
+planner가 내보내는 news context는 schema v2에서 잠긴 실제 `PLAN` 종목 1~2개만 담는다. news worker는
+전체 context가 바뀌지 않았는지 매 claim과 전송 전에 다시 검사하고 각 종목의 새 기사를 독립 처리하며,
+Discord POST 직전에 매번 허용 채널을 재검증한다. stream도 daemon이나 socket을 늘리지 않고 한
+WebSocket에서 실제 plan 종목별 trade/orderbook topic만 선언하고 exact ACK를 요구한다. 따라서
+`PLAN + NO_CANDIDATE` 날에는 한 종목의 두 topic만 구독하고, 두 plan 날에만 두 종목의 네 topic을
+구독한다. OAuth·연결·ACK·공통 저장 실패는 cohort 공통 오류이고, 식별 가능한 symbol의 silence·frame
+오류는 해당 레인만 invalid 처리한다. reconnect 동안에도 같은 client의 유효 token을 재사용한다.
+
+owner-private `/현황`은 두 레인에서만 schema v3를 사용해 A/B 현금·실현손익·거래·coverage와 합산
+portfolio를 함께 표시한다. 총 거래 수와 같은 날짜를 한 번만 세는 distinct trading session 수를
+분리해, 같은 ranking snapshot의 두 거래를 독립된 시장 표본처럼 과대계상하지 않는다. 기존 단일 레인은
+schema v2를 계속 쓴다.
+
+장 종료 후 planner maintenance도 추가했다. planner·paper와 존재하는 news SQLite를 online backup
+API로 복사하고 원본·사본 `quick_check`, SHA-256, owner-only mode를 확인한다. 완성된 같은 날짜 backup은
+재검증해 이어 쓰고, 불완전하거나 무결하지 않은 exact artifact는 격리한 뒤 다시 만든다. 보존은 최근
+35개 일간본과 겹치지 않는 6개 주간본이고, 명시된 두 planner log만 10 MiB에서 gzip 회전해 30세대를
+남긴다. 디스크는 20% 또는 10 GiB 미만을 warning, 10% 또는 5 GiB 미만을 critical로 판정한다. backup,
+retention, log, disk phase는 독립적으로 기록돼 한 phase 실패가 뒤의 검사를 숨기지 않는다. 공식 calendar를
+읽지 못해도 simulation 기간 안의 뉴욕 평일이고 현지 17시 이후라면 maintenance만 실행하며 거래
+coverage나 plan을 합성하지 않는다.
+
+watchdog은 거래 package나 SQLite를 열지 않는 기존 경계를 유지하면서, 기존 승인 봇의 Keychain
+credential을 재사용해 redacted 상태 변화만 단일 허용 Discord 채널로 보낼 수 있다. 매 POST 전에 remote
+channel identity를 다시 확인하고 mention, redirect, rate-limit/5xx 자동 우회는 허용하지 않으며, 알림
+전송이 성공해야 새 상태를 저장한다. 이는 같은 Mac 안의 process watchdog일 뿐 off-device deadman을
+대체하지 않는다.
+
+관련 targeted 회귀는 로컬에서 통과했다. 이 변경은 코드와 테스트만 준비한 상태이며 Mac 설치, 실제
+Toss OAuth/REST/WebSocket 성공, 장중 soak, 실제 뉴스·Discord 전송, 실주문은 수행하지 않았다. API
+credential 재발급도 하지 않았고 기존 인증 차단점은 그대로 남아 있다. 현재 판정은
+`LOCAL_CODE_IMPLEMENTED / MAC_NOT_DEPLOYED_AUTH_BLOCKED / LIVE_NO_GO`다.
+
+후속 안전성 감사에서 backup을 alias별 파일이 아니라 날짜별 restore-set 세대로 강화했다. planner에
+완료 기록이 있는 paper DB를 backlog recovery가 바꾸기 전 generation-aware invalidation을 먼저 기록하고,
+재백업은 stale한 정상 pair까지 격리해 전체 configured source를 새로 만든다. 중간 source 실패 시 retention은
+건너뛰지만 log와 disk 검사는 계속하며, retention은 모든 source에 공통으로 존재하는 날짜만 같은 정책으로
+처리한다. 삭제 승인은 planner snapshot과 별개인 private tombstone으로 남아 crash와 오래된 snapshot 복원
+뒤에도 idempotent하다. maintenance event ledger나 catalog 전체를 읽지 못한 경우에는 backup artifact를
+교체하거나 개별 artifact를 거짓 invalidation하지 않고 validation failure gate를 세우며, 복구 scan이
+성공해야 다음 계획으로 넘어간다. 뉴스 DB는 context sibling
+`news.sqlite3`로 고정했고 planner/paper 고유 테이블을 발견하면 초기화 전에 거부한다. watchdog 알림 상태는
+각 성공 POST 직후 durable하게 진행되어 뒤 alert 실패가 이미 보낸 alert의 재전송을 만들지 않도록 했다.
+
+추가 교차 DB/내구성 감사에서는 planner·paper·news ledger를 절대경로뿐 아니라 실제 inode까지 서로 다르게
+검증하고 symlink·hardlink·foreign schema를 첫 schema write 전에 거부하도록 했다. planner와 paper는 canonical
+column/index/FK signature, `quick_check`, `foreign_key_check`를 통과해야 열린다. 로그 회전은 log별 OS lock과
+cutover/stage/publish journal을 사용하고, 압축한 원본 inode를 즉시 지우지 않고 같은 30세대의 private raw
+복구 동반 파일로 보존한다. 이미 열린 writer의 늦은 append는 다음 pass가 crash-resumable temp를 통해 gzip에
+재반영하므로 check와 unlink 사이 바이트 유실이 없다. watchdog state rename은 parent directory fsync까지
+성공해야 alert sender를 호출한다.

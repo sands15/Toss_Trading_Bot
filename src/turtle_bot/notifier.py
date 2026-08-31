@@ -265,6 +265,8 @@ class DiscordTradeNotifier:
             return f"[거래 알림 테스트] {account_label} · Discord 연결 확인"
         if text in {"intraday_shadow_plan_created", "intraday_paper_plan_created"}:
             account_label = cls._account_label(payload)
+            lane = str(payload.get("lane") or "").upper()
+            lane_label = f" · 레인 {lane}" if lane in {"A", "B"} else ""
             symbol = str(payload.get("symbol") or "종목 확인 필요").upper()
             quantity = payload.get("quantity") or "수량 확인 필요"
             entry_trigger = payload.get("entry_trigger") or "?"
@@ -278,7 +280,8 @@ class DiscordTradeNotifier:
             entry_expiry = payload.get("entry_expiry") or "?"
             mode_label = "가상매매" if text == "intraday_paper_plan_created" else "SHADOW"
             return (
-                f"[단타 계획 · {mode_label}/실주문 없음] {account_label} · {symbol} {quantity}주 · "
+                f"[단타 계획 · {mode_label}/실주문 없음] {account_label}{lane_label} · "
+                f"{symbol} {quantity}주 · "
                 f"진입 {entry_trigger}~{entry_limit} · 익절 {target} · "
                 f"손절 {stop_trigger}/{stop_limit} · 계획위험 ${planned_risk} · "
                 f"R:R {reward_risk} · 진입창 {entry_start}~{entry_expiry}"
@@ -329,16 +332,89 @@ class DiscordTradeNotifier:
             missing = payload.get("coverage_missing") or 0
             fees = payload.get("total_fees") or "0"
             drawdown = payload.get("max_drawdown_fraction") or "0"
-            return (
+            report = (
                 f"[가상매매 한달결과 · 실주문 없음] {status} · 초기 ${initial} · "
                 f"최종자산 {final} · 순손익 ${pnl} · 수익률 {return_rate} · "
                 f"거래 {trades}회 · 수수료 ${fees} · 최대낙폭 {drawdown} · "
                 f"무효 {invalid}일/미해결 {unresolved}건/누락 {missing}일"
             )
+            if payload.get("simulation_lanes") != 2:
+                return report
+            lanes = payload.get("lanes")
+            if not isinstance(lanes, Mapping) or set(lanes) != {"A", "B"}:
+                return report
+            lane_lines = []
+            for lane in ("A", "B"):
+                value = lanes[lane]
+                if not isinstance(value, Mapping):
+                    return report
+                lane_lines.append(
+                    f"레인 {lane} {value.get('status') or '?'} · "
+                    f"현금 ${value.get('current_cash') or '?'} · "
+                    f"손익 ${value.get('net_pnl') or '0'} · "
+                    f"거래 {value.get('trades') or 0}회"
+                )
+            sessions = payload.get("distinct_trading_session_count")
+            return report + f"\n서로 다른 거래일 {sessions or 0}일\n" + "\n".join(lane_lines)
         if text == "intraday_paper_invalid":
             session = payload.get("session_date") or "?"
             reason = payload.get("reason") or payload.get("status") or "데이터 확인 필요"
             return f"[가상매매 무효 · 실주문 없음] {session} · {reason}"
+        if text == "intraday_maintenance_disk_warning":
+            session = str(payload.get("session_date") or "?")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", session) is None:
+                session = "?"
+            severity = str(payload.get("level") or "").lower()
+            severity_label = {
+                "warning": "주의",
+                "critical": "위험",
+            }.get(severity, "확인 필요")
+            free_bytes = payload.get("free_bytes")
+            free_gib = (
+                f"{free_bytes / 1024**3:.1f} GiB"
+                if isinstance(free_bytes, int)
+                and not isinstance(free_bytes, bool)
+                and free_bytes >= 0
+                else "?"
+            )
+            try:
+                free_percent = float(str(payload.get("free_fraction"))) * 100
+            except (TypeError, ValueError):
+                free_percent_text = "?"
+            else:
+                free_percent_text = (
+                    f"{free_percent:.1f}%"
+                    if 0 <= free_percent <= 100
+                    else "?"
+                )
+            return (
+                f"[봇 저장공간 {severity_label}] {session} · "
+                f"남음 {free_gib} ({free_percent_text}) · 실주문 없음"
+            )
+        if text == "intraday_maintenance_failure":
+            session = str(payload.get("session_date") or "?")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", session) is None:
+                session = "?"
+            code = str(payload.get("code") or "maintenance_failed")
+            if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code) is None:
+                code = "maintenance_failed"
+            return (
+                f"[봇 유지보수 실패] {session} · 코드 {code} · "
+                "백업/로그/디스크 상태 확인 필요 · 실주문 없음"
+            )
+        if text == "intraday_backup_invalidated":
+            session = str(payload.get("session_date") or "?")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", session) is None:
+                session = "?"
+            database = {
+                "planner": "계획 원장",
+                "paper": "가상체결 원장",
+                "news": "뉴스 원장",
+            }.get(str(payload.get("database") or ""), "백업 원장")
+            return (
+                f"[봇 백업 손상 감지] {session} · {database} 복구본 격리 · "
+                "정확한 재검증 전 다음 계획 차단 · 실주문 없음"
+            )
         if text == "intraday_shadow_plan_blocked":
             account_label = cls._account_label(payload)
             symbol = str(payload.get("symbol") or "거래").upper()

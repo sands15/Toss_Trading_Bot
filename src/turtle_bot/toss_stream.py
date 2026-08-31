@@ -17,7 +17,11 @@ import time
 from typing import Any, Callable, Iterator, Mapping, Protocol
 from uuid import uuid4
 
-from turtle_news.worker import NewsDigestError, SelectedContext, load_context
+from turtle_news.worker import (
+    NewsDigestError,
+    SelectedContext,
+    load_contexts,
+)
 
 from .toss_client import (
     TOSS_BASE_URL,
@@ -27,11 +31,13 @@ from .toss_client import (
     TossCredentials,
     TossToken,
 )
-from .config import intraday_simulation_experiment_hash, load_config
+from .config import TradingConfig, intraday_simulation_experiment_hash, load_config
 from .intraday_paper import (
     IntradayPaperConfig,
     IntradayPaperStore,
     PaperSimulationError,
+    PaperStreamInstanceInactive,
+    assert_simulation_topology,
     simulation_account_key,
 )
 from .state_store import SQLiteStateStore
@@ -42,6 +48,7 @@ ASYNCAPI_VERSION = "1.2.2"
 ASYNCAPI_SHA256 = "130251057fd9535a3e276099f9166b445f8c51f505f30540758e4b209231282e"
 MAX_FRAME_BYTES = 65_536
 _DECIMAL_RE = re.compile(r"\d+(?:\.\d+)?\Z")
+_SYMBOL_RE = re.compile(r"[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?\Z")
 _ORDERBOOK_UNAVAILABLE_CODES = frozenset(
     {
         "orderbook_crossed",
@@ -81,6 +88,7 @@ class WebSocketConnection(Protocol):
 class StreamConfig:
     context_path: Path
     snapshot_path: Path
+    expected_symbols: tuple[str, ...] | None = None
     once: bool = False
     context_max_age_seconds: int = 300
     context_check_interval_seconds: float = 1.0
@@ -118,6 +126,8 @@ class StreamConfig:
             raise StreamError("stream_config_invalid")
         if not 1 <= self.max_reconnect_attempts <= 100:
             raise StreamError("stream_config_invalid")
+        if self.expected_symbols is not None:
+            _validate_symbols(self.expected_symbols)
 
 
 @dataclass
@@ -242,15 +252,107 @@ class ShadowStreamState:
 
 
 @dataclass
+class CohortStreamState:
+    """One connection with isolated per-symbol market state."""
+
+    states: dict[str, ShadowStreamState]
+    generation: int = 0
+    connected: bool = False
+    acknowledged: bool = False
+    connection_error: str | None = None
+    last_disconnect_error: str | None = None
+    reconnect_count: int = 0
+    consecutive_failures: int = 0
+    healthy_once: bool = False
+
+    @property
+    def symbols(self) -> tuple[str, ...]:
+        return tuple(self.states)
+
+    @property
+    def topics(self) -> tuple[str, ...]:
+        return tuple(topic for state in self.states.values() for topic in state.topics)
+
+    @property
+    def active_until(self) -> datetime:
+        return min(state.context.active_until for state in self.states.values())
+
+    def begin_connection(self) -> None:
+        self.generation += 1
+        self.connected = True
+        self.acknowledged = False
+        self.connection_error = None
+        self.healthy_once = False
+        for state in self.states.values():
+            state.begin_connection()
+            state.generation = self.generation
+
+    def disconnect(self, code: str) -> None:
+        self.connected = False
+        self.acknowledged = False
+        self.connection_error = code
+        self.last_disconnect_error = code
+        self.healthy_once = False
+        for state in self.states.values():
+            state.disconnect(code)
+
+    def as_payload(self, *, now: datetime, event_max_age_seconds: float) -> dict[str, Any]:
+        streams = {
+            symbol: state.as_payload(
+                now=now,
+                event_max_age_seconds=event_max_age_seconds,
+            )
+            for symbol, state in self.states.items()
+        }
+        usable = bool(streams) and all(
+            value.get("shadow_usable") is True for value in streams.values()
+        )
+        error_codes = sorted(
+            {
+                code
+                for value in streams.values()
+                for code in value.get("error_codes", [])
+                if isinstance(code, str)
+            }
+            | ({self.connection_error} if self.connection_error else set())
+        )
+        valid_until = min(
+            _aware_datetime(value["valid_until"], "snapshot_time_invalid")
+            for value in streams.values()
+        )
+        return {
+            "schema_version": 2,
+            "mode": "shadow",
+            "live_order_submission": False,
+            "ready_for_live_entry": False,
+            "symbols": list(self.symbols),
+            "asyncapi_version": ASYNCAPI_VERSION,
+            "asyncapi_sha256": ASYNCAPI_SHA256,
+            "generation": self.generation,
+            "connected": self.connected,
+            "subscription_acknowledged": self.acknowledged,
+            "subscribed_topics": list(self.topics) if self.acknowledged else [],
+            "updated_at": _utc(now).isoformat(),
+            "valid_until": valid_until.isoformat(),
+            "shadow_usable": usable,
+            "reconnect_count": self.reconnect_count,
+            "consecutive_failures": self.consecutive_failures,
+            "error_codes": error_codes,
+            "last_disconnect_error": self.last_disconnect_error,
+            "streams": streams,
+        }
+
+
+@dataclass
 class _SnapshotWriter:
     path: Path
     interval_seconds: float
-    heartbeat_sink: Callable[[ShadowStreamState, datetime], None] | None = None
+    heartbeat_sink: Callable[[Any, datetime], None] | None = None
     last_written: float = float("-inf")
 
     def write(
         self,
-        state: ShadowStreamState,
+        state: ShadowStreamState | CohortStreamState,
         *,
         now: datetime,
         monotonic_now: float,
@@ -268,15 +370,46 @@ class _SnapshotWriter:
         self.last_written = monotonic_now
 
 
-def subscription_declaration(symbol: str, request_id: str) -> list[dict[str, Any]]:
-    if not re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?", symbol):
+def _validate_symbols(symbols: tuple[str, ...]) -> None:
+    if (
+        type(symbols) is not tuple
+        or not 1 <= len(symbols) <= 2
+        or any(
+            type(symbol) is not str
+            or not 1 <= len(symbol) <= 16
+            or not _SYMBOL_RE.fullmatch(symbol)
+            for symbol in symbols
+        )
+        or len(set(symbols)) != len(symbols)
+    ):
         raise StreamError("context_symbol_invalid")
-    if not request_id or len(request_id) > 80 or any(ch.isspace() for ch in request_id):
+
+
+def _validate_subscription_inputs(
+    symbols: tuple[str, ...], request_id: str
+) -> None:
+    _validate_symbols(symbols)
+    if (
+        type(request_id) is not str
+        or not request_id
+        or len(request_id) > 80
+        or any(ch.isspace() for ch in request_id)
+    ):
         raise StreamError("subscription_request_id_invalid")
+
+
+def subscription_declaration(symbol: str, request_id: str) -> list[dict[str, Any]]:
+    return subscription_declaration_for_symbols((symbol,), request_id)
+
+
+def subscription_declaration_for_symbols(
+    symbols: tuple[str, ...], request_id: str
+) -> list[dict[str, Any]]:
+    _validate_subscription_inputs(symbols, request_id)
     return [
         {"id": request_id},
-        {"type": "trade:us", "codes": [symbol]},
-        {"type": "orderbook:us", "codes": [symbol]},
+        {"type": "trade:us", "codes": list(symbols)},
+        {"type": "orderbook:us", "codes": list(symbols)},
     ]
 
 
@@ -286,13 +419,31 @@ def validate_subscription_ack(
     symbol: str,
     request_id: str,
 ) -> None:
+    validate_subscription_ack_for_symbols(
+        value,
+        symbols=(symbol,),
+        request_id=request_id,
+    )
+
+
+def validate_subscription_ack_for_symbols(
+    value: object,
+    *,
+    symbols: tuple[str, ...],
+    request_id: str,
+) -> None:
+    _validate_subscription_inputs(symbols, request_id)
     if not isinstance(value, Mapping):
         raise StreamError("subscription_ack_malformed")
     if value.get("type") != "subscriptions" or value.get("id") != request_id:
         raise StreamError("subscription_ack_mismatch")
     subscribed = value.get("subscribed")
     rejected = value.get("rejected")
-    expected = {f"trade:us:{symbol}", f"orderbook:us:{symbol}"}
+    expected = {
+        f"{kind}:us:{symbol}"
+        for symbol in symbols
+        for kind in ("trade", "orderbook")
+    }
     if (
         not isinstance(subscribed, list)
         or any(not isinstance(item, str) for item in subscribed)
@@ -327,13 +478,27 @@ def run_shadow_stream(
         )
         try:
             connection_factory = connector or _default_connector(config)
-            context = _load_context(config, started_at)
+            contexts = _load_contexts(config, started_at)
         except StreamError as exc:
             _write_private_json_atomic(
                 config.snapshot_path,
                 _startup_snapshot(now(), exc.code),
             )
             raise
+        if len(contexts) > 1:
+            return _run_cohort_shadow_stream_locked(
+                config,
+                contexts=contexts,
+                client=client,
+                connector=connection_factory,
+                now=now,
+                monotonic=monotonic,
+                sleep=sleep,
+                jitter=jitter,
+                event_sink=event_sink,
+                heartbeat_sink=heartbeat_sink,
+            )
+        context = contexts[0]
         state = ShadowStreamState(context=context)
         writer = _SnapshotWriter(
             config.snapshot_path,
@@ -395,7 +560,10 @@ def run_shadow_stream(
                 state.disconnect("stream_internal_error")
 
             if event_sink is not None:
-                _emit_stream_event(event_sink, state, "disconnect", now())
+                try:
+                    _emit_stream_event(event_sink, state, "disconnect", now())
+                except StreamError as exc:
+                    state.disconnect(exc.code)
 
             if healthy_connection:
                 failures = 0
@@ -410,6 +578,8 @@ def run_shadow_stream(
                 force=True,
             )
             if state.connection_error and state.connection_error.startswith("context_"):
+                return 2
+            if state.connection_error and state.connection_error.startswith("paper_"):
                 return 2
             if state.connection_error in {
                 "websocket_dependency_missing",
@@ -437,6 +607,149 @@ def run_shadow_stream(
             sleep(delay)
 
 
+def _run_cohort_shadow_stream_locked(
+    config: StreamConfig,
+    *,
+    contexts: tuple[SelectedContext, ...],
+    client: TossClient,
+    connector: Callable[[TossToken], WebSocketConnection],
+    now: Callable[[], datetime],
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], None],
+    jitter: Callable[[], float],
+    event_sink: Callable[[ShadowStreamState, str, datetime], None] | None,
+    heartbeat_sink: Callable[[Any, datetime], None] | None,
+) -> int:
+    if len(contexts) != 2:
+        raise StreamError("context_symbol_invalid")
+    cohort = CohortStreamState(
+        {context.symbol: ShadowStreamState(context=context) for context in contexts}
+    )
+    writer = _SnapshotWriter(
+        config.snapshot_path,
+        config.snapshot_interval_seconds,
+        heartbeat_sink=heartbeat_sink,
+    )
+    writer.write(
+        cohort,
+        now=now(),
+        monotonic_now=monotonic(),
+        event_max_age_seconds=config.event_max_age_seconds,
+        force=True,
+    )
+    for state in cohort.states.values():
+        _emit_stream_event(event_sink, state, "start", now())
+    failures = 0
+    fatal = {
+        "websocket_dependency_missing",
+        "rest_baseline_unverified",
+        "oauth_rejected",
+        "ws_auth_rejected",
+        "ws_ip_not_allowed",
+        "subscription_ack_mismatch",
+        "subscription_ack_incomplete",
+        "subscription_rejected",
+    }
+    while True:
+        current = now()
+        if _utc(current) >= cohort.active_until:
+            cohort.disconnect("context_inactive")
+            cohort.connection_error = None
+            writer.write(
+                cohort,
+                now=current,
+                monotonic_now=monotonic(),
+                event_max_age_seconds=config.event_max_age_seconds,
+                force=True,
+            )
+            return 0
+        try:
+            healthy_connection = False
+            _serve_cohort_connection(
+                config,
+                cohort=cohort,
+                writer=writer,
+                client=client,
+                connector=connector,
+                now=now,
+                monotonic=monotonic,
+                event_sink=event_sink,
+            )
+        except _StreamComplete as complete:
+            cohort.disconnect(complete.reason)
+            cohort.connection_error = None
+            writer.write(
+                cohort,
+                now=now(),
+                monotonic_now=monotonic(),
+                event_max_age_seconds=config.event_max_age_seconds,
+                force=True,
+            )
+            return 0
+        except StreamError as exc:
+            healthy_connection = cohort.healthy_once
+            cohort.disconnect(exc.code)
+        except Exception:
+            healthy_connection = cohort.healthy_once
+            cohort.disconnect("stream_internal_error")
+
+        fanout_error: StreamError | None = None
+        for state in cohort.states.values():
+            try:
+                _emit_stream_event(event_sink, state, "disconnect", now())
+            except StreamError as exc:
+                fanout_error = fanout_error or exc
+        if fanout_error is not None:
+            cohort.disconnect(fanout_error.code)
+        failures = 0 if healthy_connection else failures
+        failures += 1
+        cohort.reconnect_count += 1
+        cohort.consecutive_failures = failures
+        writer.write(
+            cohort,
+            now=now(),
+            monotonic_now=monotonic(),
+            event_max_age_seconds=config.event_max_age_seconds,
+            force=True,
+        )
+        if cohort.connection_error and cohort.connection_error.startswith("context_"):
+            return 2
+        if cohort.connection_error in fatal or (
+            cohort.connection_error is not None
+            and cohort.connection_error.startswith("paper_")
+        ):
+            return 2
+        if failures >= config.max_reconnect_attempts:
+            cohort.connection_error = "reconnect_limit_reached"
+            writer.write(
+                cohort,
+                now=now(),
+                monotonic_now=monotonic(),
+                event_max_age_seconds=config.event_max_age_seconds,
+                force=True,
+            )
+            return 1
+        delay = min(config.max_backoff_seconds, 2 ** (failures - 1))
+        delay += delay * 0.2 * min(1.0, max(0.0, float(jitter())))
+        sleep(delay)
+
+
+def _stream_token(client: TossClient, at: datetime) -> TossToken:
+    try:
+        token = client.token
+        if token is None or token.is_expiring(now=_utc(at)):
+            token = client.issue_token()
+        return token
+    except StreamError:
+        raise
+    except TossApiError as exc:
+        if exc.status in {400, 401, 403}:
+            raise StreamError("oauth_rejected") from exc
+        raise StreamError("oauth_failed") from exc
+    except Exception as exc:
+        raise StreamError("oauth_failed") from exc
+
+
 def _serve_connection(
     config: StreamConfig,
     *,
@@ -449,16 +762,7 @@ def _serve_connection(
     event_sink: Callable[[ShadowStreamState, str, datetime], None] | None,
 ) -> None:
     state.context = _refresh_context(config, state.context, now())
-    try:
-        token = client.issue_token()
-    except StreamError:
-        raise
-    except TossApiError as exc:
-        if exc.status in {400, 401, 403}:
-            raise StreamError("oauth_rejected") from exc
-        raise StreamError("oauth_failed") from exc
-    except Exception as exc:
-        raise StreamError("oauth_failed") from exc
+    token = _stream_token(client, now())
     try:
         connection = connector(token)
     except StreamError:
@@ -612,6 +916,242 @@ def _serve_connection(
             pass
 
 
+def _serve_cohort_connection(
+    config: StreamConfig,
+    *,
+    cohort: CohortStreamState,
+    writer: _SnapshotWriter,
+    client: TossClient,
+    connector: Callable[[TossToken], WebSocketConnection],
+    now: Callable[[], datetime],
+    monotonic: Callable[[], float],
+    event_sink: Callable[[ShadowStreamState, str, datetime], None] | None,
+) -> None:
+    refreshed = _refresh_contexts(
+        config,
+        tuple(state.context for state in cohort.states.values()),
+        now(),
+    )
+    for context in refreshed:
+        cohort.states[context.symbol].context = context
+    token = _stream_token(client, now())
+    try:
+        connection = connector(token)
+    except StreamError:
+        raise
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status == 401:
+            raise StreamError("ws_auth_rejected") from exc
+        if status == 403:
+            raise StreamError("ws_ip_not_allowed") from exc
+        raise StreamError("ws_connect_failed") from exc
+
+    cohort.begin_connection()
+    session_date = next(iter(cohort.states.values())).context.session_date
+    request_id = f"shadow-{session_date}-{cohort.generation}"
+    declaration = subscription_declaration_for_symbols(cohort.symbols, request_id)
+    topic_routes = {
+        topic: state
+        for state in cohort.states.values()
+        for topic in state.topics
+    }
+    try:
+        connection.send(json.dumps(declaration, separators=(",", ":")))
+        ack = _recv_json(connection, config.ack_timeout_seconds)
+        validate_subscription_ack_for_symbols(
+            ack,
+            symbols=cohort.symbols,
+            request_id=request_id,
+        )
+        cohort.acknowledged = True
+        for state in cohort.states.values():
+            state.acknowledged = True
+            try:
+                state.baseline = _rest_resync(
+                    client,
+                    state.context.symbol,
+                    now=now,
+                    max_age_seconds=config.event_max_age_seconds,
+                    future_tolerance_seconds=config.event_future_tolerance_seconds,
+                )
+            except StreamError as exc:
+                _mark_lane_baseline_error(state, exc.code, now())
+                _emit_stream_event(event_sink, state, "trade", now())
+            else:
+                state.rest_resynced_at = _aware_datetime(
+                    state.baseline["captured_at"], "rest_resync_time_invalid"
+                )
+                _emit_stream_event(event_sink, state, "baseline", now())
+        post_resync_at = now()
+        if _utc(post_resync_at) >= cohort.active_until:
+            if config.once:
+                raise StreamError("context_inactive")
+            raise _StreamComplete("context_inactive")
+        refreshed = _refresh_contexts(
+            config,
+            tuple(state.context for state in cohort.states.values()),
+            post_resync_at,
+        )
+        for context in refreshed:
+            cohort.states[context.symbol].context = context
+        cohort.connection_error = None
+        started = monotonic()
+        writer.write(
+            cohort,
+            now=now(),
+            monotonic_now=started,
+            event_max_age_seconds=config.event_max_age_seconds,
+            force=True,
+        )
+        if config.once and any(
+            state.baseline.get("verified") is not True
+            for state in cohort.states.values()
+        ):
+            raise StreamError("rest_baseline_unverified")
+        if config.once:
+            raise _StreamComplete("once_complete")
+
+        last_ping = started
+        last_resync = started
+        last_context_check = started
+        awaiting_pong_at: float | None = None
+        while True:
+            observed_at = now()
+            if _utc(observed_at) >= cohort.active_until:
+                raise _StreamComplete("context_inactive")
+            loop_started = monotonic()
+            if loop_started - last_context_check >= config.context_check_interval_seconds:
+                refreshed = _refresh_contexts(
+                    config,
+                    tuple(state.context for state in cohort.states.values()),
+                    observed_at,
+                )
+                for context in refreshed:
+                    cohort.states[context.symbol].context = context
+                last_context_check = loop_started
+
+            try:
+                raw = connection.recv(timeout=config.receive_poll_seconds)
+            except TimeoutError:
+                raw = None
+            except Exception as exc:
+                raise StreamError("ws_connection_lost") from exc
+
+            tick = monotonic()
+            if awaiting_pong_at is not None and tick - awaiting_pong_at > config.pong_timeout_seconds:
+                raise StreamError("pong_timeout")
+            if raw is not None:
+                frame = _decode_frame(raw)
+                if isinstance(frame, Mapping) and frame.get("type") == "pong":
+                    awaiting_pong_at = None
+                else:
+                    if (
+                        isinstance(frame, Mapping)
+                        and frame.get("type") in {"error", "subscriptions"}
+                    ):
+                        _handle_frame(
+                            frame,
+                            state=next(iter(cohort.states.values())),
+                            received_at=now(),
+                            max_age_seconds=config.event_max_age_seconds,
+                            future_tolerance_seconds=(
+                                config.event_future_tolerance_seconds
+                            ),
+                        )
+                    topic = frame.get("topic") if isinstance(frame, Mapping) else None
+                    state = topic_routes.get(topic) if isinstance(topic, str) else None
+                    if state is None:
+                        raise StreamError("ws_topic_unexpected")
+                    try:
+                        kind = _handle_frame(
+                            frame,
+                            state=state,
+                            received_at=now(),
+                            max_age_seconds=config.event_max_age_seconds,
+                            future_tolerance_seconds=(
+                                config.event_future_tolerance_seconds
+                            ),
+                        )
+                    except StreamError as exc:
+                        kind = _mark_lane_topic_error(state, topic, exc.code)
+                    if kind in {"trade", "orderbook"}:
+                        _emit_stream_event(event_sink, state, kind, now())
+
+            topic_checked_at = now()
+            if _utc(topic_checked_at) < cohort.active_until:
+                for state in cohort.states.values():
+                    silent = _silent_topic_error(
+                        state,
+                        now=topic_checked_at,
+                        max_age_seconds=config.event_max_age_seconds,
+                    )
+                    if silent is None:
+                        continue
+                    topic = (
+                        state.topics[0]
+                        if silent.startswith("trade_")
+                        else state.topics[1]
+                    )
+                    kind = _mark_lane_topic_error(state, topic, silent)
+                    _emit_stream_event(event_sink, state, kind, topic_checked_at)
+
+            if awaiting_pong_at is None and tick - last_resync >= config.rest_resync_seconds:
+                for state in cohort.states.values():
+                    try:
+                        state.baseline = _rest_resync(
+                            client,
+                            state.context.symbol,
+                            now=now,
+                            max_age_seconds=config.event_max_age_seconds,
+                            future_tolerance_seconds=(
+                                config.event_future_tolerance_seconds
+                            ),
+                        )
+                    except StreamError as exc:
+                        _mark_lane_baseline_error(state, exc.code, now())
+                        _emit_stream_event(event_sink, state, "trade", now())
+                    else:
+                        state.rest_resynced_at = _aware_datetime(
+                            state.baseline["captured_at"],
+                            "rest_resync_time_invalid",
+                        )
+                        state.trade_generation = None
+                        state.orderbook_generation = None
+                        _emit_stream_event(event_sink, state, "baseline", now())
+                last_resync = monotonic()
+                tick = last_resync
+            if awaiting_pong_at is None and tick - last_ping >= config.ping_interval_seconds:
+                try:
+                    connection.send("PING")
+                except Exception as exc:
+                    raise StreamError("ping_send_failed") from exc
+                awaiting_pong_at = tick
+                last_ping = tick
+            cohort.healthy_once = cohort.healthy_once or all(
+                state.healthy_once for state in cohort.states.values()
+            )
+            for state in cohort.states.values():
+                _emit_stream_event(event_sink, state, "tick", now())
+            writer.write(
+                cohort,
+                now=now(),
+                monotonic_now=tick,
+                event_max_age_seconds=config.event_max_age_seconds,
+            )
+    except _StreamComplete:
+        raise
+    except StreamError:
+        raise
+    except Exception as exc:
+        raise StreamError("ws_connection_lost") from exc
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
 def _emit_stream_event(
     sink: Callable[[ShadowStreamState, str, datetime], None] | None,
     state: ShadowStreamState,
@@ -626,6 +1166,40 @@ def _emit_stream_event(
         raise
     except Exception as exc:
         raise StreamError("paper_simulation_persistence_failed") from exc
+
+
+def _mark_lane_topic_error(
+    state: ShadowStreamState, topic: str, code: str
+) -> str:
+    if topic == state.topics[0]:
+        state.trade_error = code
+        state.trade_generation = None
+        return "trade"
+    if topic == state.topics[1]:
+        state.orderbook_error = code
+        state.orderbook_generation = None
+        return "orderbook"
+    raise StreamError("ws_topic_unexpected")
+
+
+def _mark_lane_baseline_error(
+    state: ShadowStreamState, code: str, observed_at: datetime
+) -> None:
+    """Degrade only the symbol whose REST baseline failed."""
+
+    captured_at = _utc(observed_at)
+    state.baseline = {
+        "captured_at": captured_at.isoformat(),
+        "verified": False,
+        "error_codes": [code],
+        "price": None,
+        "orderbook": None,
+    }
+    state.rest_resynced_at = captured_at
+    state.trade_error = code
+    state.orderbook_error = code
+    state.trade_generation = None
+    state.orderbook_generation = None
 
 
 def _handle_frame(
@@ -952,15 +1526,26 @@ def _decode_frame(raw: object) -> object:
 
 
 def _load_context(config: StreamConfig, at: datetime) -> SelectedContext:
+    contexts = _load_contexts(config, at)
+    if len(contexts) != 1:
+        raise StreamError("context_requires_multi_symbol_consumer")
+    return contexts[0]
+
+
+def _load_contexts(config: StreamConfig, at: datetime) -> tuple[SelectedContext, ...]:
     _require_private_regular_file(config.context_path, "context_file_invalid")
     try:
-        return load_context(
+        contexts = load_contexts(
             config.context_path,
             now=_utc(at),
             max_age_seconds=config.context_max_age_seconds,
         )
     except NewsDigestError as exc:
         raise StreamError(exc.code) from exc
+    symbols = tuple(context.symbol for context in contexts)
+    if config.expected_symbols is not None and symbols != config.expected_symbols:
+        raise StreamError("context_symbols_mismatch")
+    return contexts
 
 
 def _refresh_context(
@@ -975,6 +1560,24 @@ def _refresh_context(
         raise StreamError("context_reverted")
     if current.active_until > previous.active_until:
         raise StreamError("context_extended")
+    return current
+
+
+def _refresh_contexts(
+    config: StreamConfig,
+    previous: tuple[SelectedContext, ...],
+    at: datetime,
+) -> tuple[SelectedContext, ...]:
+    current = _load_contexts(config, at)
+    previous_identity = tuple((item.symbol, item.session_date) for item in previous)
+    current_identity = tuple((item.symbol, item.session_date) for item in current)
+    if current_identity != previous_identity:
+        raise StreamError("context_changed")
+    for old, new in zip(previous, current, strict=True):
+        if new.generated_at < old.generated_at:
+            raise StreamError("context_reverted")
+        if new.active_until > old.active_until:
+            raise StreamError("context_extended")
     return current
 
 
@@ -1349,12 +1952,35 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _stream_heartbeat_state(
-    state: ShadowStreamState,
+    state: ShadowStreamState | CohortStreamState,
     *,
     at: datetime,
     rest_resync_seconds: float,
     future_tolerance_seconds: float,
 ) -> tuple[str, bool, bool]:
+    if isinstance(state, CohortStreamState):
+        lane_values = tuple(
+            _stream_heartbeat_state(
+                lane,
+                at=at,
+                rest_resync_seconds=rest_resync_seconds,
+                future_tolerance_seconds=future_tolerance_seconds,
+            )
+            for lane in state.states.values()
+        )
+        acknowledged = bool(state.connected and state.acknowledged) and all(
+            value[1] for value in lane_values
+        )
+        baseline_fresh = acknowledged and all(value[2] for value in lane_values)
+        if acknowledged and baseline_fresh and all(
+            value[0] == "OK" for value in lane_values
+        ):
+            return "OK", True, True
+        if any(value[0] == "DEGRADED" for value in lane_values):
+            return "DEGRADED", acknowledged, baseline_fresh
+        if state.connection_error is None and (state.connected or state.generation == 0):
+            return "STARTING", acknowledged, baseline_fresh
+        return "DEGRADED", acknowledged, baseline_fresh
     current = _utc(at)
     acknowledged = bool(state.connected and state.acknowledged)
     baseline_age: float | None = None
@@ -1368,8 +1994,11 @@ def _stream_heartbeat_state(
         and -future_tolerance_seconds <= baseline_age
         <= rest_resync_seconds + future_tolerance_seconds
     )
-    if acknowledged and baseline_fresh:
+    topic_failed = state.trade_error is not None or state.orderbook_error is not None
+    if acknowledged and baseline_fresh and not topic_failed:
         status = "OK"
+    elif topic_failed:
+        status = "DEGRADED"
     elif state.connection_error is None and (state.connected or state.generation == 0):
         status = "STARTING"
     else:
@@ -1387,6 +2016,8 @@ class _PaperStreamSink:
         plan_db: Path,
         event_max_age_seconds: float,
         context_path: Path | None = None,
+        lane: str | None = None,
+        locked_config: TradingConfig | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if not simulation_config.is_absolute() or not plan_db.is_absolute():
@@ -1395,7 +2026,7 @@ class _PaperStreamSink:
             simulation_config, "paper_simulation_config_invalid"
         )
         _require_private_regular_file(plan_db, "paper_plan_db_invalid")
-        config = load_config(simulation_config)
+        config = locked_config or load_config(simulation_config)
         intraday = config.intraday
         if (
             config.strategy_kind != "intraday"
@@ -1427,11 +2058,27 @@ class _PaperStreamSink:
         ):
             raise StreamError("paper_simulation_runtime_path_mismatch")
         try:
+            if intraday.simulation_lanes == 1 and lane is None:
+                run_id = intraday.simulation_id
+                initial_cash = intraday.simulation_initial_cash
+            elif intraday.simulation_lanes == 2 and lane in {"A", "B"}:
+                run_id = f"{intraday.simulation_id}-{lane.lower()}"
+                initial_cash = intraday.simulation_initial_cash / Decimal("2")
+            else:
+                raise ValueError("paper simulation lane configuration is invalid")
+            paper_path = Path(str(intraday.simulation_db_path or ""))
+            if not paper_path.is_absolute() or paper_path.name != "intraday-paper.sqlite3":
+                raise ValueError("paper database path is invalid")
+            assert_simulation_topology(
+                paper_path,
+                simulation_id=intraday.simulation_id,
+                lanes=intraday.simulation_lanes,
+            )
             paper_config = IntradayPaperConfig(
-                run_id=intraday.simulation_id,
+                run_id=run_id,
                 start_date=intraday.simulation_start_date,
                 end_date=intraday.simulation_end_date,
-                initial_cash_usd=intraday.simulation_initial_cash,
+                initial_cash_usd=initial_cash,
                 slippage_fraction=intraday.simulation_slippage_fraction,
                 quote_max_age_seconds=min(
                     intraday.quote_max_age_seconds,
@@ -1440,9 +2087,6 @@ class _PaperStreamSink:
                 future_tolerance_seconds=min(5, intraday.max_quote_skew_seconds),
                 experiment_hash=intraday_simulation_experiment_hash(config),
             )
-            paper_path = Path(str(intraday.simulation_db_path or ""))
-            if not paper_path.is_absolute() or paper_path.name != "intraday-paper.sqlite3":
-                raise ValueError("paper database path is invalid")
             self.plan_store = SQLiteStateStore(plan_db)
             self.paper_store = IntradayPaperStore(paper_path, paper_config)
         except (TypeError, ValueError, OSError, PaperSimulationError) as exc:
@@ -1457,9 +2101,26 @@ class _PaperStreamSink:
         self.last_flush = monotonic()
         self.last_liveness_touch = float("-inf")
         self.active_plan_id: str | None = None
-        self.stream_instance_id = f"stream-{uuid4().hex}"
+        lane_prefix = f"{lane.lower()}-" if lane is not None else ""
+        self.stream_instance_id = f"stream-{lane_prefix}{uuid4().hex}"
         self.active_instance_started = False
         self.closed = False
+
+    def locked_symbols(self, session_date: str) -> tuple[str, ...]:
+        try:
+            record = self.plan_store.load_intraday_plan(
+                account_key=self.account_key,
+                session_date=session_date,
+            )
+            if record is None:
+                raise StreamError("paper_plan_missing_for_locked_context")
+            symbols = (str(record.get("symbol") or "").strip().upper(),)
+            _validate_symbols(symbols)
+            return symbols
+        except StreamError:
+            raise
+        except Exception as exc:
+            raise StreamError("paper_plan_integrity_failed") from exc
 
     def __call__(
         self,
@@ -1523,6 +2184,7 @@ class _PaperStreamSink:
                             else "stream_started_late"
                         ),
                         at=at,
+                        stream_instance_id=self.stream_instance_id,
                     )
                 self.active_plan_id = plan_id
             tick = self.monotonic()
@@ -1537,7 +2199,9 @@ class _PaperStreamSink:
                 return
             if kind == "tick":
                 if tick - self.last_flush >= 0.25:
-                    self.paper_store.flush_pending()
+                    self.paper_store.flush_pending(
+                        stream_instance_id=self.stream_instance_id
+                    )
                     self.last_flush = tick
                 return
             if kind in {"trade", "orderbook"}:
@@ -1545,7 +2209,9 @@ class _PaperStreamSink:
                     state.trade_error if kind == "trade" else state.orderbook_error
                 )
                 if frame_error:
-                    self.paper_store.flush_pending()
+                    self.paper_store.flush_pending(
+                        stream_instance_id=self.stream_instance_id
+                    )
                     current = self.paper_store.load_plan(plan_id)
                     entry_start = datetime.fromisoformat(
                         str(record["payload"]["entry_start"])
@@ -1561,6 +2227,7 @@ class _PaperStreamSink:
                             plan_id,
                             str(frame_error),
                             at=at,
+                            stream_instance_id=self.stream_instance_id,
                         )
                     return
                 payload = state.as_payload(
@@ -1572,14 +2239,19 @@ class _PaperStreamSink:
                     payload,
                     event_kind=kind,
                     now=at,
+                    stream_instance_id=self.stream_instance_id,
                 )
                 tick = self.monotonic()
                 if tick - self.last_flush >= 0.25:
-                    self.paper_store.flush_pending()
+                    self.paper_store.flush_pending(
+                        stream_instance_id=self.stream_instance_id
+                    )
                     self.last_flush = tick
                 return
             if kind == "disconnect":
-                self.paper_store.flush_pending()
+                self.paper_store.flush_pending(
+                    stream_instance_id=self.stream_instance_id
+                )
                 current = self.paper_store.load_plan(plan_id)
                 entry_start = datetime.fromisoformat(str(record["payload"]["entry_start"]))
                 regular_close = datetime.fromisoformat(
@@ -1593,6 +2265,7 @@ class _PaperStreamSink:
                         plan_id,
                         state.last_disconnect_error or "stream_disconnected",
                         at=at,
+                        stream_instance_id=self.stream_instance_id,
                     )
         except (KeyError, TypeError, ValueError, PaperSimulationError) as exc:
             raise StreamError("paper_simulation_persistence_failed") from exc
@@ -1602,18 +2275,129 @@ class _PaperStreamSink:
             return
         self.closed = True
         try:
-            self.paper_store.flush_pending()
             if self.active_instance_started:
-                self.paper_store.end_stream_instance(
+                ended_at = datetime.now(timezone.utc)
+                if self.paper_store.touch_stream_instance(
                     self.stream_instance_id,
-                    ended_at=datetime.now(timezone.utc),
-                    reason="stream_process_closed",
-                )
+                    observed_at=ended_at,
+                ):
+                    try:
+                        self.paper_store.flush_pending(
+                            stream_instance_id=self.stream_instance_id
+                        )
+                    except PaperStreamInstanceInactive:
+                        self.paper_store.discard_pending()
+                    self.paper_store.end_stream_instance(
+                        self.stream_instance_id,
+                        ended_at=ended_at,
+                        reason="stream_process_closed",
+                    )
+                else:
+                    self.paper_store.discard_pending()
+            else:
+                self.paper_store.discard_pending()
         finally:
+            self.paper_store.discard_pending()
             try:
                 self.paper_store.close()
             finally:
                 self.plan_store.close()
+
+
+class _PaperCohortStreamSink:
+    """Route each selected symbol to exactly one isolated lane ledger."""
+
+    def __init__(
+        self,
+        *,
+        simulation_config: Path,
+        plan_db: Path,
+        event_max_age_seconds: float,
+        context_path: Path | None = None,
+        locked_config: TradingConfig | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        opened: list[_PaperStreamSink] = []
+        try:
+            for lane in ("A", "B"):
+                opened.append(
+                    _PaperStreamSink(
+                        simulation_config=simulation_config,
+                        plan_db=plan_db,
+                        event_max_age_seconds=event_max_age_seconds,
+                        context_path=context_path,
+                        lane=lane,
+                        locked_config=locked_config,
+                        monotonic=monotonic,
+                    )
+                )
+        except Exception:
+            for sink in opened:
+                sink.close()
+            raise
+        self.sinks = tuple(opened)
+        self.routes: dict[tuple[str, str], _PaperStreamSink] = {}
+        self.event_max_age_seconds = min(
+            sink.event_max_age_seconds for sink in self.sinks
+        )
+        self.event_future_tolerance_seconds = min(
+            sink.event_future_tolerance_seconds for sink in self.sinks
+        )
+
+    def locked_symbols(
+        self, *, cohort_id: str, session_date: str
+    ) -> tuple[str, ...]:
+        try:
+            cohort = self.sinks[0].plan_store.load_intraday_cohort(
+                cohort_id=cohort_id,
+                session_date=session_date,
+            )
+            if cohort is None:
+                raise StreamError("paper_cohort_missing_for_locked_context")
+            symbols = tuple(
+                str(lane["plan"]["symbol"]).strip().upper()
+                for label in ("A", "B")
+                for lane in (cohort["lanes"][label],)
+                if lane["status"] == "PLAN"
+            )
+            _validate_symbols(symbols)
+            return symbols
+        except StreamError:
+            raise
+        except Exception as exc:
+            raise StreamError("paper_cohort_integrity_failed") from exc
+
+    def __call__(self, state: ShadowStreamState, kind: str, at: datetime) -> None:
+        key = (state.context.session_date, state.context.symbol)
+        sink = self.routes.get(key)
+        if sink is None:
+            matches = []
+            for candidate in self.sinks:
+                record = candidate.plan_store.load_intraday_plan(
+                    account_key=candidate.account_key,
+                    session_date=state.context.session_date,
+                )
+                if (
+                    record is not None
+                    and str(record.get("symbol") or "").strip().upper()
+                    == state.context.symbol
+                ):
+                    matches.append(candidate)
+            if len(matches) != 1:
+                raise StreamError("paper_cohort_route_invalid")
+            sink = matches[0]
+            self.routes[key] = sink
+        sink(state, kind, at)
+
+    def close(self) -> None:
+        first_error: Exception | None = None
+        for sink in self.sinks:
+            try:
+                sink.close()
+            except Exception as exc:  # close every ledger before surfacing failure
+                first_error = first_error or exc
+        if first_error is not None:
+            raise first_error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1655,7 +2439,7 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_path=args.snapshot.expanduser(),
         once=args.once,
     )
-    paper_sink: _PaperStreamSink | None = None
+    paper_sink: _PaperStreamSink | _PaperCohortStreamSink | None = None
     heartbeat_writer = None
     try:
         if args.heartbeat is not None:
@@ -1671,7 +2455,10 @@ def main(argv: list[str] | None = None) -> int:
             except HeartbeatError as exc:
                 raise StreamError("stream_heartbeat_setup_failed") from exc
 
-        def publish_heartbeat(state: ShadowStreamState, observed_at: datetime) -> None:
+        def publish_heartbeat(
+            state: ShadowStreamState | CohortStreamState,
+            observed_at: datetime,
+        ) -> None:
             if heartbeat_writer is None:
                 return
             status, stream_ack_ok, baseline_fresh = _stream_heartbeat_state(
@@ -1724,14 +2511,31 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("stream manifest contains planner authority")
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 raise StreamError("paper_simulation_lock_mismatch") from exc
-            paper_sink = _PaperStreamSink(
+            sink_type = (
+                _PaperCohortStreamSink
+                if locked_config.intraday.simulation_lanes == 2
+                else _PaperStreamSink
+            )
+            paper_sink = sink_type(
                 simulation_config=args.simulation_config.expanduser(),
                 plan_db=args.plan_db.expanduser(),
                 event_max_age_seconds=config.event_max_age_seconds,
                 context_path=args.context.expanduser(),
+                locked_config=locked_config,
+            )
+            locked_contexts = _load_contexts(config, datetime.now(timezone.utc))
+            session_date = locked_contexts[0].session_date
+            expected_symbols = (
+                paper_sink.locked_symbols(
+                    cohort_id=str(locked_config.intraday.simulation_id),
+                    session_date=session_date,
+                )
+                if isinstance(paper_sink, _PaperCohortStreamSink)
+                else paper_sink.locked_symbols(session_date)
             )
             config = replace(
                 config,
+                expected_symbols=expected_symbols,
                 event_max_age_seconds=paper_sink.event_max_age_seconds,
                 event_future_tolerance_seconds=(
                     paper_sink.event_future_tolerance_seconds

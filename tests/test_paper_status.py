@@ -74,6 +74,93 @@ def _day(**overrides: object) -> dict[str, object]:
     return value
 
 
+def _cohort_month(**overrides: object) -> dict[str, object]:
+    value = _month(
+        current_cash="9990",
+        final_equity="9990",
+        net_pnl="-10",
+        return_fraction="-0.001",
+        trades=2,
+        no_candidate_sessions=1,
+    )
+    value.update(
+        {
+            "simulation_lanes": 2,
+            "lanes": {
+                "A": _month(
+                    status="ACTIVE",
+                    current_cash="5000",
+                    final_equity="5000",
+                    net_pnl="0",
+                    return_fraction="0",
+                    trades=1,
+                    no_candidate_sessions=1,
+                ),
+                "B": _month(
+                    status="ACTIVE",
+                    current_cash="4990",
+                    final_equity="4990",
+                    net_pnl="-10",
+                    return_fraction="-0.002",
+                    trades=1,
+                    no_candidate_sessions=0,
+                ),
+            },
+            "sessions": [
+                {
+                    "session_date": "2026-08-31",
+                    "covered": True,
+                    "distinct_symbols": True,
+                    "lanes": {
+                        "A": _day(
+                            session_date="2026-08-31",
+                            symbol=None,
+                            status="NO_CANDIDATE",
+                            net_pnl="0",
+                            fees="0",
+                            cash_start=None,
+                            cash_end=None,
+                        ),
+                        "B": _day(
+                            session_date="2026-08-31",
+                            symbol="MSFT",
+                            status="CLOSED",
+                            net_pnl="-10",
+                            cash_start="5000",
+                            cash_end="4990",
+                        ),
+                    },
+                },
+                {
+                    "session_date": "2026-09-01",
+                    "covered": True,
+                    "distinct_symbols": True,
+                    "lanes": {
+                        "A": _day(
+                            session_date="2026-09-01",
+                            symbol="AAPL",
+                            status="CLOSED",
+                            net_pnl="0",
+                            cash_start="5000",
+                            cash_end="5000",
+                        ),
+                        "B": _day(
+                            session_date="2026-09-01",
+                            symbol="MSFT",
+                            status="NO_ENTRY",
+                            net_pnl="0",
+                            cash_start="4990",
+                            cash_end="4990",
+                        ),
+                    },
+                },
+            ],
+        }
+    )
+    value.update(overrides)
+    return value
+
+
 def _writer(tmp_path: Path, *, now: datetime = NOW, release: str = RELEASE_SHA, boot: str = BOOT_HASH) -> PaperStatusWriter:
     envelope = (tmp_path / "approval" / "approval-envelope.json").resolve()
     return PaperStatusWriter(
@@ -161,6 +248,45 @@ def test_nullable_final_equity_latest_day_and_blockers_round_trip(tmp_path: Path
     assert payload["return_fraction"] is None
     assert payload["latest_day"] is None
     assert payload["blocker_codes"] == ["paper_position_open"]
+
+
+def test_two_lane_writer_publishes_safe_lane_summaries_and_distinct_sessions(
+    tmp_path: Path,
+) -> None:
+    writer = _writer(tmp_path)
+    writer.write(_cohort_month(), planner_ready=True, blocker_codes=[])
+
+    payload = _read(writer.path)
+
+    assert payload["schema_version"] == 3
+    assert payload["simulation_lanes"] == 2
+    assert payload["distinct_trading_session_count"] == 2
+    assert set(payload["lanes"]) == {"A", "B"}
+    assert payload["lanes"]["A"]["current_cash_usd"] == "5000"
+    assert payload["lanes"]["B"]["realized_pnl_usd"] == "-10"
+    assert payload["lanes"]["A"]["latest_day"]["symbol"] == "AAPL"
+    assert payload["lanes"]["B"]["latest_day"]["status"] == "NO_ENTRY"
+    raw = writer.path.read_text(encoding="ascii")
+    assert "must-not-leak" not in raw and "plan_id" not in raw
+
+
+def test_two_lane_writer_rejects_duplicate_symbols_and_inconsistent_totals(
+    tmp_path: Path,
+) -> None:
+    duplicate = _cohort_month()
+    duplicate["sessions"][0]["lanes"]["B"]["symbol"] = "AAPL"
+    duplicate["sessions"][0]["lanes"]["A"] = _day(
+        session_date="2026-08-31",
+        symbol="AAPL",
+        status="CLOSED",
+    )
+    with pytest.raises(PaperStatusError, match="paper_status_value_invalid"):
+        _writer(tmp_path).write(duplicate, planner_ready=True, blocker_codes=[])
+
+    inconsistent = _cohort_month()
+    inconsistent["lanes"]["B"]["current_cash"] = "4989"
+    with pytest.raises(PaperStatusError, match="paper_status_value_invalid"):
+        _writer(tmp_path).write(inconsistent, planner_ready=True, blocker_codes=[])
 
 
 def test_writer_normalizes_blockers_without_leaking_human_configuration(tmp_path: Path) -> None:

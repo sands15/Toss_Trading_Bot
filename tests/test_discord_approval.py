@@ -890,6 +890,71 @@ def test_status_renderer_labels_no_candidate_latest_day() -> None:
     assert "관망 1" in rendered
 
 
+def test_status_renderer_shows_two_lane_results_and_distinct_sessions() -> None:
+    snapshot = _paper_status_snapshot()
+    snapshot.update(
+        {
+            "schema_version": 3,
+            "simulation_lanes": 2,
+            "distinct_trading_session_count": 1,
+            "latest_day": None,
+            "lanes": {
+                "A": {
+                    "status": "ACTIVE",
+                    "current_cash_usd": "5000",
+                    "realized_pnl_usd": "0",
+                    "return_fraction": "0",
+                    "trade_count": 1,
+                    "no_candidate_count": 0,
+                    "invalid_result_count": 0,
+                    "unresolved_position_count": 0,
+                    "coverage_covered_count": 1,
+                    "coverage_missing_count": 22,
+                    "latest_day": {
+                        "session_date": "2026-08-31",
+                        "symbol": "AAPL",
+                        "status": "CLOSED",
+                        "net_pnl_usd": "0",
+                        "fees_usd": "0",
+                        "cash_start_usd": "5000",
+                        "cash_end_usd": "5000",
+                        "data_gap_count": 0,
+                    },
+                },
+                "B": {
+                    "status": "ACTIVE",
+                    "current_cash_usd": "5025.5",
+                    "realized_pnl_usd": "25.5",
+                    "return_fraction": "0.0051",
+                    "trade_count": 1,
+                    "no_candidate_count": 0,
+                    "invalid_result_count": 0,
+                    "unresolved_position_count": 0,
+                    "coverage_covered_count": 1,
+                    "coverage_missing_count": 22,
+                    "latest_day": {
+                        "session_date": "2026-08-31",
+                        "symbol": "MSFT",
+                        "status": "CLOSED",
+                        "net_pnl_usd": "25.5",
+                        "fees_usd": "1.2",
+                        "cash_start_usd": "5000",
+                        "cash_end_usd": "5025.5",
+                        "data_gap_count": 0,
+                    },
+                },
+            },
+        }
+    )
+
+    rendered = worker.render_paper_status(snapshot)
+
+    assert "2레인 한 달 모의투자 현황" in rendered
+    assert "서로 다른 거래일: 1일" in rendered
+    assert "레인 A:" in rendered and "최근 A:" in rendered
+    assert "레인 B:" in rendered and "최근 B:" in rendered
+
+
 def test_status_command_hides_reader_failures_in_allowed_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

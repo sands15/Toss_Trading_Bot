@@ -327,15 +327,25 @@ after five consecutive misses. The node has no broker credential, order method,
 write-capable SSH key, or public inbound path to the Mac. This is a design
 default, not evidence that an external deadman is currently installed.
 
-Recommended storage defaults: after the close, create SQLite online backups of
-the planner, paper, and news databases at previously absent paths; require
-`quick_check=ok`, mode 0600, and SHA-256 before retention. Keep 35 daily and 6
-weekly copies plus an off-device Time Machine or equivalent copy. Never cloud-sync
-a live `.sqlite3`/WAL pair directly. Warn below either 20% free or 10 GiB, become
-critical below either 10% or 5 GiB, and rotate ordinary logs daily or at 10 MiB
-with 30 compressed generations using native `newsyslog`. The planner can own the
-post-close backup and the watchdog can own disk thresholds; these defaults do
-not justify a sixth custom daemon.
+The checked-in planner maintenance path applies the storage defaults after an
+observed close: SQLite online backups of the planner and paper databases plus the
+news database when it exists; source and destination `quick_check`, mode 0600,
+and SHA-256 validation; 35 daily and 6 non-overlapping older weekly copies; 10 MiB
+rotation of the two explicit planner logs with 30 gzip generations; and disk
+warning below either 20% free or 10 GiB, critical below either 10% or 5 GiB.
+Each log has a private OS lock and a durable cutover/stage/publish journal. The
+detached raw inode follows its gzip generation for the same 30-generation
+retention window instead of being unlinked immediately; a writer that was already
+open at cutover therefore cannot lose late bytes. A later pass reconciles those
+bytes into gzip through an atomic, resumable per-generation temp.
+Each phase is independently resumable and records its own completion, so a backup
+failure cannot hide a disk check. Keep an off-device Time Machine or equivalent
+copy as a separate control and never cloud-sync a live `.sqlite3`/WAL pair
+directly. This code does not add a sixth daemon and is not evidence of Mac
+installation.
+If the maintenance event ledger cannot be read, backup validation, replacement,
+and retention all stop before touching any artifact; a later planning pass remains
+blocked until the ledger and catalog can be verified again.
 
 ### Non-live implementation boundary
 
@@ -366,7 +376,7 @@ templates and wrappers:
 | `com.sands15.toss-market-stream-shadow` | `com.sands15.toss-market-stream-shadow.plist.example` | `run-toss-stream.command` | `WatchPaths=news-context.json`; ACK/baseline heartbeat while a plan is active |
 | `com.sands15.toss-discord-approval` | `com.sands15.toss-discord-approval.plist.example` | `run-discord-approval.command` | continuous recorder + heartbeat |
 | `com.sands15.toss-news-shadow` | `com.sands15.toss-news-shadow.plist.example` | `run-news-shadow.command` | `StartInterval=900`; one-shot result heartbeat |
-| `com.sands15.toss-shadow-watchdog` | `com.sands15.toss-shadow-watchdog.plist.example` | `run-shadow-watchdog.command` | `StartInterval=15`; expectation+context-aware change-only JSON, Discord sender not wired |
+| `com.sands15.toss-shadow-watchdog` | `com.sands15.toss-shadow-watchdog.plist.example` | `run-shadow-watchdog.command` | `StartInterval=15`; expectation+context-aware redacted state changes to one verified Discord channel |
 
 Copy templates to `~/Library/LaunchAgents` without overwriting an existing file,
 replace every placeholder locally, and keep the real installed plist mode 0600.
@@ -427,15 +437,27 @@ network isolation; fake broker hosts use `.invalid` only.
 
 Offline/synthetic Mac verification uses dummy Keychain items and mailboxes,
 fixture heartbeats, a copied SQLite DB, fake REST/WebSocket transports, and no
-order credential. Real market shadow verification may subscribe only to the
-locked symbol's public trade/orderbook topics. It may not receive an account
+order credential. Real market shadow verification may subscribe only to the one
+or two symbols actually present in the locked plan cohort and only their public
+trade/orderbook topics. It may not receive an account
 sequence or personal order topic. Reboot, sleep, disk, restart-loop, mailbox UID,
 and watchdog tests remain in scope because they do not place an order.
 
-The future watchdog Discord sender's only secret is an alert-only bot token in its
-own Keychain item; the current watchdog process performs no network I/O and emits
-change-only redacted JSON to stdout. Planner, stream, approval, and news wrappers
-now atomically publish the exact heartbeat schema. Planner publishes its own DB
+The watchdog now has a standard-library Discord sender but still imports no
+trading package and opens no SQLite. Its zero-argument wrapper validates the exact
+release before reading the existing approval bot credential from Keychain, and
+the process can send only its fixed redacted state-change schema to one configured
+channel. It verifies that remote channel immediately before every POST, disables
+mentions, rejects redirects, and fails closed on rate limit, server error, or
+response drift. Before sending, it atomically stores the new component state and
+the exact pending redacted alert list; after each successful POST it removes only
+that alert. A later failure therefore retries only unacknowledged alerts, while a
+response lost after Discord accepted a POST retains normal at-least-once duplicate
+risk. Legacy state v1 is read and rewritten as v2 without a startup duplicate.
+This avoids a second Discord token but does not create an
+off-device deadman: host power, network, or OS failure can still silence both the
+trading processes and this watchdog. Planner, stream, approval, and news wrappers
+atomically publish the exact heartbeat schema. Planner publishes its own DB
 `quick_check=ok|fail`; an active stream publishes verified ACK/baseline freshness; approval
 and news use `not_applicable`. The watchdog validates those four files and launchd
 state but never opens trading SQLite. The writer currently creates each local
@@ -485,7 +507,7 @@ and both values to be explicit null. A missing key is
 coverage row.
 
 This overlay does not add a sixth LaunchAgent. The intraday planner owns virtual
-cash sizing, the immutable daily plan, and daily/month-end reporting. The existing
+cash sizing, the immutable daily plan or two-lane cohort, and daily/month-end reporting. The existing
 selected-symbol stream appends validated Toss public trade/orderbook events and
 runs the causal fill evaluator against a separate USD ledger. The other three
 allowlisted jobs remain approval recorder, news one-shot, and unprivileged
@@ -508,8 +530,8 @@ because Toss requires its account header for the commission-schedule GET. Its
 simulation transport blocks holdings, buying power, account/order history,
 personal WebSocket, create, replace, cancel, and conditional-order endpoints,
 and rejects an account header on public market GETs. The stream copy leaves both
-account alias and sequence empty and uses only the locked symbol's public
-`trade:us` and `orderbook:us` topics plus its public REST baseline. It still reads
+account alias and sequence empty and uses only the locked plan symbol or symbols'
+public `trade:us` and `orderbook:us` topics plus their public REST baselines. It still reads
 OAuth application credentials from Keychain because Toss authenticates its public
 market interface; those are not account holdings or order authority.
 
@@ -595,16 +617,31 @@ more concrete condition. MAE/MFE, exposure, symbol distribution, uptime/reconnec
 percentiles, and separate slippage drag are not implemented. Discord retries use
 the main outbox and do not repeat a fill or ledger entry.
 
-`/현황` schema version 2 exposes the no-candidate count and uses the latest covered
-day, including `NO_CANDIDATE` or `MARKET_CLOSED`, rather than the latest plan only.
-The final no-candidate decision currently writes a durable runtime event and this
+`/현황` schema version 2 remains the one-lane compatibility format. A two-lane
+cohort writes schema version 3 with A/B cash, realized P&L, return, trades,
+coverage, and latest day plus the aggregate portfolio and distinct trading-session
+count. Both formats expose no-candidate coverage and use the latest covered day,
+including `NO_CANDIDATE` or `MARKET_CLOSED`, rather than the latest plan only. The
+final no-candidate decision currently writes a durable runtime event and this
 owner-private status artifact; it does not enqueue a separate Discord alert.
 
-Local implementation and regression verification are complete. Mac deployment is
-still pending: do not start the dated run until plist/wrapper lint, the exact-five
-process manifest, exact-SHA installation, real public Toss WS journal smoke, and
-redacted daily/final Discord smoke pass on that Mac. Current status is
-`LOCAL_IMPLEMENTATION_VERIFIED / MAC_DEPLOYMENT_PENDING / LIVE_NO_GO`.
+The fixed two-lane implementation is for a new experiment only. It accepts exactly
+one or two lanes; two lanes require automatic selection, split initial virtual cash
+50:50 into independent A/B run ledgers, forbid transfers, and atomically lock both
+lane outcomes plus the cohort manifest. One eligible symbol is a valid
+`PLAN + NO_CANDIDATE` cohort, while any data-quality failure leaves the whole
+cohort retryable instead of creating partial coverage. News context schema v2
+contains only the one or two actual `PLAN` symbols; the sibling stream expectation
+contains only the required time window. One WebSocket declares two topics for one
+planned symbol or four for two; it never subscribes for a `NO_CANDIDATE` lane.
+
+This work is locally implemented and covered by targeted regression tests but has
+not been installed on the Mac. The existing planner remains stopped behind its
+OAuth authentication blocker; no API credential was reissued. Do not start a new
+run until the exact-five manifest, exact-SHA non-live gate, real public Toss WS
+journal smoke, watchdog/news Discord smoke, and post-close maintenance dry run
+pass on that Mac. Current status is
+`LOCAL_CODE_IMPLEMENTED / MAC_NOT_DEPLOYED_AUTH_BLOCKED / LIVE_NO_GO`.
 
 ### Selected-symbol Toss market stream (shadow-only)
 
@@ -613,7 +650,8 @@ the 15-minute news worker. Its LaunchAgent has `WatchPaths` on the planner-owned
 `news-context.json` and deliberately has no `RunAtLoad`, `StartInterval`, or
 `KeepAlive`: it stays idle before a plan and launchd invokes it when the planner
 creates or refreshes context. Once invoked it opens one Toss WebSocket and
-subscribes only to `trade:us` and `orderbook:us` for the locked symbol. It receives no account sequence, does not subscribe to
+subscribes only to `trade:us` and `orderbook:us` for the one or two actual locked
+plan symbols. It receives no account sequence, does not subscribe to
 `personal:order`, and never instantiates or calls an order adapter. With the
 simulation arguments it opens the intraday state DB to load the immutable plan
 and writes only the separate paper journal/ledger DB. Importing a `turtle_bot`
@@ -636,7 +674,8 @@ wheelhouse, and performs no editable install.
 Use the same resolved absolute private context path in both manifests as
 `strategy.intraday.news_context_path`; simulation validation and the experiment
 hash reject a different resolved path. The planner remains the only context
-writer and writes sibling `stream-expectation.json` from the locked plan DB before
+writer and writes schema v1 for a legacy single-symbol run or schema v2 for a
+locked one- or two-symbol cohort. It writes sibling `stream-expectation.json` from the locked plan DB before
 each pre-close context export; the stream is the only `market-stream.json` writer. All files live
 outside the checkout under current-user private directories:
 
@@ -776,15 +815,17 @@ p = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert p["mode"] == "shadow"
 assert p["live_order_submission"] is False
 assert p["ready_for_live_entry"] is False
-symbol = p["symbol"]
-expected = {f"trade:us:{symbol}", f"orderbook:us:{symbol}"}
+symbols = [p["symbol"]] if p["schema_version"] == 1 else p["symbols"]
+assert 1 <= len(symbols) <= 2 and len(symbols) == len(set(symbols))
+expected = {topic for symbol in symbols
+            for topic in (f"trade:us:{symbol}", f"orderbook:us:{symbol}")}
 assert set(p["subscribed_topics"]) in (set(), expected)
 valid_until = datetime.datetime.fromisoformat(p["valid_until"])
 if p["shadow_usable"]:
     assert datetime.datetime.now(datetime.timezone.utc) < valid_until
-print({k: p[k] for k in ("symbol", "connected", "subscription_acknowledged",
-                          "shadow_usable", "valid_until", "rest_resynced_at",
-                          "error_codes")})
+keys = ("symbol", "symbols", "connected", "subscription_acknowledged",
+        "shadow_usable", "valid_until", "rest_resynced_at", "error_codes")
+print({k: p[k] for k in keys if k in p})
 ' "$snapshot"
 ```
 
@@ -803,12 +844,13 @@ designed or enabled.
 ### Selected-symbol news worker
 
 The news path is a separate one-shot process, not a broker WebSocket. The
-intraday service refreshes exactly one redacted symbol context; every 15 minutes
-the worker polls Finnhub Company News, optionally calls a loopback-only LLM, and
-sends at most four pending items per invocation through a news-only
+intraday service refreshes a redacted context containing only the one or two
+actual locked plan symbols; every 15 minutes the worker polls Finnhub Company
+News independently for each symbol, optionally calls a loopback-only LLM, and
+sends at most four pending items per symbol and invocation through a news-only
 credential/webhook. The cap is rate control, not a drop policy: every validated
 new provider item is first persisted, unsent items remain pending, and later
-runs drain oldest-first while the same plan/session and 24-hour age window remain
+runs drain oldest-first while the exact whole context/session and 24-hour age window remain
 valid. “Every new article” means every unique article actually returned by the
 configured provider and passing the locked-symbol checks; it cannot guarantee
 coverage or real-time delivery of all Internet news. That
@@ -823,9 +865,13 @@ chmod 600 config/news-digest.local.json
 ```
 
 Set both configs to the same absolute `news-context.json` outside the checkout,
-and set the news DB to a different outside-checkout path. One context path has
-exactly one trading writer. For a second account, create a second runtime
-directory, config, DB, and worker; do not share the context file.
+and set the news worker `state_db` to the exact sibling named `news.sqlite3` in
+that context directory. An arbitrary second outside-checkout path or filename is
+invalid. The locked simulation planner creates or validates that exact isolated
+ledger before its first plan. One context path has exactly one trading writer;
+two symbols in schema v2 are one atomic context, not two independent files. For
+a second account, create a second runtime directory, context, sibling DB, and
+worker; do not share either file.
 
 The clean news environment contains `FINNHUB_API_KEY`,
 `DISCORD_NEWS_WEBHOOK_URL`, and `DISCORD_ALLOWED_CHANNEL_ID`, plus the optional
@@ -1308,7 +1354,34 @@ launchctl bootout gui/$(id -u)/com.sands15.toss-turtle-bot
 ## SQLite Backup and Rollback Gate
 
 Never use a zip containing only a live `.sqlite3` file as a consistent backup;
-WAL state may be omitted. With the writer entry-disabled and broker state
+WAL state may be omitted. The paper planner now runs the checked-in online backup,
+retention, explicit-log rotation, and disk phases once per session after the
+observed regular close. If calendar or authentication is unavailable, it may run
+maintenance only after 17:00 America/New_York on a weekday inside the simulation
+window; that fallback never creates a plan, holiday, no-candidate row, or coverage.
+Each exact-date backup pair is resumable only after source and destination
+`quick_check`, manifest hash, regular-file, symlink, and owner-mode validation;
+an incomplete or invalid pair is quarantined before replacement. A logical
+paper-ledger recovery first invalidates the old completion generation, then
+forces every database in that date's restore set to a new snapshot. Retention
+runs only after the whole configured restore set completed and computes one
+common date set for every database; a partial backup therefore suppresses
+retention but never suppresses log rotation or disk checks. Authorized retention
+deletions leave private durable tombstones so restoring an older planner snapshot
+cannot misclassify or resurrect an intentionally removed pair. A failed
+retention pass preserves the current restore set.
+
+Log rotation is likewise restart-safe. A persistent per-log advisory lock rejects
+overlapping maintenance runs, and a directory-fsynced journal separates cutover,
+compression, generation staging, publication, and finalization. Incomplete state
+temp files are discarded in favor of the last durable phase. A compressed
+generation has an owner-private hidden raw companion for the same retention
+period; both move and expire together. Treat the raw companion as recovery data,
+not an extra current log, and include it when copying log history off-device.
+The checked-in 30-generation count is an invariant: silently lowering it while
+older gzip/raw pairs exist fails closed instead of orphaning sensitive raw data.
+
+For a supervised manual snapshot with the writer entry-disabled and broker state
 captured read-only, use SQLite's backup API to a previously absent exact path:
 
 ```bash

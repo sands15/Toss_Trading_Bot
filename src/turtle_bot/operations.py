@@ -6,6 +6,7 @@ import os
 import plistlib
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,17 @@ from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 import yaml
+from turtle_runtime.maintenance import (
+    BackupRetentionItem,
+    MaintenanceError,
+    backup_sqlite,
+    check_disk_space,
+    finish_backup_retention_removal,
+    prune_backup_retention,
+    quarantine_invalid_sqlite_backup,
+    rotate_logs,
+    sha256_manifest_path,
+)
 from turtle_approval import (
     ApprovalEnvelope,
     load_envelope as load_approval_envelope,
@@ -35,6 +47,7 @@ from .intraday_paper import (
     IntradayPaperStore,
     PaperSimulationError,
     PaperSimulationBlocked,
+    assert_simulation_topology,
     simulation_account_key,
 )
 from .market_calendar import MarketCalendarConfig, MarketCalendarGate
@@ -1554,6 +1567,7 @@ def run_paper_service(
     cached_transport: TossTransport | None = None
     cached_client_key: tuple[str, str, str | None, str, int] | None = None
     cached_client: TossClient | None = None
+    prepared_news_ledger: Path | None = None
     try:
         while True:  # pragma: no branch - one pass when once=True
             config = load_config(config_path)
@@ -1568,6 +1582,11 @@ def run_paper_service(
             service_mode = _runtime_mode(config)
             if expected_mode == "shadow":
                 _require_shadow_service_config(config)
+                if config.intraday.simulation_enabled:
+                    _require_intraday_ledger_separation(
+                        config,
+                        state_db=state_db,
+                    )
                 if simulation_lock is not None:
                     _require_locked_simulation_config(
                         config,
@@ -1575,6 +1594,12 @@ def run_paper_service(
                         state_db=state_db,
                         expected_account_fingerprint=account_lock,
                     )
+                    news_ledger = Path(
+                        str(config.intraday.news_context_path)
+                    ).with_name("news.sqlite3")
+                    if prepared_news_ledger != news_ledger:
+                        _bootstrap_intraday_news_ledger(news_ledger)
+                        prepared_news_ledger = news_ledger
             elif config.live_enabled and service_mode != "live":
                 raise RuntimeError(
                     "paper/shadow service refuses configs with toss.live_enabled=true"
@@ -1639,6 +1664,8 @@ def run_paper_service(
                 config=config,
                 config_path=config_path,
                 store=store,
+                state_db=state_db,
+                log_dir=log_dir,
                 env=env_values,
                 client=cached_client,
                 live_consent=live_consent,
@@ -1676,6 +1703,39 @@ def _publish_intraday_paper_status(
 
     if config.strategy_kind != "intraday" or not config.intraday.simulation_enabled:
         raise RuntimeError("paper status requires intraday simulation mode")
+    assert_simulation_topology(
+        config.intraday.simulation_db_path,
+        simulation_id=config.intraday.simulation_id,
+        lanes=config.intraday.simulation_lanes,
+    )
+    if getattr(config.intraday, "simulation_lanes", 1) == 2:
+        paper_configs = dict(_intraday_paper_configs(config))
+        paper_stores: dict[str, IntradayPaperStore] = {}
+        try:
+            paper_stores["A"] = IntradayPaperStore(
+                config.intraday.simulation_db_path, paper_configs["A"]
+            )
+            paper_stores["A"].ensure_two_lane_cohort(
+                cohort_id=config.intraday.simulation_id,
+                lane_b_config=paper_configs["B"],
+            )
+            paper_stores["B"] = IntradayPaperStore(
+                config.intraday.simulation_db_path, paper_configs["B"]
+            )
+            sink(
+                _paper_cohort_public_payload(
+                    cohort_id=config.intraday.simulation_id,
+                    paper_stores=paper_stores,
+                    as_of=snapshot.generated_at,
+                ),
+                planner_ready=snapshot.ready,
+                blocker_codes=snapshot.blockers,
+                latest_day=None,
+            )
+        finally:
+            for paper_store in paper_stores.values():
+                paper_store.close()
+        return
     paper_store = IntradayPaperStore(
         config.intraday.simulation_db_path,
         _intraday_paper_config(config),
@@ -1717,6 +1777,52 @@ def _require_shadow_service_config(config) -> None:
         failures.append(f"toss.base_url must be {TOSS_BASE_URL}")
     if failures:
         raise RuntimeError("shadow service hard-lock failed: " + "; ".join(failures))
+
+
+def _bootstrap_intraday_news_ledger(path: Path) -> None:
+    """Create or validate the exact isolated news ledger before the first plan."""
+
+    if not path.is_absolute() or path.name != "news.sqlite3":
+        raise RuntimeError("simulation news ledger path is invalid")
+    try:
+        from turtle_news.worker import NewsDigestError, NewsStore
+
+        with NewsStore(path):
+            pass
+    except (NewsDigestError, OSError) as exc:
+        raise RuntimeError("simulation news ledger preflight failed") from exc
+
+
+def _require_intraday_ledger_separation(config, *, state_db: str | Path) -> None:
+    """Reject aliased planner, paper, and news ledgers before any opens."""
+
+    planner = Path(state_db).expanduser()
+    paper = Path(str(config.intraday.simulation_db_path or "")).expanduser()
+    paths = [planner, paper]
+    context_value = config.intraday.news_context_path
+    if context_value:
+        context = Path(str(context_value)).expanduser()
+        paths.append(context.with_name("news.sqlite3"))
+    if any(not path.is_absolute() for path in paths):
+        raise RuntimeError("simulation ledger paths must be absolute and isolated")
+    canonical = [path.resolve(strict=False) for path in paths]
+    if len(set(canonical)) != len(canonical):
+        raise RuntimeError("simulation ledger paths must be distinct")
+
+    identities: set[tuple[int, int]] = set()
+    for path in paths:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RuntimeError("simulation ledger path validation failed") from exc
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise RuntimeError("simulation ledger path is not an isolated regular file")
+        identity = (int(metadata.st_dev), int(metadata.st_ino))
+        if identity in identities:
+            raise RuntimeError("simulation ledger files must be distinct")
+        identities.add(identity)
 
 
 _EXPECTED_SIMULATION_KEYS = frozenset(
@@ -1885,6 +1991,8 @@ def _paper_service_iteration(
     config,
     config_path: str | Path,
     store: SQLiteStateStore,
+    state_db: str | Path,
+    log_dir: str | Path,
     env: Mapping[str, str],
     transport: TossTransport | None,
     rate_limits: RateLimitQueue | None = None,
@@ -1930,6 +2038,8 @@ def _paper_service_iteration(
             config=config,
             client=client,
             store=store,
+            state_db=state_db,
+            log_dir=log_dir,
             env=env,
             account_alias=account_alias,
             effective_interval_seconds=effective_interval_seconds,
@@ -2125,12 +2235,30 @@ def _intraday_shadow_iteration(
     config,
     client: TossClient,
     store: SQLiteStateStore,
+    state_db: str | Path,
+    log_dir: str | Path,
     env: Mapping[str, str],
     account_alias: str,
     effective_interval_seconds: int,
     now,
 ) -> HealthSnapshot:
     """Create one immutable premarket plan without constructing an order runtime."""
+
+    if (
+        config.intraday.simulation_enabled
+        and config.intraday.simulation_lanes == 2
+    ):
+        return _intraday_two_lane_iteration(
+            config=config,
+            client=client,
+            store=store,
+            state_db=state_db,
+            log_dir=log_dir,
+            env=env,
+            account_alias=account_alias,
+            effective_interval_seconds=effective_interval_seconds,
+            now=now,
+        )
 
     checked_at = _intraday_now(now)
     session_date = checked_at.astimezone(ZoneInfo("America/New_York")).date()
@@ -2152,8 +2280,15 @@ def _intraday_shadow_iteration(
     )
     notifier = DiscordTradeNotifier(env=env)
     paper_store: IntradayPaperStore | None = None
+    schedule: _IntradaySchedule | None = None
+    paper_backlog_reconciled = paper_config is None
     try:
         if paper_config is not None:
+            assert_simulation_topology(
+                config.intraday.simulation_db_path,
+                simulation_id=config.intraday.simulation_id,
+                lanes=1,
+            )
             paper_store = IntradayPaperStore(
                 config.intraday.simulation_db_path,
                 paper_config,
@@ -2161,6 +2296,16 @@ def _intraday_shadow_iteration(
             _reconcile_intraday_paper_backlog(
                 paper_store=paper_store,
                 store=store,
+                at=checked_at,
+            )
+            paper_backlog_reconciled = True
+            _run_intraday_maintenance_catchup(
+                config=config,
+                paper_stores=(paper_store,),
+                store=store,
+                state_db=state_db,
+                log_dir=log_dir,
+                before=session_date,
                 at=checked_at,
             )
             if session_date < paper_config.start_date:
@@ -2720,8 +2865,754 @@ def _intraday_shadow_iteration(
             generated_at=checked_at,
         )
     finally:
+        backup_ready = paper_store is not None and paper_backlog_reconciled
         if paper_store is not None:
-            paper_store.close()
+            if backup_ready:
+                try:
+                    backup_ready = (
+                        paper_store.run_is_quiescent_for_backup()
+                        and paper_store.session_is_quiescent_for_backup(session_date)
+                    )
+                except Exception:
+                    backup_ready = False
+                    try:
+                        store.record_runtime_event(
+                            "WARN",
+                            "intraday_maintenance_failed",
+                            {
+                                "session_date": session_date.isoformat(),
+                                "code": "paper_quiescence_check_failed",
+                            },
+                        )
+                    except Exception:
+                        pass
+            try:
+                paper_store.close()
+            except Exception:
+                backup_ready = False
+                try:
+                    store.record_runtime_event(
+                        "WARN",
+                        "intraday_maintenance_failed",
+                        {
+                            "session_date": session_date.isoformat(),
+                            "code": "paper_store_close_failed",
+                        },
+                    )
+                except Exception:
+                    pass
+        try:
+            maintenance_close = schedule.regular_close if schedule is not None else None
+            maintenance_date = schedule.session_date if schedule is not None else session_date
+            if paper_config is not None and maintenance_close is None:
+                try:
+                    persisted = store.load_intraday_plan(
+                        account_key=account_key,
+                        session_date=session_date,
+                    )
+                    if persisted is not None and isinstance(
+                        persisted.get("payload"), Mapping
+                    ):
+                        candidate_close = datetime.fromisoformat(
+                            str(persisted["payload"].get("regular_close") or "")
+                        )
+                        if (
+                            candidate_close.tzinfo is not None
+                            and candidate_close.utcoffset() is not None
+                        ):
+                            maintenance_close = candidate_close
+                except Exception:
+                    maintenance_close = None
+            maintenance_window = (
+                paper_config is not None
+                and paper_config.start_date <= session_date <= paper_config.end_date
+                and session_date.weekday() < 5
+            )
+            maintenance_due = (
+                maintenance_window
+                and maintenance_close is not None
+                and checked_at
+                >= maintenance_close
+                + timedelta(seconds=paper_config.quote_max_age_seconds)
+            )
+            if paper_config is not None and maintenance_close is None:
+                maintenance_local = checked_at.astimezone(
+                    ZoneInfo("America/New_York")
+                )
+                maintenance_due = (
+                    maintenance_window and maintenance_local.hour >= 17
+                )
+            if maintenance_due:
+                _run_intraday_post_close_maintenance(
+                    config=config,
+                    store=store,
+                    state_db=state_db,
+                    log_dir=log_dir,
+                    session_date=maintenance_date,
+                    at=checked_at,
+                    backup_ready=backup_ready,
+                )
+        except Exception:
+            try:
+                store.record_runtime_event(
+                    "WARN",
+                    "intraday_maintenance_failed",
+                    {
+                        "session_date": session_date.isoformat(),
+                        "code": "maintenance_unhandled_error",
+                    },
+                )
+            except Exception:
+                pass
+
+
+def _intraday_two_lane_iteration(
+    *,
+    config,
+    client: TossClient,
+    store: SQLiteStateStore,
+    state_db: str | Path,
+    log_dir: str | Path,
+    env: Mapping[str, str],
+    account_alias: str,
+    effective_interval_seconds: int,
+    now,
+) -> HealthSnapshot:
+    """Lock and recover one fixed, read-only A/B simulation cohort."""
+
+    checked_at = _intraday_now(now)
+    session_date = checked_at.astimezone(ZoneInfo("America/New_York")).date()
+    cohort_id = str(config.intraday.simulation_id)
+    paper_configs = dict(_intraday_paper_configs(config))
+    account_keys = {
+        lane: simulation_account_key(paper_config)
+        for lane, paper_config in paper_configs.items()
+    }
+    notifier = DiscordTradeNotifier(env=env)
+    paper_stores: dict[str, IntradayPaperStore] = {}
+    schedule: _IntradaySchedule | None = None
+    paper_backlog_reconciled = False
+    try:
+        assert_simulation_topology(
+            config.intraday.simulation_db_path,
+            simulation_id=cohort_id,
+            lanes=2,
+        )
+        paper_stores["A"] = IntradayPaperStore(
+            config.intraday.simulation_db_path,
+            paper_configs["A"],
+        )
+        paper_stores["A"].ensure_two_lane_cohort(
+            cohort_id=cohort_id,
+            lane_b_config=paper_configs["B"],
+        )
+        paper_stores["B"] = IntradayPaperStore(
+            config.intraday.simulation_db_path,
+            paper_configs["B"],
+        )
+        for lane in ("A", "B"):
+            _reconcile_intraday_paper_backlog(
+                paper_store=paper_stores[lane],
+                store=store,
+                at=checked_at,
+            )
+        _reconcile_intraday_paper_cohort_backlog(
+            cohort_id=cohort_id,
+            paper_stores=paper_stores,
+            account_keys=account_keys,
+            store=store,
+            at=checked_at,
+        )
+        paper_backlog_reconciled = True
+        _run_intraday_maintenance_catchup(
+            config=config,
+            paper_stores=(paper_stores["A"], paper_stores["B"]),
+            store=store,
+            state_db=state_db,
+            log_dir=log_dir,
+            before=session_date,
+            at=checked_at,
+        )
+        if session_date < paper_configs["A"].start_date:
+            return HealthSnapshot(
+                mode="shadow",
+                ready=False,
+                blockers=("intraday_simulation_not_started",),
+                generated_at=checked_at,
+            )
+        if session_date > paper_configs["A"].end_date:
+            public = _paper_cohort_public_payload(
+                cohort_id=cohort_id,
+                paper_stores=paper_stores,
+                as_of=checked_at,
+            )
+            status = str(public["status"])
+            store.enqueue_notification_once(
+                notification_key=f"intraday-paper-run:{cohort_id}:{status}",
+                message="intraday_paper_run_report",
+                level="info" if status == "COMPLETE" else "warn",
+                payload=public,
+                created_at=checked_at,
+            )
+            for lane in ("A", "B"):
+                _forward_intraday_paper_alerts(
+                    paper_store=paper_stores[lane],
+                    store=store,
+                    at=checked_at,
+                )
+            _drain_intraday_notifications(store=store, notifier=notifier, at=checked_at)
+            return HealthSnapshot(
+                mode="shadow",
+                ready=False,
+                blockers=(
+                    (
+                        "intraday_simulation_complete"
+                        if status == "COMPLETE"
+                        else "intraday_simulation_incomplete"
+                    ),
+                ),
+                generated_at=checked_at,
+            )
+
+        schedule = _strict_intraday_schedule(
+            client.get_market_calendar("US", date=session_date.isoformat()),
+            expected_date=session_date,
+        )
+        existing = store.load_intraday_cohort(
+            cohort_id=cohort_id,
+            session_date=schedule.session_date,
+        )
+        if existing is not None:
+            _sync_intraday_paper_cohort(
+                config=config,
+                cohort=existing,
+                cohort_id=cohort_id,
+                paper_stores=paper_stores,
+                account_keys=account_keys,
+                store=store,
+                notifier=notifier,
+                account_alias=account_alias,
+                at=checked_at,
+                schedule=schedule,
+            )
+            return HealthSnapshot(
+                mode="shadow", ready=True, blockers=(), generated_at=checked_at
+            )
+
+        earliest = schedule.regular_open - timedelta(
+            minutes=config.intraday.plan_lead_minutes
+        )
+        deadline = schedule.regular_open - timedelta(
+            minutes=config.intraday.minimum_plan_lead_minutes
+        )
+        if checked_at < earliest:
+            return HealthSnapshot(
+                mode="shadow",
+                ready=False,
+                blockers=("intraday_plan_window_not_started",),
+                generated_at=checked_at,
+            )
+        if checked_at > deadline:
+            raise IntradayPlanBlocked(
+                "intraday_plan_deadline_missed",
+                "the immutable premarket plan deadline has passed",
+            )
+        if not schedule.premarket_open <= checked_at < schedule.premarket_close:
+            raise IntradayPlanBlocked(
+                "intraday_not_in_premarket",
+                "plan creation is allowed only during the official US premarket",
+            )
+        lane_enabled: dict[str, bool] = {}
+        for lane in ("A", "B"):
+            try:
+                paper_stores[lane].assert_ready(schedule.session_date)
+            except PaperSimulationBlocked as exc:
+                if str(exc) != "virtual USD cash is exhausted":
+                    raise
+                lane_enabled[lane] = False
+            else:
+                lane_enabled[lane] = True
+        commission_rate = _strict_intraday_commission(
+            client.get_commissions(), session_date=schedule.session_date
+        )
+        configured_cost = config.intraday.estimated_round_trip_cost_fraction
+        if configured_cost < commission_rate * Decimal("2"):
+            raise IntradayPlanBlocked(
+                "intraday_cost_buffer_below_commission",
+                "estimated round-trip cost must cover at least both broker commission legs",
+            )
+
+        selected = _select_automatic_intraday_plans(
+            config=config,
+            client=client,
+            store=store,
+            account_keys=(account_keys["A"], account_keys["B"]),
+            schedule=schedule,
+            configured_cost=configured_cost,
+            now=now,
+            simulation_available_cash=(
+                paper_stores["A"].current_cash(),
+                paper_stores["B"].current_cash(),
+            ),
+            lane_enabled=(lane_enabled["A"], lane_enabled["B"]),
+        )
+        planned_count = sum(selection is not None for selection in selected)
+        required_count = sum(lane_enabled.values())
+        final_attempt = (
+            checked_at + timedelta(seconds=effective_interval_seconds) >= deadline
+        )
+        if planned_count < required_count and not final_attempt:
+            raise IntradayPlanBlocked(
+                "intraday_no_eligible_candidate",
+                "fewer than two candidates passed the automatic selection checks",
+                paper_no_trade=True,
+            )
+
+        prepared: dict[str, dict[str, Any]] = {}
+        for lane, selection in zip(("A", "B"), selected):
+            if selection is None:
+                continue
+            (
+                symbol,
+                market,
+                _initial_plan,
+                selection_snapshot,
+                _initial_cash,
+                _initial_cash_at,
+                _initial_captured_at,
+            ) = selection
+            if not _strict_intraday_warning_clear(client.get_stock_warnings(symbol)):
+                raise IntradayPlanBlocked(
+                    "intraday_stock_warning_changed",
+                    "stock warnings changed before the daily cohort could be locked",
+                )
+            selection_snapshot["warnings_checked_at"] = _intraday_now(now).isoformat()
+            selection_snapshot["cash_source"] = "virtual_usd_ledger"
+            selection_snapshot["account_checked_at"] = _intraday_now(now).isoformat()
+            available_cash = paper_stores[lane].current_cash()
+            cash_captured_at = _intraday_now(now)
+            captured_at = cash_captured_at
+            try:
+                plan = _build_configured_intraday_plan(
+                    config=config,
+                    account_key=account_keys[lane],
+                    schedule=schedule,
+                    symbol=symbol,
+                    market=market,
+                    available_cash=available_cash,
+                    configured_cost=configured_cost,
+                    captured_at=captured_at,
+                )
+            except (TypeError, ValueError) as exc:
+                raise IntradayPlanBlocked("intraday_plan_invalid", str(exc)) from exc
+            payload = intraday_plan_payload(plan)
+            payload.update(
+                {
+                    "mode": "shadow",
+                    "status": "PAPER_PLANNED",
+                    "live_order_submission": False,
+                    "quantity_is_shadow_maximum": True,
+                    "llm_influence": False,
+                    "selection_snapshot": selection_snapshot,
+                    "cash_snapshot": {
+                        "currency": "USD",
+                        "cash_buying_power": _decimal_text(available_cash),
+                        "captured_at": cash_captured_at.isoformat(),
+                        "source": "virtual_usd_ledger",
+                    },
+                    "commission_snapshot": {
+                        "market_country": "US",
+                        "broker_commission_fraction": _decimal_text(commission_rate),
+                        "configured_round_trip_cost_fraction": _decimal_text(
+                            configured_cost
+                        ),
+                        "configured_fixed_round_trip_cost": _decimal_text(
+                            config.intraday.estimated_fixed_round_trip_cost
+                        ),
+                    },
+                    "market_snapshot": {
+                        key: value.isoformat()
+                        if isinstance(value, datetime)
+                        else _decimal_text(value)
+                        if isinstance(value, Decimal)
+                        else value
+                        for key, value in market.items()
+                    },
+                    "guardrails": _intraday_guardrails(config),
+                }
+            )
+            public_payload = _intraday_public_plan_payload(
+                payload, account_alias=account_alias
+            ) | {"cohort_id": cohort_id, "lane": lane}
+            prepared[lane] = {
+                "symbol": symbol,
+                "market": market,
+                "cash_captured_at": cash_captured_at,
+                "captured_at": captured_at,
+                "selection_snapshot": selection_snapshot,
+                "payload": payload,
+                "notification": _intraday_notification(
+                    key=_intraday_plan_notification_key(
+                        account_key=account_keys[lane],
+                        session_date=schedule.session_date,
+                    ),
+                    message="intraday_paper_plan_created",
+                    level="info",
+                    payload=public_payload,
+                ),
+                "public_payload": public_payload,
+            }
+
+        lock_at = _intraday_now(now)
+        if lock_at > deadline:
+            raise IntradayPlanBlocked(
+                "intraday_plan_deadline_missed_before_lock",
+                "the immutable plan deadline passed before the cohort database lock",
+            )
+        for values in prepared.values():
+            _validate_intraday_prelock_freshness(
+                config=config,
+                schedule=schedule,
+                market=values["market"],
+                cash_captured_at=values["cash_captured_at"],
+                selection_snapshot=values["selection_snapshot"],
+                lock_at=lock_at,
+            )
+
+        def lane_args(lane: str) -> dict[str, Any]:
+            values = prepared.get(lane)
+            if values is None:
+                return {f"lane_{lane.lower()}_status": "NO_CANDIDATE"}
+            return {
+                f"lane_{lane.lower()}_status": "PLAN",
+                f"lane_{lane.lower()}_symbol": values["symbol"],
+                f"lane_{lane.lower()}_payload": values["payload"],
+                f"lane_{lane.lower()}_notification": values["notification"],
+            }
+
+        try:
+            cohort, inserted = store.save_intraday_cohort_once(
+                cohort_id=cohort_id,
+                session_date=schedule.session_date,
+                lane_a_account_key=account_keys["A"],
+                lane_b_account_key=account_keys["B"],
+                created_at=lock_at,
+                **lane_args("A"),
+                **lane_args("B"),
+            )
+        except ValueError as exc:
+            cohort = store.load_intraday_cohort(
+                cohort_id=cohort_id,
+                session_date=schedule.session_date,
+            )
+            if cohort is None:
+                raise IntradayPlanBlocked("intraday_plan_lock_failed", str(exc)) from exc
+            inserted = False
+        if inserted:
+            store.record_runtime_event(
+                "INFO",
+                "intraday_paper_cohort_created",
+                {
+                    "cohort_id": cohort_id,
+                    "session_date": schedule.session_date.isoformat(),
+                    "lanes": {
+                        lane: {
+                            "status": cohort["lanes"][lane]["status"],
+                            "symbol": (
+                                cohort["lanes"][lane]["plan"] or {}
+                            ).get("symbol"),
+                        }
+                        for lane in ("A", "B")
+                    },
+                },
+            )
+        _sync_intraday_paper_cohort(
+            config=config,
+            cohort=cohort,
+            cohort_id=cohort_id,
+            paper_stores=paper_stores,
+            account_keys=account_keys,
+            store=store,
+            notifier=notifier,
+            account_alias=account_alias,
+            at=lock_at,
+            schedule=schedule,
+        )
+        return HealthSnapshot(mode="shadow", ready=True, blockers=(), generated_at=lock_at)
+    except IntradayPlanBlocked as exc:
+        if exc.code == "intraday_market_holiday" and session_date.weekday() < 5:
+            try:
+                cohort, inserted = store.save_intraday_cohort_once(
+                    cohort_id=cohort_id,
+                    session_date=session_date,
+                    lane_a_status="MARKET_CLOSED",
+                    lane_a_account_key=account_keys["A"],
+                    lane_b_status="MARKET_CLOSED",
+                    lane_b_account_key=account_keys["B"],
+                    created_at=checked_at,
+                )
+            except ValueError as conflict:
+                cohort = store.load_intraday_cohort(
+                    cohort_id=cohort_id, session_date=session_date
+                )
+                if cohort is None:
+                    raise PaperSimulationError(
+                        "market-closed cohort lock failed"
+                    ) from conflict
+                inserted = False
+            if any(
+                cohort["lanes"][lane]["status"] != "MARKET_CLOSED"
+                for lane in ("A", "B")
+            ):
+                raise PaperSimulationError(
+                    "stored cohort conflicts with the market calendar"
+                )
+            paper_stores["A"].record_cohort_session(
+                cohort_id=cohort_id,
+                session_date=session_date,
+                lane_a_status="MARKET_CLOSED",
+                lane_b_status="MARKET_CLOSED",
+                recorded_at=checked_at,
+            )
+            if inserted:
+                store.record_runtime_event(
+                    "INFO",
+                    "intraday_paper_market_closed",
+                    {"cohort_id": cohort_id, "session_date": session_date.isoformat()},
+                )
+        _record_intraday_blocker_once(
+            store=store,
+            notifier=notifier,
+            code=exc.code,
+            diagnostic=_intraday_exception_diagnostic(exc),
+            session_date=session_date,
+            symbol="AUTO",
+            account_key=account_keys["A"],
+            account_alias=account_alias,
+            at=checked_at,
+        )
+        return HealthSnapshot(
+            mode="shadow",
+            ready=False,
+            blockers=(exc.code,),
+            generated_at=checked_at,
+        )
+    except PaperSimulationBlocked as exc:
+        code = "intraday_simulation_blocked"
+        _record_intraday_blocker_once(
+            store=store,
+            notifier=notifier,
+            code=code,
+            diagnostic={"error_type": exc.__class__.__name__},
+            session_date=session_date,
+            symbol="AUTO",
+            account_key=account_keys["A"],
+            account_alias=account_alias,
+            at=checked_at,
+        )
+        return HealthSnapshot(
+            mode="shadow", ready=False, blockers=(code,), generated_at=checked_at
+        )
+    except PaperSimulationError as exc:
+        code = "intraday_simulation_integrity_failure"
+        _record_intraday_blocker_once(
+            store=store,
+            notifier=notifier,
+            code=code,
+            diagnostic={"error_type": exc.__class__.__name__},
+            session_date=session_date,
+            symbol="AUTO",
+            account_key=account_keys["A"],
+            account_alias=account_alias,
+            at=checked_at,
+        )
+        return HealthSnapshot(
+            mode="shadow", ready=False, blockers=(code,), generated_at=checked_at
+        )
+    except Exception as exc:
+        code = "intraday_read_or_integrity_failure"
+        _record_intraday_blocker_once(
+            store=store,
+            notifier=notifier,
+            code=code,
+            diagnostic=_intraday_exception_diagnostic(exc),
+            session_date=session_date,
+            symbol="AUTO",
+            account_key=account_keys["A"],
+            account_alias=account_alias,
+            at=checked_at,
+        )
+        return HealthSnapshot(
+            mode="shadow", ready=False, blockers=(code,), generated_at=checked_at
+        )
+    finally:
+        backup_ready = (
+            paper_backlog_reconciled and set(paper_stores) == {"A", "B"}
+        )
+        close_failed = False
+        if backup_ready:
+            try:
+                backup_ready = all(
+                    paper_store.run_is_quiescent_for_backup()
+                    and paper_store.session_is_quiescent_for_backup(session_date)
+                    for paper_store in paper_stores.values()
+                )
+            except Exception:
+                backup_ready = False
+                try:
+                    store.record_runtime_event(
+                        "WARN",
+                        "intraday_maintenance_failed",
+                        {
+                            "session_date": session_date.isoformat(),
+                            "code": "paper_quiescence_check_failed",
+                        },
+                    )
+                except Exception:
+                    pass
+        for paper_store in paper_stores.values():
+            try:
+                paper_store.close()
+            except Exception:
+                close_failed = True
+                backup_ready = False
+        if close_failed:
+            try:
+                store.record_runtime_event(
+                    "WARN",
+                    "intraday_maintenance_failed",
+                    {
+                        "session_date": session_date.isoformat(),
+                        "code": "paper_store_close_failed",
+                    },
+                )
+            except Exception:
+                pass
+        try:
+            maintenance_close = schedule.regular_close if schedule is not None else None
+            maintenance_date = schedule.session_date if schedule is not None else session_date
+            if maintenance_close is None:
+                for account_key in account_keys.values():
+                    try:
+                        persisted = store.load_intraday_plan(
+                            account_key=account_key,
+                            session_date=session_date,
+                        )
+                        if persisted is None or not isinstance(
+                            persisted.get("payload"), Mapping
+                        ):
+                            continue
+                        candidate_close = datetime.fromisoformat(
+                            str(persisted["payload"].get("regular_close") or "")
+                        )
+                    except Exception:
+                        continue
+                    if (
+                        candidate_close.tzinfo is None
+                        or candidate_close.utcoffset() is None
+                    ):
+                        continue
+                    maintenance_close = candidate_close
+                    break
+            maintenance_window = (
+                paper_configs["A"].start_date
+                <= session_date
+                <= paper_configs["A"].end_date
+                and session_date.weekday() < 5
+            )
+            maintenance_due = (
+                maintenance_window
+                and maintenance_close is not None
+                and checked_at
+                >= maintenance_close
+                + timedelta(seconds=paper_configs["A"].quote_max_age_seconds)
+            )
+            if maintenance_close is None:
+                maintenance_local = checked_at.astimezone(
+                    ZoneInfo("America/New_York")
+                )
+                maintenance_due = maintenance_window and maintenance_local.hour >= 17
+            if maintenance_due:
+                _run_intraday_post_close_maintenance(
+                    config=config,
+                    store=store,
+                    state_db=state_db,
+                    log_dir=log_dir,
+                    session_date=maintenance_date,
+                    at=checked_at,
+                    backup_ready=backup_ready,
+                )
+        except Exception:
+            try:
+                store.record_runtime_event(
+                    "WARN",
+                    "intraday_maintenance_failed",
+                    {
+                        "session_date": session_date.isoformat(),
+                        "code": "maintenance_unhandled_error",
+                    },
+                )
+            except Exception:
+                pass
+
+
+def _sync_intraday_paper_cohort(
+    *,
+    config,
+    cohort: Mapping[str, Any],
+    cohort_id: str,
+    paper_stores: Mapping[str, IntradayPaperStore],
+    account_keys: Mapping[str, str],
+    store: SQLiteStateStore,
+    notifier: DiscordTradeNotifier,
+    account_alias: str,
+    at: datetime,
+    schedule: _IntradaySchedule,
+) -> None:
+    plans: list[Mapping[str, Any]] = []
+    coverage: dict[str, Any] = {}
+    for lane in ("A", "B"):
+        lane_record = cohort["lanes"][lane]
+        status = str(lane_record["status"])
+        record = lane_record.get("plan")
+        if status == "PLAN":
+            if not isinstance(record, Mapping) or record.get("account_key") != account_keys[lane]:
+                raise PaperSimulationError("cohort plan account does not match its lane")
+            symbol = str(record.get("symbol") or "").strip().upper()
+            _assert_intraday_plan_matches_config(record, config=config, symbol=symbol)
+            _ensure_intraday_plan_notification(
+                store=store, record=record, account_alias=account_alias
+            )
+            _sync_intraday_paper_plan(
+                paper_store=paper_stores[lane],
+                store=store,
+                record=record,
+                at=at,
+                regular_close=schedule.regular_close,
+            )
+            plans.append(record)
+            coverage[f"lane_{lane.lower()}_plan_id"] = record["plan_id"]
+            coverage[f"lane_{lane.lower()}_symbol"] = symbol
+        elif status not in {"NO_CANDIDATE", "MARKET_CLOSED"} or record is not None:
+            raise PaperSimulationError("stored cohort lane status is invalid")
+        coverage[f"lane_{lane.lower()}_status"] = status
+    if len({str(record["symbol"]) for record in plans}) != len(plans):
+        raise PaperSimulationError("cohort paper symbols are not distinct")
+    paper_stores["A"].record_cohort_session(
+        cohort_id=cohort_id,
+        session_date=schedule.session_date,
+        recorded_at=at,
+        **coverage,
+    )
+    if plans:
+        _refresh_intraday_cohort_news_context(
+            config=config,
+            records=plans,
+            store=store,
+            at=at,
+            current_regular_close=schedule.regular_close,
+        )
+    _drain_intraday_notifications(store=store, notifier=notifier, at=at)
 
 
 def _strict_intraday_schedule(
@@ -3040,6 +3931,56 @@ def _select_automatic_intraday_plan(
     now,
     simulation_available_cash: Decimal | None = None,
 ):
+    selected = _select_automatic_intraday_plans(
+        config=config,
+        client=client,
+        store=store,
+        account_keys=(account_key,),
+        schedule=schedule,
+        configured_cost=configured_cost,
+        now=now,
+        simulation_available_cash=(
+            (simulation_available_cash,)
+            if simulation_available_cash is not None
+            else None
+        ),
+    )
+    if selected and selected[0] is not None:
+        return selected[0]
+    raise IntradayPlanBlocked(
+        "intraday_no_eligible_candidate",
+        "no reviewed ranking candidate passed all automatic selection checks",
+        paper_no_trade=True,
+    )
+
+
+def _select_automatic_intraday_plans(
+    *,
+    config,
+    client: TossClient,
+    store: SQLiteStateStore,
+    account_keys: tuple[str, ...],
+    schedule: _IntradaySchedule,
+    configured_cost: Decimal,
+    now,
+    simulation_available_cash: tuple[Decimal, ...] | None = None,
+    lane_enabled: tuple[bool, ...] | None = None,
+):
+    if not 1 <= len(account_keys) <= 2 or len(set(account_keys)) != len(account_keys):
+        raise ValueError("automatic selection requires one or two unique accounts")
+    if simulation_available_cash is not None and len(simulation_available_cash) != len(
+        account_keys
+    ):
+        raise ValueError("each simulation lane requires its own cash ledger")
+    if lane_enabled is None:
+        lane_enabled = tuple(True for _ in account_keys)
+    if len(lane_enabled) != len(account_keys) or any(
+        type(value) is not bool for value in lane_enabled
+    ):
+        raise ValueError("each simulation lane requires an enabled state")
+    selected: list[tuple[Any, ...] | None] = [None] * len(account_keys)
+    if not any(lane_enabled):
+        return tuple(selected)
     ranking_payload = client.get_rankings(
         ranking_type="MARKET_TRADING_AMOUNT",
         market_country="US",
@@ -3058,11 +3999,7 @@ def _select_automatic_intraday_plan(
         max_change_fraction=config.intraday.selection_max_change_fraction,
     )
     if not candidates:
-        raise IntradayPlanBlocked(
-            "intraday_no_eligible_candidate",
-            "no ranking candidate passed the automatic selection thresholds",
-            paper_no_trade=True,
-        )
+        return tuple(selected)
 
     tradeable_markets = _intraday_tradeable_us_stock_symbols(
         client=client,
@@ -3076,11 +4013,7 @@ def _select_automatic_intraday_plan(
         if candidate["symbol"] in tradeable_markets
     ][:_INTRADAY_CANDIDATE_REVIEW_LIMIT]
     if not review:
-        raise IntradayPlanBlocked(
-            "intraday_no_eligible_candidate",
-            "no ranking candidate belongs to the current tradeable US universe",
-            paper_no_trade=True,
-        )
+        return tuple(selected)
     details = _strict_intraday_stock_details(
         client.get_stocks(tuple(item["symbol"] for item in review)),
         requested_symbols={item["symbol"] for item in review},
@@ -3165,26 +4098,33 @@ def _select_automatic_intraday_plan(
         if premarket is None:
             continue
 
-        if simulation_available_cash is None:
-            _assert_intraday_account_clear(client)
-            refreshed_cash_payload = client.get_buying_power("USD")
-            refreshed_cash_at = _intraday_now(now)
-            refreshed_cash = _strict_intraday_cash(refreshed_cash_payload)
-        else:
-            refreshed_cash = simulation_available_cash
-            refreshed_cash_at = _intraday_now(now)
+        open_lanes = [
+            index
+            for index, enabled in enumerate(lane_enabled)
+            if enabled and selected[index] is None
+        ]
+        cash_snapshots: dict[int, tuple[Decimal, datetime]] = {}
+        for lane_index in open_lanes:
+            if simulation_available_cash is None:
+                _assert_intraday_account_clear(client)
+                refreshed_cash_payload = client.get_buying_power("USD")
+                refreshed_cash = _strict_intraday_cash(refreshed_cash_payload)
+            else:
+                refreshed_cash = simulation_available_cash[lane_index]
+            cash_snapshots[lane_index] = (refreshed_cash, _intraday_now(now))
         prices_payload = client.get_prices((symbol,))
         orderbook_payload = client.get_orderbook(symbol)
         captured_at = _intraday_now(now)
-        cash_age = (captured_at - refreshed_cash_at).total_seconds()
-        if cash_age < 0 or cash_age > min(
-            config.intraday.quote_max_age_seconds,
-            config.intraday.orderbook_max_age_seconds,
-        ):
-            raise IntradayPlanBlocked(
-                "intraday_cash_snapshot_stale",
-                "refreshed cash buying power became stale during final market reads",
-            )
+        for _lane_index, (_cash, refreshed_at) in cash_snapshots.items():
+            cash_age = (captured_at - refreshed_at).total_seconds()
+            if cash_age < 0 or cash_age > min(
+                config.intraday.quote_max_age_seconds,
+                config.intraday.orderbook_max_age_seconds,
+            ):
+                raise IntradayPlanBlocked(
+                    "intraday_cash_snapshot_stale",
+                    "refreshed cash buying power became stale during final market reads",
+                )
         try:
             market = _strict_intraday_market_snapshot(
                 prices_payload=prices_payload,
@@ -3236,20 +4176,6 @@ def _select_automatic_intraday_plan(
             > config.intraday.selection_max_change_fraction
         ):
             continue
-        try:
-            plan = _build_configured_intraday_plan(
-                config=config,
-                account_key=account_key,
-                schedule=schedule,
-                symbol=symbol,
-                market=market,
-                available_cash=refreshed_cash,
-                configured_cost=configured_cost,
-                captured_at=captured_at,
-            )
-        except (TypeError, ValueError):
-            continue
-
         selection_snapshot = {
             "mode": "automatic",
             "source": "MARKET_TRADING_AMOUNT:US:realtime",
@@ -3273,23 +4199,45 @@ def _select_automatic_intraday_plan(
             **premarket,
             "news_or_llm_influence": False,
         }
-        return (
-            symbol,
-            market,
-            plan,
-            selection_snapshot,
-            refreshed_cash,
-            refreshed_cash_at,
-            captured_at,
-        )
+        for lane_index in open_lanes:
+            refreshed_cash, refreshed_cash_at = cash_snapshots[lane_index]
+            try:
+                plan = _build_configured_intraday_plan(
+                    config=config,
+                    account_key=account_keys[lane_index],
+                    schedule=schedule,
+                    symbol=symbol,
+                    market=market,
+                    available_cash=refreshed_cash,
+                    configured_cost=configured_cost,
+                    captured_at=captured_at,
+                )
+            except (TypeError, ValueError):
+                continue
+            selected[lane_index] = (
+                symbol,
+                market,
+                plan,
+                dict(selection_snapshot),
+                refreshed_cash,
+                refreshed_cash_at,
+                captured_at,
+            )
+            break
+        if all(
+            not enabled or selected[index] is not None
+            for index, enabled in enumerate(lane_enabled)
+        ):
+            if len(account_keys) == 2 and first_data_error is not None:
+                raise first_data_error
+            return tuple(selected)
 
-    if first_data_error is not None:
+    if any(
+        enabled and selected[index] is None
+        for index, enabled in enumerate(lane_enabled)
+    ) and first_data_error is not None:
         raise first_data_error
-    raise IntradayPlanBlocked(
-        "intraday_no_eligible_candidate",
-        "no reviewed ranking candidate passed all automatic selection checks",
-        paper_no_trade=True,
-    )
+    return tuple(selected)
 
 
 def _intraday_tradeable_us_stock_symbols(
@@ -4087,6 +5035,17 @@ def _intraday_guardrails(config) -> dict[str, Any]:
             "fill_model": "causal-next-book-visible-depth-v1",
             "approval_required": False,
         }
+        if config.intraday.simulation_lanes == 2:
+            guardrails["simulation"].update(
+                {
+                    "lanes": 2,
+                    "lane_initial_cash": _decimal_text(
+                        config.intraday.simulation_initial_cash / Decimal("2")
+                    ),
+                    "cash_split": "50:50",
+                    "inter_lane_transfer_allowed": False,
+                }
+            )
     return guardrails
 
 
@@ -4127,6 +5086,43 @@ def _refresh_intraday_news_context(
     at: datetime,
     current_regular_close: datetime,
 ) -> None:
+    _refresh_intraday_news_contexts(
+        config=config,
+        records=(record,),
+        store=store,
+        at=at,
+        current_regular_close=current_regular_close,
+        schema_version=1,
+    )
+
+
+def _refresh_intraday_cohort_news_context(
+    *,
+    config,
+    records: Sequence[Mapping[str, Any]],
+    store: SQLiteStateStore,
+    at: datetime,
+    current_regular_close: datetime,
+) -> None:
+    _refresh_intraday_news_contexts(
+        config=config,
+        records=tuple(records),
+        store=store,
+        at=at,
+        current_regular_close=current_regular_close,
+        schema_version=2,
+    )
+
+
+def _refresh_intraday_news_contexts(
+    *,
+    config,
+    records: tuple[Mapping[str, Any], ...],
+    store: SQLiteStateStore,
+    at: datetime,
+    current_regular_close: datetime,
+    schema_version: int,
+) -> None:
     """Atomically expose only the locked symbol and its validity window.
 
     Export failures are diagnostic-only: news must never affect trading health
@@ -4134,49 +5130,63 @@ def _refresh_intraday_news_context(
     """
 
     configured_path = config.intraday.news_context_path
-    if not configured_path:
+    if not configured_path or not records:
         return
+
+    record = records[0]
 
     error_code = "news_context_invalid_plan"
     strict_stream_expectation_failure = False
     temporary_path: Path | None = None
     lock_handle = None
     try:
-        payload = record.get("payload")
         session_date = record.get("session_date")
-        symbol = str(record.get("symbol") or "").strip().upper()
-        if not isinstance(payload, Mapping):
-            raise ValueError("locked plan payload is missing")
-        if not isinstance(session_date, date):
+        if not 1 <= len(records) <= 2 or not isinstance(session_date, date):
             raise ValueError("locked plan session date is invalid")
-        if not _INTRADAY_SYMBOL_PATTERN.fullmatch(symbol):
-            raise ValueError("locked plan symbol is invalid")
-        if str(payload.get("symbol") or "").strip().upper() != symbol:
-            raise ValueError("locked plan symbol does not match payload")
-        planned_regular_close = datetime.fromisoformat(
-            str(payload.get("regular_close") or "")
-        )
-        if (
-            planned_regular_close.tzinfo is None
-            or planned_regular_close.utcoffset() is None
-        ):
-            raise ValueError("locked plan regular close must include a timezone")
         if (
             current_regular_close.tzinfo is None
             or current_regular_close.utcoffset() is None
         ):
             raise ValueError("current regular close must include a timezone")
+        symbols: list[str] = []
+        active_until = current_regular_close
+        for lane_record in records:
+            payload = lane_record.get("payload")
+            lane_session = lane_record.get("session_date")
+            symbol = str(lane_record.get("symbol") or "").strip().upper()
+            if not isinstance(payload, Mapping):
+                raise ValueError("locked plan payload is missing")
+            if lane_session != session_date:
+                raise ValueError("cohort plans have different session dates")
+            if not _INTRADAY_SYMBOL_PATTERN.fullmatch(symbol):
+                raise ValueError("locked plan symbol is invalid")
+            if str(payload.get("symbol") or "").strip().upper() != symbol:
+                raise ValueError("locked plan symbol does not match payload")
+            planned_regular_close = datetime.fromisoformat(
+                str(payload.get("regular_close") or "")
+            )
+            if (
+                planned_regular_close.tzinfo is None
+                or planned_regular_close.utcoffset() is None
+            ):
+                raise ValueError("locked plan regular close must include a timezone")
+            symbols.append(symbol)
+            active_until = min(active_until, planned_regular_close)
+        if len(symbols) != len(set(symbols)):
+            raise ValueError("cohort symbols must be unique")
         # The same redacted context drives both news and the selected-symbol
         # stream.  Keep it valid through the official close so the simulator
         # can observe and causally fill the pre-close force-exit window.
-        active_until = min(planned_regular_close, current_regular_close)
 
         if bool(getattr(config.intraday, "simulation_enabled", False)):
             error_code = "stream_expectation_write_failed"
             strict_stream_expectation_failure = True
             _write_intraday_stream_expectation(
                 store=store,
-                record=record,
+                record=min(
+                    records,
+                    key=lambda item: str(item.get("created_at") or ""),
+                ),
                 expected_until=active_until,
             )
             strict_stream_expectation_failure = False
@@ -4189,14 +5199,16 @@ def _refresh_intraday_news_context(
             raise ValueError("news context path must end with news-context.json")
         target.parent.mkdir(parents=True, exist_ok=True)
         context = {
-            "schema_version": 1,
+            "schema_version": schema_version,
             "generated_at": at.astimezone(timezone.utc).isoformat(),
             "market": "US",
             "session_date": session_date.isoformat(),
             "active_until": active_until.isoformat(),
-            "symbol": symbol,
             "reason": "intraday_plan",
         }
+        context["symbol" if schema_version == 1 else "symbols"] = (
+            symbols[0] if schema_version == 1 else symbols
+        )
         error_code = "news_context_lock_busy"
         lock_handle = _try_intraday_news_context_lock(
             target.with_name(f".{target.name}.lock")
@@ -4221,7 +5233,12 @@ def _refresh_intraday_news_context(
                 return
             if existing_session == session_date:
                 error_code = "news_context_writer_collision"
-                if str(existing["symbol"]).strip().upper() != symbol:
+                existing_symbols = (
+                    [str(existing["symbol"]).strip().upper()]
+                    if existing.get("schema_version") == 1
+                    else [str(item).strip().upper() for item in existing["symbols"]]
+                )
+                if existing_symbols != symbols:
                     raise ValueError("another symbol already owns this context path")
                 if existing_generated > at.astimezone(timezone.utc):
                     return
@@ -4306,7 +5323,7 @@ def _read_existing_intraday_news_context(target: Path) -> Mapping[str, Any] | No
         parsed = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    required = {
+    required_v1 = {
         "schema_version",
         "generated_at",
         "market",
@@ -4315,11 +5332,18 @@ def _read_existing_intraday_news_context(target: Path) -> Mapping[str, Any] | No
         "symbol",
         "reason",
     }
-    if not isinstance(parsed, Mapping) or set(parsed) != required:
+    required_v2 = (required_v1 - {"symbol"}) | {"symbols"}
+    if not isinstance(parsed, Mapping):
+        return None
+    version = parsed.get("schema_version")
+    if (
+        version not in {1, 2}
+        or isinstance(version, bool)
+        or set(parsed) != (required_v1 if version == 1 else required_v2)
+    ):
         return None
     if (
-        parsed.get("schema_version") != 1
-        or parsed.get("market") != "US"
+        parsed.get("market") != "US"
         or parsed.get("reason") != "intraday_plan"
     ):
         return None
@@ -4329,12 +5353,17 @@ def _read_existing_intraday_news_context(target: Path) -> Mapping[str, Any] | No
         active_until = datetime.fromisoformat(str(parsed["active_until"]))
     except (TypeError, ValueError):
         return None
+    raw_symbols = [parsed["symbol"]] if version == 1 else parsed["symbols"]
+    if not isinstance(raw_symbols, list) or not 1 <= len(raw_symbols) <= 2:
+        return None
+    symbols = tuple(str(item) for item in raw_symbols)
     if (
         generated_at.tzinfo is None
         or generated_at.utcoffset() is None
         or active_until.tzinfo is None
         or active_until.utcoffset() is None
-        or not _INTRADAY_SYMBOL_PATTERN.fullmatch(str(parsed["symbol"]))
+        or len(symbols) != len(set(symbols))
+        or any(not _INTRADAY_SYMBOL_PATTERN.fullmatch(symbol) for symbol in symbols)
     ):
         return None
     return parsed
@@ -4984,13 +6013,808 @@ def _intraday_account_key(account_seq: Any) -> str:
     return f"toss-{digest[:24]}"
 
 
-def _intraday_paper_config(config) -> IntradayPaperConfig:
+def _run_intraday_post_close_maintenance(
+    *,
+    config,
+    store: SQLiteStateStore,
+    state_db: str | Path,
+    log_dir: str | Path,
+    session_date: date,
+    at: datetime,
+    backup_ready: bool = True,
+) -> bool:
+    """Run recoverable phases; defer DB snapshots until paper writers are quiescent."""
+
+    session_key = session_date.isoformat()
+    event_ledger_unavailable = False
+    try:
+        events = store.list_runtime_events_for_messages(
+            tuple(_INTRADAY_MAINTENANCE_EVENT_MESSAGES)
+        )
+    except Exception:
+        event_ledger_unavailable = True
+        events = ()
+
+    def completed(message: str) -> bool:
+        completion_ids = [
+            int(event.get("id") or 0)
+            for event in events
+            if isinstance(event, Mapping)
+            and event.get("message") == message
+            and isinstance(event.get("payload"), Mapping)
+            and event["payload"].get("session_date") == session_key
+        ]
+        if not completion_ids:
+            return False
+        if message != "intraday_backup_completed":
+            return True
+        invalidation_ids = [
+            int(event.get("id") or 0)
+            for event in events
+            if isinstance(event, Mapping)
+            and event.get("message") == "intraday_backup_invalidated"
+            and isinstance(event.get("payload"), Mapping)
+            and event["payload"].get("session_date") == session_key
+        ]
+        return max(completion_ids) > max(invalidation_ids, default=-1)
+
+    def record(level: str, message: str, payload: dict[str, Any]) -> None:
+        try:
+            store.record_runtime_event(level, message, payload)
+        except Exception:
+            pass
+
+    def failed(exc: Exception, fallback: str) -> None:
+        raw_code = exc.code if isinstance(exc, MaintenanceError) else fallback
+        code = (
+            raw_code
+            if isinstance(raw_code, str)
+            and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", raw_code)
+            else fallback
+        )
+        payload = {
+            "session_date": session_key,
+            "code": code,
+        }
+        record(
+            "WARN",
+            "intraday_maintenance_failed",
+            payload,
+        )
+        try:
+            phase_completion = {
+                "backup_artifact_validation_failed": (
+                    "intraday_backup_validation_completed"
+                ),
+                "backup_failed": "intraday_backup_completed",
+                "backup_retention_failed": (
+                    "intraday_backup_retention_completed"
+                ),
+                "log_rotation_failed": "intraday_log_rotation_completed",
+                "disk_check_failed": "intraday_disk_check_completed",
+            }.get(fallback)
+            phase_generation = max(
+                (
+                    int(event.get("id") or 0)
+                    for event in events
+                    if isinstance(event, Mapping)
+                    and event.get("message") == phase_completion
+                ),
+                default=-1,
+            )
+            store.enqueue_notification_once(
+                notification_key=(
+                    f"intraday-maintenance-failure:{session_key}:{fallback}:"
+                    f"{phase_generation}:{code}"
+                ),
+                message="intraday_maintenance_failure",
+                level="error",
+                payload=payload,
+                created_at=at,
+            )
+        except Exception:
+            pass
+
+    if event_ledger_unavailable:
+        code = "backup_event_ledger_read_failed"
+        record(
+            "WARN",
+            "intraday_backup_validation_failed",
+            {"session_date": session_key, "code": code},
+        )
+        failed(MaintenanceError(code), "backup_artifact_validation_failed")
+        return False
+
+    state_path = Path(state_db).expanduser()
+    logs = Path(log_dir).expanduser()
+    backup_root = state_path.parent / "backups"
+
+    def prepare_backup_root() -> None:
+        if not state_path.is_absolute():
+            raise MaintenanceError("maintenance_path_invalid")
+        try:
+            backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if backup_root.is_symlink() or not backup_root.is_dir():
+                raise OSError
+            if os.name != "nt":
+                os.chmod(backup_root, 0o700)
+        except OSError:
+            raise MaintenanceError("backup_directory_invalid") from None
+
+    def backup_sources() -> list[tuple[str, Path]]:
+        sources = [
+            ("planner", state_path),
+            ("paper", Path(config.intraday.simulation_db_path).expanduser()),
+        ]
+        if config.intraday.news_context_path:
+            news_db = Path(config.intraday.news_context_path).expanduser().with_name(
+                "news.sqlite3"
+            )
+            sources.append(("news", news_db))
+        return sources
+
+    def backup_destinations(alias: str) -> tuple[Path, ...]:
+        pattern = re.compile(
+            rf"{re.escape(alias)}-(\d{{4}}-\d{{2}}-\d{{2}})[.]sqlite3"
+            rf"(?:[.]sha256|[.]retention-delete|[.]retention-removed)?\Z"
+        )
+        destinations: set[Path] = set()
+        for candidate in backup_root.iterdir():
+            match = pattern.fullmatch(candidate.name)
+            if match is not None:
+                destinations.add(
+                    backup_root / f"{alias}-{match.group(1)}.sqlite3"
+                )
+        destinations.update(
+            backup_root / f"{alias}-{artifact_date}.sqlite3"
+            for artifact_date in expected_backup_dates.get(alias, set())
+        )
+        return tuple(sorted(destinations, key=lambda path: path.name))
+
+    completion_claims: dict[tuple[str, str], int] = {}
+    retention_authorizations: dict[tuple[str, str], int] = {}
+    invalidation_claims: dict[tuple[str, str], int] = {}
+    for event in events:
+        if not isinstance(event, Mapping) or not isinstance(
+            event.get("payload"), Mapping
+        ):
+            continue
+        message = event.get("message")
+        payload = event["payload"]
+        artifact_date = payload.get("session_date")
+        event_id = int(event.get("id") or 0)
+        if not isinstance(artifact_date, str) or re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}", artifact_date
+        ) is None:
+            continue
+        if message == "intraday_backup_completed":
+            databases = payload.get("databases")
+            if not isinstance(databases, list):
+                continue
+            for alias in databases:
+                if alias in {"planner", "paper", "news"}:
+                    key = (artifact_date, str(alias))
+                    completion_claims[key] = max(
+                        event_id, completion_claims.get(key, -1)
+                    )
+        elif message == "intraday_backup_retention_authorized":
+            alias = payload.get("database")
+            if alias in {"planner", "paper", "news"}:
+                key = (artifact_date, str(alias))
+                retention_authorizations[key] = max(
+                    event_id, retention_authorizations.get(key, -1)
+                )
+        elif message == "intraday_backup_invalidated":
+            alias = payload.get("database")
+            if alias in {"planner", "paper", "news"}:
+                key = (artifact_date, str(alias))
+                invalidation_claims[key] = max(
+                    event_id, invalidation_claims.get(key, -1)
+                )
+    expected_backup_dates = {alias: set() for alias in ("planner", "paper", "news")}
+    for (artifact_date, alias), completion_id in completion_claims.items():
+        if completion_id > retention_authorizations.get(
+            (artifact_date, alias), -1
+        ):
+            expected_backup_dates[alias].add(artifact_date)
+
+    def invalidate_backup(alias: str, artifact_date: str) -> None:
+        generation_id = completion_claims.get((artifact_date, alias), -1)
+        invalidation_payload = {
+            "session_date": artifact_date,
+            "database": alias,
+            "code": "backup_artifact_invalid",
+            "backup_generation_id": generation_id,
+        }
+        # This write is the durable fence that makes the old completion
+        # unusable. Do not continue catalog repair if it cannot commit.
+        store.record_runtime_event(
+            "WARN",
+            "intraday_backup_invalidated",
+            invalidation_payload,
+        )
+        try:
+            store.enqueue_notification_once(
+                notification_key=(
+                    f"intraday-backup-invalidated:{artifact_date}:{alias}:"
+                    f"{generation_id}"
+                ),
+                message="intraday_backup_invalidated",
+                level="error",
+                payload=invalidation_payload,
+                created_at=at,
+            )
+        except Exception:
+            pass
+
+    backup_artifacts_ready = backup_ready
+    quarantined_count = 0
+    current_backup_invalidated = False
+    pair_failure_recorded = False
+    if backup_ready:
+        try:
+            prepare_backup_root()
+            for alias in ("planner", "paper", "news"):
+                for destination in backup_destinations(alias):
+                    artifact_date = destination.name.removeprefix(
+                        f"{alias}-"
+                    ).removesuffix(".sqlite3")
+                    try:
+                        retention_removed = finish_backup_retention_removal(
+                            destination
+                        )
+                        quarantined = (
+                            False
+                            if retention_removed
+                            else quarantine_invalid_sqlite_backup(destination)
+                        )
+                    except Exception:
+                        pair_failure_recorded = True
+                        if invalidation_claims.get(
+                            (artifact_date, alias), -1
+                        ) <= completion_claims.get((artifact_date, alias), -1):
+                            invalidate_backup(alias, artifact_date)
+                        current_backup_invalidated = (
+                            current_backup_invalidated
+                            or artifact_date == session_key
+                        )
+                        raise
+                    if retention_removed:
+                        continue
+                    if quarantined:
+                        quarantined_count += 1
+                        current_backup_invalidated = (
+                            current_backup_invalidated
+                            or artifact_date == session_key
+                        )
+                        if invalidation_claims.get(
+                            (artifact_date, alias), -1
+                        ) <= completion_claims.get((artifact_date, alias), -1):
+                            invalidate_backup(alias, artifact_date)
+                        continue
+                    destination_present = (
+                        destination.exists() or destination.is_symlink()
+                    )
+                    manifest = sha256_manifest_path(destination)
+                    manifest_present = manifest.exists() or manifest.is_symlink()
+                    expected = artifact_date in expected_backup_dates[alias]
+                    if not destination_present and not manifest_present and expected:
+                        current_backup_invalidated = (
+                            current_backup_invalidated
+                            or artifact_date == session_key
+                        )
+                        if invalidation_claims.get(
+                            (artifact_date, alias), -1
+                        ) <= completion_claims.get((artifact_date, alias), -1):
+                            invalidate_backup(alias, artifact_date)
+                        continue
+                    if not quarantined:
+                        continue
+        except Exception as exc:
+            backup_artifacts_ready = False
+            if not pair_failure_recorded:
+                record(
+                    "WARN",
+                    "intraday_backup_validation_failed",
+                    {
+                        "session_date": session_key,
+                        "code": "backup_artifact_validation_failed",
+                    },
+                )
+            failed(exc, "backup_artifact_validation_failed")
+        else:
+            failed_validation_ids = [
+                int(event.get("id") or 0)
+                for event in events
+                if isinstance(event, Mapping)
+                and event.get("message") == "intraday_backup_validation_failed"
+            ]
+            completed_validation_ids = [
+                int(event.get("id") or 0)
+                for event in events
+                if isinstance(event, Mapping)
+                and event.get("message") == "intraday_backup_validation_completed"
+            ]
+            if max(failed_validation_ids, default=-1) > max(
+                completed_validation_ids, default=-1
+            ):
+                record(
+                    "INFO",
+                    "intraday_backup_validation_completed",
+                    {"session_date": session_key},
+                )
+            if quarantined_count:
+                record(
+                    "WARN",
+                    "intraday_backup_artifacts_quarantined",
+                    {
+                        "session_date": session_key,
+                        "quarantined_artifact_count": quarantined_count,
+                    },
+                )
+
+    backup_generation_complete = completed("intraday_backup_completed")
+    if backup_artifacts_ready and (
+        current_backup_invalidated
+        or not backup_generation_complete
+    ):
+        try:
+            sources = backup_sources()
+            replace_generation = (
+                current_backup_invalidated
+                or not completed("intraday_backup_completed")
+            )
+            for alias, source in sources:
+                backup_sqlite(
+                    source,
+                    backup_root / f"{alias}-{session_key}.sqlite3",
+                    replace_existing=replace_generation,
+                )
+        except Exception as exc:
+            backup_generation_complete = False
+            failed(exc, "backup_failed")
+        else:
+            try:
+                store.record_runtime_event(
+                    "INFO",
+                    "intraday_backup_completed",
+                    {
+                        "session_date": session_key,
+                        "databases": [alias for alias, _ in sources],
+                        "quarantined_artifact_count": quarantined_count,
+                    },
+                )
+            except Exception:
+                backup_generation_complete = False
+                failed(
+                    MaintenanceError("backup_completion_record_failed"),
+                    "backup_failed",
+                )
+            else:
+                backup_generation_complete = True
+
+    if (
+        backup_artifacts_ready
+        and backup_generation_complete
+        and not completed("intraday_backup_retention_completed")
+    ):
+        try:
+            prepare_backup_root()
+            source_aliases = tuple(alias for alias, _source in backup_sources())
+            available_dates: dict[str, set[str]] = {}
+            retired_dates: dict[str, set[str]] = {}
+            for alias in source_aliases:
+                pattern = re.compile(
+                    rf"{re.escape(alias)}-(\d{{4}}-\d{{2}}-\d{{2}})[.]sqlite3\Z"
+                )
+                tombstone_pattern = re.compile(
+                    rf"{re.escape(alias)}-(\d{{4}}-\d{{2}}-\d{{2}})"
+                    rf"[.]sqlite3[.]retention-delete\Z"
+                )
+                available_dates[alias] = {
+                    match.group(1)
+                    for candidate in backup_root.iterdir()
+                    if (match := pattern.fullmatch(candidate.name)) is not None
+                }
+                retired_dates[alias] = {
+                    match.group(1)
+                    for candidate in backup_root.iterdir()
+                    if (
+                        match := tombstone_pattern.fullmatch(candidate.name)
+                    )
+                    is not None
+                }
+            complete_dates = set.intersection(
+                *(
+                    available_dates[alias] | retired_dates[alias]
+                    for alias in source_aliases
+                )
+            )
+            for alias in source_aliases:
+                pattern = re.compile(
+                    rf"{re.escape(alias)}-(\d{{4}}-\d{{2}}-\d{{2}})[.]sqlite3\Z"
+                )
+                items = []
+                for artifact_date in sorted(
+                    complete_dates & available_dates[alias]
+                ):
+                    candidate = backup_root / f"{alias}-{artifact_date}.sqlite3"
+                    backup_date = date.fromisoformat(artifact_date)
+                    items.append(
+                        BackupRetentionItem(
+                            candidate,
+                            datetime.combine(
+                                backup_date,
+                                datetime.min.time(),
+                                tzinfo=timezone.utc,
+                            ),
+                        )
+                    )
+
+                def authorize_remove(
+                    candidate: Path, *, database_alias: str = alias
+                ) -> None:
+                    match = pattern.fullmatch(candidate.name)
+                    if match is None:
+                        raise MaintenanceError("backup_retention_path_invalid")
+                    store.record_runtime_event(
+                        "INFO",
+                        "intraday_backup_retention_authorized",
+                        {
+                            "session_date": match.group(1),
+                            "database": database_alias,
+                            "authorized_by_session": session_key,
+                        },
+                    )
+
+                prune_backup_retention(
+                    items,
+                    authorize_remove=authorize_remove,
+                )
+        except Exception as exc:
+            failed(exc, "backup_retention_failed")
+        else:
+            record(
+                "INFO",
+                "intraday_backup_retention_completed",
+                {"session_date": session_key},
+            )
+
+    if not completed("intraday_log_rotation_completed"):
+        try:
+            result = rotate_logs(
+                (
+                    logs / "intraday-shadow.stdout.log",
+                    logs / "intraday-shadow.stderr.log",
+                )
+            )
+        except Exception as exc:
+            failed(exc, "log_rotation_failed")
+        else:
+            record(
+                "INFO",
+                "intraday_log_rotation_completed",
+                {
+                    "session_date": session_key,
+                    "rotated_count": len(result.rotated),
+                },
+            )
+
+    if not completed("intraday_disk_check_completed"):
+        try:
+            disk = check_disk_space(state_path.parent)
+            payload = {
+                "session_date": session_key,
+                "level": disk.level,
+                "free_bytes": disk.free_bytes,
+                "free_fraction": format(Decimal(str(disk.free_fraction)), "f"),
+            }
+            if disk.level != "ok":
+                store.enqueue_notification_once(
+                    notification_key=(
+                        f"intraday-maintenance-disk:{session_key}:{disk.level}"
+                    ),
+                    message="intraday_maintenance_disk_warning",
+                    level="warn" if disk.level == "warning" else "error",
+                    payload=payload,
+                    created_at=at,
+                )
+        except Exception as exc:
+            failed(exc, "disk_check_failed")
+        else:
+            record(
+                "INFO" if disk.level == "ok" else "WARN",
+                "intraday_disk_check_completed",
+                payload,
+            )
+    return backup_artifacts_ready
+
+
+_INTRADAY_MAINTENANCE_COMPLETIONS = frozenset(
+    {
+        "intraday_backup_completed",
+        "intraday_backup_retention_completed",
+        "intraday_log_rotation_completed",
+        "intraday_disk_check_completed",
+    }
+)
+_INTRADAY_MAINTENANCE_EVENT_MESSAGES = (
+    _INTRADAY_MAINTENANCE_COMPLETIONS
+    | frozenset(
+        {
+            "intraday_backup_invalidated",
+            "intraday_backup_retention_authorized",
+            "intraday_backup_validation_completed",
+            "intraday_backup_validation_failed",
+        }
+    )
+)
+_INTRADAY_PAPER_TERMINAL_STATUSES = frozenset(
+    {"CLOSED", "INVALID", "NO_ENTRY", "UNRESOLVED", "NO_CANDIDATE", "MARKET_CLOSED"}
+)
+_INTRADAY_PAPER_PLAN_TERMINAL_STATUSES = frozenset(
+    {"CLOSED", "INVALID", "NO_ENTRY", "UNRESOLVED"}
+)
+
+
+def _intraday_maintenance_catchup_dates(
+    *,
+    paper_stores: Sequence[IntradayPaperStore],
+    store: SQLiteStateStore,
+    before: date,
+    at: datetime,
+    required_completions: frozenset[str] = _INTRADAY_MAINTENANCE_COMPLETIONS,
+) -> tuple[date, ...]:
+    """Return prior covered sessions whose recoverable maintenance is incomplete."""
+
+    if not paper_stores:
+        return ()
+    completion_ids: dict[str, dict[str, int]] = {}
+    invalidation_ids: dict[str, int] = {}
+    for event in store.list_runtime_events_for_messages(
+        tuple(_INTRADAY_MAINTENANCE_EVENT_MESSAGES)
+    ):
+        if not isinstance(event, Mapping):
+            continue
+        message = event.get("message")
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        session_key = payload.get("session_date")
+        if not isinstance(session_key, str):
+            continue
+        event_id = int(event.get("id") or 0)
+        if message == "intraday_backup_invalidated":
+            invalidation_ids[session_key] = max(
+                event_id, invalidation_ids.get(session_key, -1)
+            )
+        elif message in _INTRADAY_MAINTENANCE_COMPLETIONS:
+            by_message = completion_ids.setdefault(session_key, {})
+            by_message[str(message)] = max(
+                event_id, by_message.get(str(message), -1)
+            )
+    completed: dict[str, set[str]] = {}
+    for session_key, by_message in completion_ids.items():
+        completed[session_key] = {
+            message
+            for message, event_id in by_message.items()
+            if message != "intraday_backup_completed"
+            or event_id > invalidation_ids.get(session_key, -1)
+        }
+
+    covered_sets: list[set[str]] = []
+    for paper_store in paper_stores:
+        summary = paper_store.summary(as_of=at)
+        coverage = summary.get("coverage")
+        covered = coverage.get("covered") if isinstance(coverage, Mapping) else None
+        if not isinstance(covered, list) or any(
+            not isinstance(value, str) for value in covered
+        ):
+            raise PaperSimulationError("paper coverage is invalid")
+        covered_sets.append(set(covered))
+    prior_sets: list[set[str]] = []
+    for values in covered_sets:
+        prior: set[str] = set()
+        for value in values:
+            try:
+                parsed = date.fromisoformat(value)
+            except ValueError as exc:
+                raise PaperSimulationError("paper coverage date is invalid") from exc
+            if parsed < before:
+                prior.add(value)
+        prior_sets.append(prior)
+    if any(values != prior_sets[0] for values in prior_sets[1:]):
+        raise PaperSimulationError("paper cohort coverage is not symmetric")
+    common = set.intersection(*covered_sets)
+    pending: list[date] = []
+    for session_key in sorted(common):
+        try:
+            session = date.fromisoformat(session_key)
+        except ValueError as exc:
+            raise PaperSimulationError("paper coverage date is invalid") from exc
+        if session >= before:
+            continue
+        statuses = tuple(
+            paper_store.daily_summary(session).get("status")
+            for paper_store in paper_stores
+        )
+        if any(
+            status not in _INTRADAY_PAPER_TERMINAL_STATUSES
+            for status in statuses
+        ):
+            raise PaperSimulationBlocked(
+                "a prior paper session is not terminal"
+            )
+        if not all(
+            paper_store.session_is_quiescent_for_backup(session)
+            for paper_store in paper_stores
+        ):
+            raise PaperSimulationBlocked(
+                "a prior paper stream is still live"
+            )
+        if not required_completions.issubset(
+            completed.get(session_key, set())
+        ):
+            pending.append(session)
+    return tuple(pending)
+
+
+def _run_intraday_maintenance_catchup(
+    *,
+    config,
+    paper_stores: Sequence[IntradayPaperStore],
+    store: SQLiteStateStore,
+    state_db: str | Path,
+    log_dir: str | Path,
+    before: date,
+    at: datetime,
+) -> None:
+    """Finish the latest prior session before today's ledger can be mutated."""
+
+    covered_sets: list[set[str]] = []
+    for paper_store in paper_stores:
+        coverage = paper_store.summary(as_of=at).get("coverage")
+        values = coverage.get("covered") if isinstance(coverage, Mapping) else None
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) for value in values
+        ):
+            raise PaperSimulationError("paper coverage is invalid")
+        covered_sets.append(set(values))
+    common_prior = (
+        {
+            date.fromisoformat(value)
+            for value in set.intersection(*covered_sets)
+            if date.fromisoformat(value) < before
+        }
+        if covered_sets
+        else set()
+    )
+    if common_prior and all(
+        paper_store.run_is_quiescent_for_backup()
+        for paper_store in paper_stores
+    ):
+        catalog_verified = _run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=log_dir,
+            session_date=max(common_prior),
+            at=at,
+            backup_ready=True,
+        )
+        if catalog_verified is False:
+            raise IntradayPlanBlocked(
+                "intraday_backup_validation_incomplete",
+                "the retained backup catalog could not be verified",
+            )
+    validation_events = store.list_runtime_events_for_messages(
+        (
+            "intraday_backup_validation_failed",
+            "intraday_backup_validation_completed",
+        )
+    )
+    latest_validation_failure = max(
+        (
+            int(event.get("id") or 0)
+            for event in validation_events
+            if event.get("message") == "intraday_backup_validation_failed"
+        ),
+        default=-1,
+    )
+    latest_validation_success = max(
+        (
+            int(event.get("id") or 0)
+            for event in validation_events
+            if event.get("message") == "intraday_backup_validation_completed"
+        ),
+        default=-1,
+    )
+    if latest_validation_failure > latest_validation_success:
+        raise IntradayPlanBlocked(
+            "intraday_backup_validation_incomplete",
+            "the retained backup catalog could not be verified",
+        )
+    pending = _intraday_maintenance_catchup_dates(
+        paper_stores=paper_stores,
+        store=store,
+        before=before,
+        at=at,
+    )
+    if not pending:
+        return
+    backup_pending = _intraday_maintenance_catchup_dates(
+        paper_stores=paper_stores,
+        store=store,
+        before=before,
+        at=at,
+        required_completions=frozenset({"intraday_backup_completed"}),
+    )
+    latest_covered = max(
+        date.fromisoformat(value)
+        for value in set.intersection(
+            *(
+                set(paper_store.summary(as_of=at)["coverage"]["covered"])
+                for paper_store in paper_stores
+            )
+        )
+    )
+    if backup_pending and (
+        len(backup_pending) != 1 or backup_pending[0] != latest_covered
+    ):
+        raise IntradayPlanBlocked(
+            "intraday_maintenance_catchup_unsafe",
+            "a historical database snapshot can no longer be reconstructed exactly",
+        )
+    if not all(
+        paper_store.run_is_quiescent_for_backup()
+        for paper_store in paper_stores
+    ):
+        raise IntradayPlanBlocked(
+            "intraday_maintenance_catchup_not_quiescent",
+            "paper writers must be terminal before maintenance catch-up",
+        )
+    for session in pending:
+        _run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=log_dir,
+            session_date=session,
+            at=at,
+            backup_ready=True,
+        )
+    remaining_backup = _intraday_maintenance_catchup_dates(
+        paper_stores=paper_stores,
+        store=store,
+        before=before,
+        at=at,
+        required_completions=frozenset({"intraday_backup_completed"}),
+    )
+    if remaining_backup:
+        raise IntradayPlanBlocked(
+            "intraday_maintenance_catchup_incomplete",
+            "the prior session backup did not complete",
+        )
+
+
+def _intraday_paper_config(config, *, lane: str | None = None) -> IntradayPaperConfig:
     intraday = config.intraday
+    lanes = intraday.simulation_lanes
+    if lanes == 1:
+        if lane is not None:
+            raise ValueError("a one-lane simulation cannot select a cohort lane")
+        run_id = intraday.simulation_id
+        initial_cash = intraday.simulation_initial_cash
+    elif lanes == 2 and lane in {"A", "B"}:
+        run_id = f"{intraday.simulation_id}-{lane.lower()}"
+        initial_cash = intraday.simulation_initial_cash / Decimal("2")
+    else:
+        raise ValueError("two-lane simulation requires lane A or B")
     return IntradayPaperConfig(
-        run_id=intraday.simulation_id,
+        run_id=run_id,
         start_date=intraday.simulation_start_date,
         end_date=intraday.simulation_end_date,
-        initial_cash_usd=intraday.simulation_initial_cash,
+        initial_cash_usd=initial_cash,
         slippage_fraction=intraday.simulation_slippage_fraction,
         quote_max_age_seconds=min(
             intraday.quote_max_age_seconds,
@@ -4999,6 +6823,169 @@ def _intraday_paper_config(config) -> IntradayPaperConfig:
         future_tolerance_seconds=min(5, intraday.max_quote_skew_seconds),
         experiment_hash=intraday_simulation_experiment_hash(config),
     )
+
+
+def _intraday_paper_configs(config) -> tuple[tuple[str, IntradayPaperConfig], ...]:
+    if config.intraday.simulation_lanes == 1:
+        return (("A", _intraday_paper_config(config)),)
+    return tuple(
+        (lane, _intraday_paper_config(config, lane=lane)) for lane in ("A", "B")
+    )
+
+
+def _paper_cohort_public_payload(
+    *,
+    cohort_id: str,
+    paper_stores: Mapping[str, IntradayPaperStore],
+    as_of: datetime,
+) -> dict[str, Any]:
+    summaries = {
+        lane: paper_stores[lane].summary(as_of=as_of) for lane in ("A", "B")
+    }
+    coverage = paper_stores["A"].cohort_coverage(cohort_id)
+
+    def total(key: str) -> Decimal:
+        return sum(
+            (Decimal(str(summaries[lane].get(key) or "0")) for lane in ("A", "B")),
+            Decimal("0"),
+        )
+
+    final_equity = (
+        total("final_equity_usd")
+        if all(summaries[lane].get("final_equity_usd") is not None for lane in ("A", "B"))
+        else None
+    )
+    initial_cash = total("initial_cash_usd")
+    wins = sum(int(summaries[lane].get("wins") or 0) for lane in ("A", "B"))
+    losses = sum(int(summaries[lane].get("losses") or 0) for lane in ("A", "B"))
+    trades = sum(int(summaries[lane].get("trade_count") or 0) for lane in ("A", "B"))
+    status = next(
+        (
+            candidate
+            for candidate in ("UNRESOLVED", "OPEN", "WAITING", "INVALID", "BLOCKED")
+            if any(summaries[lane].get("status") == candidate for lane in ("A", "B"))
+        ),
+        (
+            "ACTIVE"
+            if as_of.date() <= paper_stores["A"].config.end_date
+            else "COMPLETE"
+            if coverage["status"] == "COMPLETE"
+            and all(summaries[lane].get("status") == "COMPLETE" for lane in ("A", "B"))
+            else "INCOMPLETE"
+        ),
+    )
+    sessions = []
+    for day in coverage["expected"]:
+        lane_days = {
+            lane: _paper_daily_public_payload(paper_stores[lane].daily_summary(day))
+            for lane in ("A", "B")
+        }
+        symbols = [
+            str(lane_days[lane]["symbol"])
+            for lane in ("A", "B")
+            if lane_days[lane].get("symbol") is not None
+        ]
+        if len(symbols) != len(set(symbols)):
+            raise PaperSimulationError("cohort public summary found duplicate symbols")
+        sessions.append(
+            {
+                "session_date": day,
+                "covered": day in coverage["covered"],
+                "distinct_symbols": True,
+                "lanes": lane_days,
+            }
+        )
+    market_closed = [
+        row["session_date"]
+        for row in sessions
+        if all(row["lanes"][lane]["status"] == "MARKET_CLOSED" for lane in ("A", "B"))
+    ]
+    no_candidate_sessions = sum(
+        any(row["lanes"][lane]["status"] == "NO_CANDIDATE" for lane in ("A", "B"))
+        for row in sessions
+    )
+    distinct_trading_sessions = sum(
+        any(
+            row["lanes"][lane]["status"]
+            not in {"NO_CANDIDATE", "MARKET_CLOSED", "NO_PLAN"}
+            for lane in ("A", "B")
+        )
+        for row in sessions
+    )
+    drawdown = total("max_closed_equity_drawdown_usd")
+    aggregate = {
+        "run_id": cohort_id,
+        "status": status,
+        "start_date": summaries["A"]["start_date"],
+        "end_date_inclusive": summaries["A"]["end_date_inclusive"],
+        "initial_cash_usd": _decimal_text(initial_cash),
+        "current_cash_usd": _decimal_text(total("current_cash_usd")),
+        "final_equity_usd": (
+            _decimal_text(final_equity) if final_equity is not None else None
+        ),
+        "realized_pnl_usd": _decimal_text(total("realized_pnl_usd")),
+        "clean_realized_pnl_usd": _decimal_text(total("clean_realized_pnl_usd")),
+        "return_fraction": (
+            _decimal_text((final_equity - initial_cash) / initial_cash)
+            if final_equity is not None
+            else None
+        ),
+        "clean_return_fraction": _decimal_text(
+            total("clean_realized_pnl_usd") / initial_cash
+        ),
+        "total_fees_usd": _decimal_text(total("total_fees_usd")),
+        "max_closed_equity_drawdown_usd": _decimal_text(drawdown),
+        "max_drawdown_fraction": _decimal_text(drawdown / initial_cash),
+        "trade_count": trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": _decimal_text(Decimal(wins) / trades) if trades else None,
+        "no_entry_count": sum(
+            int(summaries[lane].get("no_entry_count") or 0) for lane in ("A", "B")
+        ),
+        "no_candidate_count": no_candidate_sessions,
+        "invalid_result_count": sum(
+            int(summaries[lane].get("invalid_result_count") or 0) for lane in ("A", "B")
+        ),
+        "unresolved_position_count": sum(
+            int(summaries[lane].get("unresolved_position_count") or 0)
+            for lane in ("A", "B")
+        ),
+        "waiting_plan_count": sum(
+            int(summaries[lane].get("waiting_plan_count") or 0) for lane in ("A", "B")
+        ),
+        "accepted_event_count": sum(
+            int(summaries[lane].get("accepted_event_count") or 0) for lane in ("A", "B")
+        ),
+        "journaled_frame_count": sum(
+            int(summaries[lane].get("journaled_frame_count") or 0)
+            for lane in ("A", "B")
+        ),
+        "data_gap_count": sum(
+            int(summaries[lane].get("data_gap_count") or 0) for lane in ("A", "B")
+        ),
+        "coverage": {
+            "expected_count": coverage["expected_count"],
+            "covered_count": coverage["covered_count"],
+            "missing_count": coverage["missing_count"],
+            "missing": coverage["missing"],
+            "market_closed": market_closed,
+        },
+        "journal_policy": summaries["A"].get("journal_policy"),
+        "fee_model": summaries["A"].get("fee_model"),
+    }
+    return _paper_month_public_payload(aggregate) | {
+        "cohort_id": cohort_id,
+        "simulation_lanes": 2,
+        "distinct_trading_session_count": distinct_trading_sessions,
+        "drawdown_policy": "conservative_sum_of_lane_maxima",
+        "lanes": {
+            lane: _paper_month_public_payload(summaries[lane])
+            for lane in ("A", "B")
+        },
+        "cohort_coverage": coverage,
+        "sessions": sessions,
+    }
 
 
 def _paper_month_public_payload(summary: Mapping[str, Any]) -> dict[str, Any]:
@@ -5096,22 +7083,35 @@ def _forward_intraday_paper_alerts(
     for alert in paper_store.list_alerts(pending_only=True):
         event = str(alert.get("event") or "")
         message = message_by_event.get(event)
-        if message is not None:
-            plan_id = str(alert.get("plan_id") or "")
-            payload = dict(alert.get("payload") or {})
-            if plan_id:
-                try:
-                    session = paper_store.daily_summary(
-                        payload.get("session_date")
-                        or next(
-                            day["session_date"]
-                            for day in paper_store.summary(as_of=at).get("days", [])
-                            if day.get("plan_id") == plan_id
-                        )
+        plan_id = str(alert.get("plan_id") or "")
+        payload = dict(alert.get("payload") or {})
+        session: Mapping[str, Any] = {}
+        if plan_id:
+            try:
+                session = paper_store.daily_summary(
+                    payload.get("session_date")
+                    or next(
+                        day["session_date"]
+                        for day in paper_store.summary(as_of=at).get("days", [])
+                        if day.get("plan_id") == plan_id
                     )
-                except (StopIteration, KeyError, ValueError):
-                    session = {}
-                payload = _paper_daily_public_payload(session) | payload
+                )
+            except (StopIteration, KeyError, ValueError):
+                session = {}
+            payload = _paper_daily_public_payload(session) | payload
+        try:
+            alert_session = date.fromisoformat(str(payload["session_date"]))
+        except (KeyError, TypeError, ValueError):
+            raise PaperSimulationError("paper alert session date is invalid") from None
+        # Both the planner outbox insert and the forwarded marker change a
+        # database in the completed snapshot set. Fence the old generation
+        # before either write so every crash point remains recoverable.
+        _invalidate_completed_paper_backup_if_any(
+            store=store,
+            session_date=alert_session,
+            at=at,
+        )
+        if message is not None:
             if event == "entry_filled":
                 payload["entry_price"] = payload.get("price")
             elif event in {"exit_filled", "invalid_exit"}:
@@ -5153,24 +7153,38 @@ def _sync_intraday_paper_plan(
     _forward_intraday_paper_alerts(paper_store=paper_store, store=store, at=at)
     if (
         at >= regular_close + grace
-        and current.get("status")
-        in {"CLOSED", "INVALID", "NO_ENTRY", "UNRESOLVED"}
+        and current.get("status") in _INTRADAY_PAPER_PLAN_TERMINAL_STATUSES
     ):
-        summary = paper_store.daily_summary(record["session_date"])
-        store.enqueue_notification_once(
-            notification_key=(
-                f"intraday-paper-daily:{paper_store.config.run_id}:"
-                f"{record['session_date'].isoformat()}"
-            ),
-            message="intraday_paper_daily_report",
-            level=(
-                "warn"
-                if summary.get("status") in {"INVALID", "UNRESOLVED", "OPEN"}
-                else "info"
-            ),
-            payload=_paper_daily_public_payload(summary),
-            created_at=at,
+        session_date = record["session_date"]
+        notification_key = (
+            f"intraday-paper-daily:{paper_store.config.run_id}:"
+            f"{session_date.isoformat()}"
         )
+        already_enqueued = any(
+            item.get("notification_key") == notification_key
+            for item in store.list_notification_outbox()
+        )
+        if not already_enqueued:
+            summary = paper_store.daily_summary(session_date)
+            # The daily outbox row is part of the planner snapshot. Retire a
+            # completed generation before inserting it, then rely on the key
+            # for retry-safe deduplication after any crash.
+            _invalidate_completed_paper_backup_if_any(
+                store=store,
+                session_date=session_date,
+                at=at,
+            )
+            store.enqueue_notification_once(
+                notification_key=notification_key,
+                message="intraday_paper_daily_report",
+                level=(
+                    "warn"
+                    if summary.get("status") in {"INVALID", "UNRESOLVED", "OPEN"}
+                    else "info"
+                ),
+                payload=_paper_daily_public_payload(summary),
+                created_at=at,
+            )
 
 
 def _reconcile_intraday_paper_backlog(
@@ -5181,11 +7195,45 @@ def _reconcile_intraday_paper_backlog(
 ) -> None:
     """Resolve due prior plans before sizing or reporting another session."""
 
+    planner_records = sorted(
+        (
+            record
+            for record in store.list_intraday_plans()
+            if record.get("account_key") == paper_store.account_key
+        ),
+        key=lambda record: (record["session_date"], str(record["plan_id"])),
+    )
     records = {
-        str(record["plan_id"]): record for record in store.list_intraday_plans()
+        str(record["plan_id"]): record for record in planner_records
     }
+    existing_days = paper_store.summary(as_of=at).get("days", [])
+    existing_plan_ids = {
+        str(day.get("plan_id") or "")
+        for day in existing_days
+        if day.get("plan_id")
+    }
+    for record in planner_records:
+        plan_id = str(record["plan_id"])
+        if plan_id in existing_plan_ids:
+            continue
+        # Cross-database recovery is write-ahead: retire any completed paper
+        # snapshot before the paper ledger can be changed. A crash at either
+        # side of ensure_plan therefore leaves a durable retry signal.
+        _invalidate_completed_paper_backup_if_any(
+            store=store,
+            session_date=record["session_date"],
+            at=at,
+        )
+        paper_store.ensure_plan(
+            record,
+            registered_at=record.get("created_at"),
+        )
     for day in paper_store.summary(as_of=at).get("days", []):
-        if day.get("status") not in {"WAITING_ENTRY", "OPEN"}:
+        status = str(day.get("status") or "")
+        if (
+            status not in {"WAITING_ENTRY", "OPEN"}
+            and status not in _INTRADAY_PAPER_PLAN_TERMINAL_STATUSES
+        ):
             continue
         plan_id = str(day.get("plan_id") or "")
         record = records.get(plan_id)
@@ -5195,13 +7243,149 @@ def _reconcile_intraday_paper_backlog(
             )
         current = paper_store.load_plan(plan_id)
         regular_close = datetime.fromisoformat(str(current["regular_close"]))
-        _sync_intraday_paper_plan(
-            paper_store=paper_store,
-            store=store,
-            record=record,
-            at=at,
-            regular_close=regular_close,
+        grace = timedelta(seconds=paper_store.config.quote_max_age_seconds)
+        if (
+            status not in _INTRADAY_PAPER_PLAN_TERMINAL_STATUSES
+            or at >= regular_close + grace
+        ):
+            _sync_intraday_paper_plan(
+                paper_store=paper_store,
+                store=store,
+                record=record,
+                at=at,
+                regular_close=regular_close,
+            )
+            current = paper_store.load_plan(plan_id)
+        if (
+            str(current.get("status") or "")
+            in _INTRADAY_PAPER_PLAN_TERMINAL_STATUSES
+            and not paper_store.session_is_quiescent_for_backup(
+                record["session_date"]
+            )
+        ):
+            # Reaping a crash-left stream marker changes the paper ledger.
+            # Fence any completed snapshot before that recovery write too.
+            _invalidate_completed_paper_backup_if_any(
+                store=store,
+                session_date=record["session_date"],
+                at=at,
+            )
+    paper_store.reap_stale_terminal_streams(at=at)
+
+
+def _reconcile_intraday_paper_cohort_backlog(
+    *,
+    cohort_id: str,
+    paper_stores: Mapping[str, IntradayPaperStore],
+    account_keys: Mapping[str, str],
+    store: SQLiteStateStore,
+    at: datetime,
+) -> None:
+    """Replay committed planner cohorts before backup catch-up or a new date."""
+
+    covered = set(
+        paper_stores["A"].cohort_coverage(cohort_id).get("covered", [])
+    )
+    for cohort in store.list_intraday_cohorts(cohort_id=cohort_id):
+        session = cohort.get("session_date")
+        if not isinstance(session, date):
+            raise PaperSimulationError("stored cohort session date is invalid")
+        coverage: dict[str, Any] = {}
+        symbols = []
+        for lane in ("A", "B"):
+            lane_record = cohort["lanes"][lane]
+            status = str(lane_record.get("status") or "")
+            record = lane_record.get("plan")
+            if status == "PLAN":
+                if (
+                    not isinstance(record, Mapping)
+                    or record.get("account_key") != account_keys[lane]
+                ):
+                    raise PaperSimulationError(
+                        "cohort plan account does not match its lane"
+                    )
+                symbol = str(record.get("symbol") or "").strip().upper()
+                symbols.append(symbol)
+                coverage[f"lane_{lane.lower()}_plan_id"] = record["plan_id"]
+                coverage[f"lane_{lane.lower()}_symbol"] = symbol
+            elif status not in {"NO_CANDIDATE", "MARKET_CLOSED"} or record is not None:
+                raise PaperSimulationError("stored cohort lane status is invalid")
+            coverage[f"lane_{lane.lower()}_status"] = status
+        if len(symbols) != len(set(symbols)):
+            raise PaperSimulationError("cohort paper symbols are not distinct")
+        is_uncovered = session.isoformat() not in covered
+        if is_uncovered:
+            # Invalidate first so a crash cannot leave a changed paper cohort
+            # protected by an older completion claim.
+            _invalidate_completed_paper_backup_if_any(
+                store=store,
+                session_date=session,
+                at=at,
+            )
+        paper_stores["A"].record_cohort_session(
+            cohort_id=cohort_id,
+            session_date=session,
+            recorded_at=cohort.get("created_at") or at,
+            **coverage,
         )
+        if is_uncovered:
+            covered.add(session.isoformat())
+
+
+def _invalidate_completed_paper_backup_if_any(
+    *,
+    store: SQLiteStateStore,
+    session_date: date,
+    at: datetime,
+) -> None:
+    """Invalidate only a previously completed paper snapshot before recovery writes."""
+
+    session_key = session_date.isoformat()
+    events = store.list_runtime_events_for_messages(
+        ("intraday_backup_completed", "intraday_backup_invalidated")
+    )
+    completion_id = max(
+        (
+            int(event.get("id") or 0)
+            for event in events
+            if event.get("message") == "intraday_backup_completed"
+            and isinstance(event.get("payload"), Mapping)
+            and event["payload"].get("session_date") == session_key
+            and isinstance(event["payload"].get("databases"), list)
+            and "paper" in event["payload"]["databases"]
+        ),
+        default=-1,
+    )
+    invalidation_id = max(
+        (
+            int(event.get("id") or 0)
+            for event in events
+            if event.get("message") == "intraday_backup_invalidated"
+            and isinstance(event.get("payload"), Mapping)
+            and event["payload"].get("session_date") == session_key
+            and event["payload"].get("database") == "paper"
+        ),
+        default=-1,
+    )
+    if completion_id < 0:
+        return
+    payload = {
+        "session_date": session_key,
+        "database": "paper",
+        "code": "paper_ledger_reconciled",
+        "backup_generation_id": completion_id,
+    }
+    if completion_id > invalidation_id:
+        store.record_runtime_event("WARN", "intraday_backup_invalidated", payload)
+    store.enqueue_notification_once(
+        notification_key=(
+            f"intraday-backup-invalidated:{session_key}:paper:{completion_id}"
+        ),
+        message="intraday_backup_invalidated",
+        level="error",
+        payload=payload,
+        created_at=at,
+    )
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -5453,6 +7637,15 @@ def _intraday_config_blockers(config) -> tuple[str, ...]:
     ):
         blockers.append("intraday planning window must span at least two service intervals")
     if intraday.simulation_enabled:
+        lanes = intraday.simulation_lanes
+        if isinstance(lanes, bool) or lanes not in {1, 2}:
+            blockers.append(
+                "strategy.intraday.simulation_lanes must be 1 or 2"
+            )
+        if lanes == 2 and selection_mode != "automatic":
+            blockers.append(
+                "two-lane simulation requires automatic selection"
+            )
         simulation_missing = [
             name
             for name in (

@@ -5,6 +5,7 @@ import dataclasses
 import datetime as dt
 import importlib.util
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -87,19 +88,24 @@ def _write_stream_context(
     *,
     generated_at: dt.datetime = STREAM_NOW - dt.timedelta(seconds=2),
     active_until: dt.datetime = STREAM_NOW + dt.timedelta(hours=1),
+    symbols: tuple[str, ...] | None = None,
 ) -> None:
+    identity = (
+        {"schema_version": 1, "symbol": "AAPL"}
+        if symbols is None
+        else {"schema_version": 2, "symbols": list(symbols)}
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                **identity,
                 "generated_at": generated_at.isoformat(),
                 "market": "US",
                 "session_date": STREAM_NOW.astimezone(
                     watchdog.ZoneInfo("America/New_York")
                 ).date().isoformat(),
                 "active_until": active_until.isoformat(),
-                "symbol": "AAPL",
                 "reason": "intraday_plan",
             },
             separators=(",", ":"),
@@ -140,7 +146,7 @@ def _error_code(call) -> str:
     return caught.value.code
 
 
-def test_module_is_standalone_stdlib_and_has_no_trading_or_network_imports() -> None:
+def test_module_is_standalone_stdlib_and_has_no_trading_imports() -> None:
     source = MODULE_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     imported = {
@@ -161,6 +167,221 @@ def test_module_is_standalone_stdlib_and_has_no_trading_or_network_imports() -> 
     assert "urllib" not in imported
     assert "requests" not in imported
     assert "discord" not in imported
+
+
+class _DiscordResponse:
+    def __init__(self, status: int, payload: object = None) -> None:
+        self.status = status
+        self.payload = (
+            payload
+            if type(payload) is bytes
+            else json.dumps(payload if payload is not None else {}).encode("utf-8")
+        )
+
+    def read(self, _limit: int) -> bytes:
+        return self.payload
+
+
+class _DiscordConnection:
+    def __init__(self, responses: list[_DiscordResponse]) -> None:
+        self.responses = list(responses)
+        self.requests: list[tuple[str, str, bytes | None, dict[str, str]]] = []
+        self.closed = False
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.requests.append((method, path, body, dict(headers or {})))
+
+    def getresponse(self) -> _DiscordResponse:
+        return self.responses.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _discord_factory(connection: _DiscordConnection, calls: list[tuple]) -> object:
+    def factory(host: str, **kwargs: object) -> _DiscordConnection:
+        calls.append((host, kwargs))
+        return connection
+
+    return factory
+
+
+def test_discord_sender_verifies_exact_channel_then_posts_redacted_alert(
+    capsys,
+) -> None:
+    channel_id = "123456789012345678"
+    token = "A" * 40
+    connection = _DiscordConnection(
+        [
+            _DiscordResponse(200, {"id": channel_id, "name": "private"}),
+            _DiscordResponse(200, {"id": "message-id"}),
+        ]
+    )
+    factory_calls: list[tuple] = []
+    alert = {
+        "schema_version": 1,
+        "event": "WATCHDOG_RECOVERED",
+        "component": "stream",
+        "from": "HEARTBEAT_STALE",
+        "to": "OK",
+    }
+
+    watchdog.send_discord_alert(
+        alert,
+        bot_token=token,
+        allowed_channel_id=channel_id,
+        connection_factory=_discord_factory(connection, factory_calls),
+    )
+
+    assert factory_calls[0][0] == "discord.com"
+    assert factory_calls[0][1]["timeout"] == 5.0
+    assert len(connection.requests) == 2
+    get_request, post_request = connection.requests
+    assert get_request[:3] == (
+        "GET",
+        f"/api/v10/channels/{channel_id}",
+        None,
+    )
+    assert post_request[0:2] == (
+        "POST",
+        f"/api/v10/channels/{channel_id}/messages",
+    )
+    assert get_request[3]["Authorization"] == f"Bot {token}"
+    assert post_request[3]["Authorization"] == f"Bot {token}"
+    body = json.loads(post_request[2].decode("ascii"))
+    assert body == {
+        "allowed_mentions": {"parse": []},
+        "content": (
+            "[Toss bot watchdog] WATCHDOG_RECOVERED | "
+            "stream: HEARTBEAT_STALE -> OK"
+        ),
+    }
+    assert token not in post_request[2].decode("ascii")
+    assert channel_id not in post_request[2].decode("ascii")
+    assert connection.closed is True
+    assert capsys.readouterr() == ("", "")
+
+
+def test_discord_sender_refuses_remote_channel_mismatch_without_post() -> None:
+    allowed = "123456789012345678"
+    other = "223456789012345678"
+    connection = _DiscordConnection([_DiscordResponse(200, {"id": other})])
+    calls: list[tuple] = []
+
+    code = _error_code(
+        lambda: watchdog.send_discord_alert(
+            {
+                "schema_version": 1,
+                "event": "WATCHDOG_STATE_CHANGED",
+                "component": "planner",
+                "from": "OK",
+                "to": "HEARTBEAT_STALE",
+            },
+            bot_token="A" * 40,
+            allowed_channel_id=allowed,
+            connection_factory=_discord_factory(connection, calls),
+        )
+    )
+
+    assert code == "DISCORD_CHANNEL_MISMATCH"
+    assert [request[0] for request in connection.requests] == ["GET"]
+    assert other not in str(code)
+
+
+@pytest.mark.parametrize(
+    ("responses", "code"),
+    [
+        ([_DiscordResponse(429)], "DISCORD_RATE_LIMITED"),
+        ([_DiscordResponse(503)], "DISCORD_UNAVAILABLE"),
+        (
+            [_DiscordResponse(200, {"id": "123456789012345678"}), _DiscordResponse(429)],
+            "DISCORD_RATE_LIMITED",
+        ),
+        (
+            [_DiscordResponse(200, {"id": "123456789012345678"}), _DiscordResponse(500)],
+            "DISCORD_UNAVAILABLE",
+        ),
+    ],
+)
+def test_discord_sender_fails_closed_on_rate_limit_or_server_error(
+    responses: list[_DiscordResponse],
+    code: str,
+) -> None:
+    connection = _DiscordConnection(responses)
+
+    assert _error_code(
+        lambda: watchdog.send_discord_alert(
+            {
+                "schema_version": 1,
+                "event": "WATCHDOG_STARTED",
+                "component": "watchdog",
+                "from": None,
+                "to": "OK",
+            },
+            bot_token="A" * 40,
+            allowed_channel_id="123456789012345678",
+            connection_factory=_discord_factory(connection, []),
+        )
+    ) == code
+    assert connection.closed is True
+
+
+def test_main_without_discord_configuration_keeps_stdout_only_mode(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    required = {
+        "TOSS_WATCHDOG_HEARTBEAT_ROOT": str(tmp_path / "heartbeats"),
+        "TOSS_WATCHDOG_CONTEXT_PATH": str(tmp_path / "news-context.json"),
+        "TOSS_WATCHDOG_EXPECTATION_PATH": str(tmp_path / "stream-expectation.json"),
+        "TOSS_WATCHDOG_STATE_PATH": str(tmp_path / "state.json"),
+        "TOSS_WATCHDOG_RELEASE_SHA": RELEASE_SHA,
+        "TOSS_WATCHDOG_LAUNCHD_DOMAIN": "gui/501",
+    }
+    for name, value in required.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv(watchdog.DISCORD_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(watchdog.DISCORD_CHANNEL_ENV, raising=False)
+    monkeypatch.setattr(watchdog, "macos_boot_id_hash", lambda: BOOT_ID_HASH)
+
+    def fake_run_once(**kwargs):
+        assert watchdog.DISCORD_TOKEN_ENV not in os.environ
+        assert watchdog.DISCORD_CHANNEL_ENV not in os.environ
+        kwargs["sender"](
+            {
+                "schema_version": 1,
+                "event": "WATCHDOG_STARTED",
+                "component": "watchdog",
+                "from": None,
+                "to": "OK",
+            }
+        )
+        return {"planner": "OK"}
+
+    monkeypatch.setattr(watchdog, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        watchdog,
+        "send_discord_alert",
+        lambda *_args, **_kwargs: pytest.fail("network sender must stay disabled"),
+    )
+
+    assert watchdog.main() == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {
+        "schema_version": 1,
+        "event": "WATCHDOG_STARTED",
+        "component": "watchdog",
+        "from": None,
+        "to": "OK",
+    }
+    assert output.err == ""
 
 
 def test_valid_exact_redacted_heartbeat_is_accepted(tmp_path: Path) -> None:
@@ -447,6 +668,20 @@ def test_stream_is_required_only_while_selected_symbol_context_is_active(
     assert missing["stream"] == "STREAM_CONTEXT_INVALID"
 
 
+def test_two_lane_stream_context_is_active_and_rejects_duplicate_symbols(
+    tmp_path: Path,
+) -> None:
+    context_path = (tmp_path / "runtime" / "news-context.json").resolve()
+    _write_stream_context(context_path, symbols=("AAPL", "MSFT"))
+
+    assert watchdog.stream_context_state(context_path, now=STREAM_NOW) == "active"
+
+    _write_stream_context(context_path, symbols=("AAPL", "AAPL"))
+    assert _error_code(
+        lambda: watchdog.stream_context_state(context_path, now=STREAM_NOW)
+    ) == "STREAM_CONTEXT_INVALID"
+
+
 def test_malformed_active_stream_context_fails_closed(tmp_path: Path) -> None:
     heartbeat_root = tmp_path / "heartbeats"
     _write_all_heartbeats(heartbeat_root, at=STREAM_NOW)
@@ -534,13 +769,20 @@ def test_run_once_sends_only_start_change_and_recovery(tmp_path: Path) -> None:
     ]
 
 
-def test_sender_failure_does_not_consume_state_change(tmp_path: Path) -> None:
+def test_partial_sender_failure_retries_only_unacknowledged_alerts(
+    tmp_path: Path,
+) -> None:
     heartbeat_root = tmp_path / "heartbeats"
     state_path = tmp_path / "state" / "state.json"
     _write_all_heartbeats(heartbeat_root)
+    _write_heartbeat(heartbeat_root, _spec("planner"), status_code="ERROR")
+    _write_heartbeat(heartbeat_root, _spec("stream"), baseline_fresh=False)
+    first_attempts: list[dict[str, object]] = []
 
-    def fail(alert):
-        raise RuntimeError("synthetic sender failure")
+    def fail_second(alert):
+        first_attempts.append(dict(alert))
+        if len(first_attempts) == 2:
+            raise RuntimeError("synthetic sender failure")
 
     with pytest.raises(RuntimeError, match="synthetic sender failure"):
         watchdog.run_once(
@@ -549,12 +791,113 @@ def test_sender_failure_does_not_consume_state_change(tmp_path: Path) -> None:
             expected_release_sha=RELEASE_SHA,
             expected_boot_id_hash=BOOT_ID_HASH,
             launchd_domain="gui/501",
-            sender=fail,
+            sender=fail_second,
             now=NOW,
             launchctl_runner=_healthy_launchctl,
         )
 
-    assert not state_path.exists()
+    assert [alert["component"] for alert in first_attempts] == [
+        "watchdog",
+        "planner",
+    ]
+    persisted = json.loads(state_path.read_text(encoding="ascii"))
+    assert persisted["schema_version"] == 2
+    assert [alert["component"] for alert in persisted["pending_alerts"]] == [
+        "planner",
+        "stream",
+    ]
+
+    retry_alerts: list[dict[str, object]] = []
+    kwargs = {
+        "heartbeat_root": heartbeat_root,
+        "state_path": state_path,
+        "expected_release_sha": RELEASE_SHA,
+        "expected_boot_id_hash": BOOT_ID_HASH,
+        "launchd_domain": "gui/501",
+        "sender": lambda alert: retry_alerts.append(dict(alert)),
+        "now": NOW,
+        "launchctl_runner": _healthy_launchctl,
+    }
+    watchdog.run_once(**kwargs)
+
+    assert [alert["component"] for alert in retry_alerts] == ["planner", "stream"]
+    assert "watchdog" not in {alert["component"] for alert in retry_alerts}
+    assert json.loads(state_path.read_text(encoding="ascii"))["pending_alerts"] == []
+
+    retry_alerts.clear()
+    watchdog.run_once(**kwargs)
+    assert retry_alerts == []
+
+
+def test_legacy_watchdog_state_migrates_without_duplicate_startup(
+    tmp_path: Path,
+) -> None:
+    heartbeat_root = tmp_path / "heartbeats"
+    state_path = tmp_path / "state" / "state.json"
+    _write_all_heartbeats(heartbeat_root)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "components": {
+                    spec.component: "OK" for spec in watchdog.COMPONENTS
+                },
+            }
+        ),
+        encoding="ascii",
+    )
+    alerts: list[dict[str, object]] = []
+
+    watchdog.run_once(
+        heartbeat_root=heartbeat_root,
+        state_path=state_path,
+        expected_release_sha=RELEASE_SHA,
+        expected_boot_id_hash=BOOT_ID_HASH,
+        launchd_domain="gui/501",
+        sender=lambda alert: alerts.append(dict(alert)),
+        now=NOW,
+        launchctl_runner=_healthy_launchctl,
+    )
+
+    assert alerts == []
+    migrated = json.loads(state_path.read_text(encoding="ascii"))
+    assert migrated["schema_version"] == 2
+    assert migrated["pending_alerts"] == []
+
+
+def test_state_directory_fsync_failure_stops_before_alert_delivery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    heartbeat_root = tmp_path / "heartbeats"
+    state_path = tmp_path / "state" / "state.json"
+    _write_all_heartbeats(heartbeat_root)
+    fsync_calls: list[Path] = []
+    alerts: list[dict[str, object]] = []
+
+    def fail_directory_fsync(path: Path) -> None:
+        fsync_calls.append(path)
+        raise watchdog.WatchdogError("STATE_DURABILITY_FAILED")
+
+    monkeypatch.setattr(watchdog, "_fsync_state_directory", fail_directory_fsync)
+
+    with pytest.raises(watchdog.WatchdogError) as caught:
+        watchdog.run_once(
+            heartbeat_root=heartbeat_root,
+            state_path=state_path,
+            expected_release_sha=RELEASE_SHA,
+            expected_boot_id_hash=BOOT_ID_HASH,
+            launchd_domain="gui/501",
+            sender=lambda alert: alerts.append(dict(alert)),
+            now=NOW,
+            launchctl_runner=_healthy_launchctl,
+        )
+
+    assert caught.value.code == "STATE_DURABILITY_FAILED"
+    assert fsync_calls == [state_path.parent]
+    assert state_path.exists()
+    assert alerts == []
 
 
 def test_wrapper_and_plist_keep_the_watchdog_argument_free_and_non_trading() -> None:
@@ -581,7 +924,6 @@ def test_wrapper_and_plist_keep_the_watchdog_argument_free_and_non_trading() -> 
         "TOSS_CLIENT",
         "ACCOUNT_SEQ",
         "DISCORD_APPROVAL",
-        "security find-generic-password",
         "turtle_bot",
         "sqlite",
     ):
@@ -601,4 +943,13 @@ def test_wrapper_and_plist_keep_the_watchdog_argument_free_and_non_trading() -> 
         "TOSS_WATCHDOG_LAUNCHD_DOMAIN",
         "TOSS_WATCHDOG_RELEASE_SHA",
         "TOSS_WATCHDOG_STATE_PATH",
+        "TOSS_WATCHDOG_ALLOWED_CHANNEL_ID",
     }
+    assert "security find-generic-password" in wrapper
+    assert "TossTradingBot.DiscordApprovalToken" in wrapper
+    assert "discord-approval-bot" in wrapper
+    assert "TossTradingBot.DiscordWatchdogToken" not in wrapper
+    assert "TOSS_WATCHDOG_DISCORD_BOT_TOKEN" in wrapper
+    assert wrapper.index("actual_file=") < wrapper.index("security find-generic-password")
+    assert "TOSS_INTERNAL_WATCHDOG_TOKEN" not in wrapper
+    assert "discord_token" not in wrapper.split("' shadow-watchdog-clean", 1)[1]

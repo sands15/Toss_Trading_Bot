@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import parse
@@ -20,6 +22,7 @@ from turtle_news.worker import (
     fetch_company_news,
     load_config,
     load_context,
+    load_contexts,
     run_once,
 )
 
@@ -136,6 +139,181 @@ def test_context_is_exact_fresh_current_session_and_active(tmp_path: Path) -> No
         load_context(path, now=weekend, max_age_seconds=300)
 
 
+def test_context_v2_accepts_two_unique_selected_symbols(tmp_path: Path) -> None:
+    path = tmp_path / "news-context.json"
+    _write_context(path)
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["schema_version"] = 2
+    value["symbols"] = ["AAPL", "MSFT"]
+    del value["symbol"]
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    contexts = load_contexts(path, now=NOW, max_age_seconds=300)
+
+    assert tuple(item.symbol for item in contexts) == ("AAPL", "MSFT")
+    with pytest.raises(NewsDigestError, match="context_requires_multi_symbol_consumer"):
+        load_context(path, now=NOW, max_age_seconds=300)
+    value["symbols"] = ["AAPL", "AAPL"]
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(NewsDigestError, match="context_symbol_invalid"):
+        load_contexts(path, now=NOW, max_age_seconds=300)
+
+
+def test_two_symbol_context_fetches_and_sends_each_selected_symbol_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _config(tmp_path, llm=False)
+    value = json.loads(config.context_path.read_text(encoding="utf-8"))
+    value["schema_version"] = 2
+    value["symbols"] = ["AAPL", "MSFT"]
+    del value["symbol"]
+    config.context_path.write_text(json.dumps(value), encoding="utf-8")
+    calls = {"feed": [], "metadata": 0, "posts": []}
+
+    def fake_open(req, timeout):
+        if req.full_url.startswith(worker.FINNHUB_COMPANY_NEWS_URL):
+            symbol = parse.parse_qs(parse.urlsplit(req.full_url).query)["symbol"][0]
+            calls["feed"].append(symbol)
+            return FakeResponse(
+                [
+                    _article(
+                        related=symbol,
+                        headline=f"{symbol} releases an update",
+                        url=f"https://example.com/{symbol.lower()}-update",
+                    )
+                ]
+            )
+        if req.full_url.startswith("https://discord.com") and req.get_method() == "GET":
+            calls["metadata"] += 1
+            return FakeResponse({"channel_id": "123456789012345678"})
+        if req.full_url.startswith("https://discord.com"):
+            calls["posts"].append(json.loads(req.data))
+            return FakeResponse({"id": f"message-{len(calls['posts'])}"})
+        raise AssertionError(req.full_url)
+
+    monkeypatch.setattr(worker, "_open_url", fake_open)
+
+    result = run_once(
+        config,
+        env={
+            "FINNHUB_API_KEY": "feed-secret",
+            "DISCORD_NEWS_WEBHOOK_URL": "https://discord.com/api/webhooks/123/token",
+            "DISCORD_ALLOWED_CHANNEL_ID": "123456789012345678",
+        },
+        now=NOW,
+    )
+
+    assert result.symbol == "AAPL,MSFT"
+    assert (result.fetched, result.inserted, result.sent) == (2, 2, 2)
+    assert calls["feed"] == ["AAPL", "MSFT"]
+    assert calls["metadata"] == 3  # startup plus one exact-channel check per POST
+    assert len(calls["posts"]) == 2
+    assert all(body["allowed_mentions"] == {"parse": []} for body in calls["posts"])
+    assert "AAPL" in calls["posts"][0]["content"]
+    assert "MSFT" in calls["posts"][1]["content"]
+
+
+def test_two_symbol_feed_failure_does_not_block_the_other_symbol(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _config(tmp_path, llm=False)
+    value = json.loads(config.context_path.read_text(encoding="utf-8"))
+    value["schema_version"] = 2
+    value["symbols"] = ["AAPL", "MSFT"]
+    del value["symbol"]
+    config.context_path.write_text(json.dumps(value), encoding="utf-8")
+    calls = {"metadata": 0, "posts": 0}
+
+    def fake_open(req, timeout):
+        if req.full_url.startswith(worker.FINNHUB_COMPANY_NEWS_URL):
+            symbol = parse.parse_qs(parse.urlsplit(req.full_url).query)["symbol"][0]
+            if symbol == "AAPL":
+                raise OSError("private provider detail must not escape")
+            return FakeResponse(
+                [
+                    _article(
+                        related=symbol,
+                        headline=f"{symbol} releases an update",
+                        url=f"https://example.com/{symbol.lower()}-update",
+                    )
+                ]
+            )
+        if req.full_url.startswith("https://discord.com") and req.get_method() == "GET":
+            calls["metadata"] += 1
+            return FakeResponse({"channel_id": "123456789012345678"})
+        if req.full_url.startswith("https://discord.com"):
+            calls["posts"] += 1
+            return FakeResponse({"id": "message-1"})
+        raise AssertionError(req.full_url)
+
+    monkeypatch.setattr(worker, "_open_url", fake_open)
+
+    result = run_once(
+        config,
+        env={
+            "FINNHUB_API_KEY": "feed-secret",
+            "DISCORD_NEWS_WEBHOOK_URL": "https://discord.com/api/webhooks/123/token",
+            "DISCORD_ALLOWED_CHANNEL_ID": "123456789012345678",
+        },
+        now=NOW,
+    )
+
+    assert (result.fetched, result.inserted, result.sent) == (1, 1, 1)
+    assert result.error_codes == ("finnhub_request_failed",)
+    assert calls == {"metadata": 2, "posts": 1}
+
+
+def test_planner_heartbeat_refresh_does_not_change_two_symbol_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _config(tmp_path, llm=False)
+    value = json.loads(config.context_path.read_text(encoding="utf-8"))
+    value["schema_version"] = 2
+    value["symbols"] = ["AAPL", "MSFT"]
+    del value["symbol"]
+    config.context_path.write_text(json.dumps(value), encoding="utf-8")
+    calls = {"posts": 0}
+
+    def fake_open(req, timeout):
+        if req.full_url.startswith(worker.FINNHUB_COMPANY_NEWS_URL):
+            symbol = parse.parse_qs(parse.urlsplit(req.full_url).query)["symbol"][0]
+            if symbol == "MSFT":
+                refreshed = json.loads(config.context_path.read_text(encoding="utf-8"))
+                refreshed["generated_at"] = (NOW + timedelta(seconds=30)).isoformat()
+                config.context_path.write_text(json.dumps(refreshed), encoding="utf-8")
+            return FakeResponse(
+                [
+                    _article(
+                        related=symbol,
+                        headline=f"{symbol} heartbeat-safe update",
+                        url=f"https://example.com/{symbol.lower()}-heartbeat",
+                    )
+                ]
+            )
+        if req.full_url.startswith("https://discord.com") and req.get_method() == "GET":
+            return FakeResponse({"channel_id": "123456789012345678"})
+        if req.full_url.startswith("https://discord.com"):
+            calls["posts"] += 1
+            return FakeResponse({"id": f"message-{calls['posts']}"})
+        raise AssertionError(req.full_url)
+
+    monkeypatch.setattr(worker, "_open_url", fake_open)
+
+    result = run_once(
+        config,
+        env={
+            "FINNHUB_API_KEY": "feed-secret",
+            "DISCORD_NEWS_WEBHOOK_URL": "https://discord.com/api/webhooks/123/token",
+            "DISCORD_ALLOWED_CHANNEL_ID": "123456789012345678",
+        },
+        now=NOW + timedelta(seconds=60),
+    )
+
+    assert (result.fetched, result.inserted, result.sent) == (2, 2, 2)
+    assert result.error_codes == ()
+    assert calls["posts"] == 2
+
+
 def test_config_rejects_unknown_keys_and_non_loopback_llm(tmp_path: Path) -> None:
     path = tmp_path / "news.json"
     path.write_text(
@@ -166,6 +344,22 @@ def test_config_rejects_unknown_keys_and_non_loopback_llm(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     with pytest.raises(NewsDigestError, match="config_llm_not_loopback"):
+        load_config(path)
+
+
+def test_config_requires_exact_sibling_news_database(tmp_path: Path) -> None:
+    path = tmp_path / "news.json"
+    path.write_text(
+        json.dumps(
+            {
+                "context_path": "runtime/news-context.json",
+                "state_db": "other/articles.sqlite3",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(NewsDigestError, match="config_state_db_path_mismatch"):
         load_config(path)
 
 
@@ -249,15 +443,27 @@ def test_finnhub_filters_exact_symbol_age_and_https(monkeypatch) -> None:
 def test_news_store_refuses_trading_db_and_deduplicates_with_lease(
     tmp_path: Path,
 ) -> None:
-    trading = tmp_path / "trading.sqlite3"
-    connection = sqlite3.connect(trading)
-    connection.execute("CREATE TABLE intraday_plans (id TEXT)")
-    connection.commit()
-    connection.close()
-    original_trading_bytes = trading.read_bytes()
-    with pytest.raises(NewsDigestError, match="trading_db_forbidden"):
-        NewsStore(trading)
-    assert trading.read_bytes() == original_trading_bytes
+    state_store_source = (
+        Path(__file__).resolve().parents[1] / "src" / "turtle_bot" / "state_store.py"
+    ).read_text(encoding="utf-8")
+    state_store_tables = set(
+        re.findall(
+            r"CREATE TABLE(?: IF NOT EXISTS)? ([a-z_]+)", state_store_source
+        )
+    )
+    assert state_store_tables
+    assert state_store_tables <= worker.TRADING_TABLES
+
+    for table_name in ("intraday_plans", "intraday_runs", "intraday_plan_cohorts"):
+        trading = tmp_path / f"{table_name}.sqlite3"
+        connection = sqlite3.connect(trading)
+        connection.execute(f"CREATE TABLE {table_name} (id TEXT)")
+        connection.commit()
+        connection.close()
+        original_trading_bytes = trading.read_bytes()
+        with pytest.raises(NewsDigestError, match="trading_db_forbidden"):
+            NewsStore(trading)
+        assert trading.read_bytes() == original_trading_bytes
 
     item = NewsItem(
         "AAPL",
@@ -297,6 +503,164 @@ def test_news_store_refuses_trading_db_and_deduplicates_with_lease(
         assert recovered.claim_token != first.claim_token
 
 
+def test_news_store_refuses_intraday_paper_database(tmp_path: Path) -> None:
+    paper_source = (
+        Path(__file__).resolve().parents[1] / "src" / "turtle_bot" / "intraday_paper.py"
+    ).read_text(encoding="utf-8")
+    paper_tables = set(
+        re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", paper_source)
+    )
+    assert paper_tables
+    assert paper_tables <= worker.TRADING_TABLES
+
+    paper_database = tmp_path / "intraday-paper.sqlite3"
+    connection = sqlite3.connect(paper_database)
+    connection.execute("CREATE TABLE paper_runs (run_id TEXT PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    original_bytes = paper_database.read_bytes()
+    with pytest.raises(NewsDigestError, match="trading_db_forbidden"):
+        NewsStore(paper_database)
+    assert paper_database.read_bytes() == original_bytes
+
+
+def test_news_store_refuses_database_hardlink(tmp_path: Path) -> None:
+    paper_database = tmp_path / "intraday-paper.sqlite3"
+    connection = sqlite3.connect(paper_database)
+    connection.execute("CREATE TABLE paper_runs (run_id TEXT PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    original_bytes = paper_database.read_bytes()
+    news_alias = tmp_path / "news.sqlite3"
+    try:
+        news_alias.hardlink_to(paper_database)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+
+    with pytest.raises(NewsDigestError, match="news_db_path_invalid"):
+        NewsStore(news_alias)
+
+    assert paper_database.read_bytes() == original_bytes
+    assert news_alias.read_bytes() == original_bytes
+
+
+def test_news_store_refuses_unknown_database_without_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "unrelated.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    original_bytes = database.read_bytes()
+
+    with pytest.raises(NewsDigestError, match="news_db_schema_invalid"):
+        NewsStore(database)
+    assert database.read_bytes() == original_bytes
+
+
+def _forge_news_table_sql(
+    path: Path, *, original: str, replacement: str
+) -> None:
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'table' AND name = 'news_articles'
+            """
+        ).fetchone()
+        assert row is not None and isinstance(row[0], str)
+        normalized = " ".join(row[0].split())
+        assert original in normalized
+        forged = normalized.replace(original, replacement, 1)
+        connection.execute("PRAGMA writable_schema = ON")
+        connection.execute(
+            """
+            UPDATE sqlite_master SET sql = ?
+            WHERE type = 'table' AND name = 'news_articles'
+            """,
+            (forged,),
+        )
+        connection.execute("PRAGMA writable_schema = OFF")
+        version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+        connection.execute(f"PRAGMA schema_version = {version + 1}")
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        (
+            "status TEXT NOT NULL CHECK ( status IN "
+            "('PENDING', 'SENDING', 'SENT', 'EXPIRED') )",
+            "status TEXT NOT NULL",
+        ),
+        (
+            "url_hash TEXT PRIMARY KEY",
+            "url_hash TEXT PRIMARY KEY ON CONFLICT REPLACE",
+        ),
+    ],
+    ids=("status-check", "pk-conflict"),
+)
+def test_news_store_rejects_forged_table_sql_before_mutation(
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+) -> None:
+    database = tmp_path / "news.sqlite3"
+    with NewsStore(database):
+        pass
+    _forge_news_table_sql(
+        database,
+        original=original,
+        replacement=replacement,
+    )
+    original_bytes = database.read_bytes()
+
+    with pytest.raises(NewsDigestError, match="news_db_schema_invalid"):
+        NewsStore(database)
+
+    assert database.read_bytes() == original_bytes
+
+
+def test_news_store_rejects_forged_index_xinfo_before_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "news.sqlite3"
+    with NewsStore(database):
+        pass
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP INDEX idx_news_claim")
+        connection.execute(
+            """
+            CREATE INDEX idx_news_claim
+            ON news_articles(status COLLATE NOCASE, symbol, published_at)
+            """
+        )
+    original_bytes = database.read_bytes()
+
+    with pytest.raises(NewsDigestError, match="news_db_schema_invalid"):
+        NewsStore(database)
+
+    assert database.read_bytes() == original_bytes
+
+
+def test_news_store_refuses_database_symlink_without_mutation(tmp_path: Path) -> None:
+    database = tmp_path / "unrelated.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    original_bytes = database.read_bytes()
+    news_alias = tmp_path / "news.sqlite3"
+    try:
+        news_alias.symlink_to(database)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unavailable: {exc}")
+    with pytest.raises(NewsDigestError, match="news_db_path_invalid"):
+        NewsStore(news_alias)
+    assert database.read_bytes() == original_bytes
+
+
 def test_news_store_refuses_recovery_sidecars_without_touching_them(
     tmp_path: Path,
 ) -> None:
@@ -314,6 +678,135 @@ def test_news_store_refuses_recovery_sidecars_without_touching_them(
 
     assert database.read_bytes() == before
     assert journal.read_bytes() == b"do-not-recover"
+
+
+def test_news_store_atomic_claim_rejects_raced_foreign_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "news.sqlite3"
+    real_open = worker.os.open
+    foreign_bytes: list[bytes] = []
+
+    def create_foreign_before_claim(path, flags, mode=0o777):
+        if (
+            Path(path) == database
+            and flags & worker.os.O_EXCL
+            and not foreign_bytes
+        ):
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE unrelated (id TEXT PRIMARY KEY)")
+            foreign_bytes.append(database.read_bytes())
+            raise FileExistsError(database)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(worker.os, "open", create_foreign_before_claim)
+
+    with pytest.raises(NewsDigestError, match="news_db_schema_invalid"):
+        NewsStore(database)
+
+    assert database.read_bytes() == foreign_bytes[0]
+    with sqlite3.connect(database) as connection:
+        assert {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        } == {"unrelated"}
+
+
+def test_news_store_rejects_claimed_inode_swap_before_sqlite_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "news.sqlite3"
+    claimed = tmp_path / "claimed.sqlite3"
+    real_close = worker.os.close
+    foreign_bytes: list[bytes] = []
+
+    def replace_claim_after_close(descriptor: int) -> None:
+        real_close(descriptor)
+        if not foreign_bytes:
+            database.replace(claimed)
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE unrelated (id TEXT PRIMARY KEY)")
+            foreign_bytes.append(database.read_bytes())
+
+    monkeypatch.setattr(worker.os, "close", replace_claim_after_close)
+
+    with pytest.raises(NewsDigestError, match="news_db_path_invalid"):
+        NewsStore(database)
+
+    assert claimed.exists()
+    assert database.read_bytes() == foreign_bytes[0]
+    with sqlite3.connect(database) as connection:
+        assert {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        } == {"unrelated"}
+
+
+def test_news_store_rw_reopen_never_recreates_deleted_existing_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "news.sqlite3"
+    displaced = tmp_path / "displaced.sqlite3"
+    with NewsStore(database):
+        pass
+    original_bytes = database.read_bytes()
+    real_connect = worker.sqlite3.connect
+    displaced_once = False
+
+    def displace_before_rw_open(target, *args, **kwargs):
+        nonlocal displaced_once
+        if (
+            not displaced_once
+            and isinstance(target, str)
+            and "mode=rw" in target
+            and database.as_uri() in target
+        ):
+            displaced_once = True
+            database.replace(displaced)
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(worker.sqlite3, "connect", displace_before_rw_open)
+
+    with pytest.raises(NewsDigestError, match="news_db_unavailable"):
+        NewsStore(database)
+
+    assert displaced_once is True
+    assert not database.exists()
+    assert displaced.read_bytes() == original_bytes
+
+
+def test_news_store_concurrent_fresh_start_uses_one_claimed_inode(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "news.sqlite3"
+
+    def open_store(_index: int) -> int:
+        with NewsStore(database) as store:
+            return int(
+                store.connection.execute(
+                    "SELECT COUNT(*) FROM news_articles"
+                ).fetchone()[0]
+            )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        counts = tuple(executor.map(open_store, range(16)))
+
+    assert counts == (0,) * 16
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        assert {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        } == {"news_articles"}
 
 
 def test_news_store_never_carries_pending_item_into_new_session(tmp_path: Path) -> None:

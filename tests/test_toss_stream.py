@@ -39,7 +39,9 @@ from turtle_bot.toss_stream import (
     _rest_resync,
     run_shadow_stream,
     subscription_declaration,
+    subscription_declaration_for_symbols,
     validate_subscription_ack,
+    validate_subscription_ack_for_symbols,
 )
 from turtle_news.worker import SelectedContext
 
@@ -142,17 +144,23 @@ class FakeReadOnlyClient:
         self.clock = clock
         self.calls: list[object] = []
         self.token_count = 0
+        self._token: TossToken | None = None
         self.orderbook_count = 0
         self.fail_orderbook_calls = fail_orderbook_calls or set()
+
+    @property
+    def token(self) -> TossToken | None:
+        return self._token
 
     def issue_token(self) -> TossToken:
         self.calls.append("issue_token")
         self.token_count += 1
-        return TossToken(
+        self._token = TossToken(
             access_token=f"TOKEN-CANARY-{self.token_count}",
             token_type="Bearer",
             expires_at=self.clock.now() + timedelta(hours=1),
         )
+        return self._token
 
     def get_prices(self, symbols: tuple[str, ...]) -> list[dict[str, str]]:
         self.calls.append(("get_prices", symbols))
@@ -215,6 +223,29 @@ def _write_context(
     os.chmod(path, 0o600)
 
 
+def _write_contexts(
+    path: Path,
+    clock: FakeClock,
+    symbols: tuple[str, ...],
+    *,
+    active_seconds: float = 3_600,
+) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "schema_version": 1 if len(symbols) == 1 else 2,
+        "generated_at": clock.now().isoformat(),
+        "market": "US",
+        "session_date": SESSION_DATE,
+        "active_until": (clock.now() + timedelta(seconds=active_seconds)).isoformat(),
+        "reason": "intraday_plan",
+    }
+    payload["symbol" if len(symbols) == 1 else "symbols"] = (
+        symbols[0] if len(symbols) == 1 else list(symbols)
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
 def _config(tmp_path: Path, clock: FakeClock, **changes: object) -> StreamConfig:
     root = (tmp_path / "private").resolve()
     context = root / "news-context.json"
@@ -248,10 +279,15 @@ def _state(clock: FakeClock) -> ShadowStreamState:
     return state
 
 
-def _trade(clock: FakeClock, *, timestamp: datetime | None = None) -> dict[str, object]:
+def _trade(
+    clock: FakeClock,
+    *,
+    timestamp: datetime | None = None,
+    symbol: str = SYMBOL,
+) -> dict[str, object]:
     return {
         "type": "message",
-        "topic": f"trade:us:{SYMBOL}",
+        "topic": f"trade:us:{symbol}",
         "data": {
             "price": "100.01",
             "volume": "2",
@@ -261,10 +297,15 @@ def _trade(clock: FakeClock, *, timestamp: datetime | None = None) -> dict[str, 
     }
 
 
-def _book(clock: FakeClock, *, timestamp: datetime | None = None) -> dict[str, object]:
+def _book(
+    clock: FakeClock,
+    *,
+    timestamp: datetime | None = None,
+    symbol: str = SYMBOL,
+) -> dict[str, object]:
     return {
         "type": "message",
-        "topic": f"orderbook:us:{SYMBOL}",
+        "topic": f"orderbook:us:{symbol}",
         "data": {
             "timestamp": (timestamp or clock.now()).isoformat(),
             "currency": "USD",
@@ -283,6 +324,493 @@ def test_declaration_subscribes_one_symbol_market_data_only() -> None:
         {"type": "orderbook:us", "codes": [SYMBOL]},
     ]
     assert "personal:order" not in json.dumps(declaration)
+
+
+def test_two_symbol_stream_uses_one_exact_subscription_and_two_rest_baselines(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock()
+    config = _config(tmp_path, clock, once=True)
+    config.context_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "generated_at": clock.now().isoformat(),
+                "market": "US",
+                "session_date": SESSION_DATE,
+                "active_until": (clock.now() + timedelta(hours=1)).isoformat(),
+                "symbols": ["AAPL", "MSFT"],
+                "reason": "intraday_plan",
+            }
+        ),
+        encoding="utf-8",
+    )
+    connection = FakeConnection(
+        clock,
+        [
+            Incoming(
+                0,
+                {
+                    "type": "subscriptions",
+                    "id": f"shadow-{SESSION_DATE}-1",
+                    "subscribed": [
+                        "trade:us:AAPL",
+                        "orderbook:us:AAPL",
+                        "trade:us:MSFT",
+                        "orderbook:us:MSFT",
+                    ],
+                    "rejected": [],
+                },
+            )
+        ],
+    )
+    client = FakeReadOnlyClient(clock)
+
+    assert run_shadow_stream(
+        config,
+        client=client,  # type: ignore[arg-type]
+        connector=FakeConnector([connection]),
+        now=clock.now,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    ) == 0
+
+    declaration = json.loads(connection.sent[0])
+    assert declaration == subscription_declaration_for_symbols(
+        ("AAPL", "MSFT"), f"shadow-{SESSION_DATE}-1"
+    )
+    assert ("get_prices", ("AAPL",)) in client.calls
+    assert ("get_prices", ("MSFT",)) in client.calls
+    snapshot = json.loads(config.snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["schema_version"] == 2
+    assert snapshot["symbols"] == ["AAPL", "MSFT"]
+    assert set(snapshot["streams"]) == {"AAPL", "MSFT"}
+
+
+@pytest.mark.parametrize("failed_orderbook_call", [1, 3])
+def test_one_lane_rest_baseline_failure_keeps_the_other_lane_socket_alive(
+    tmp_path: Path,
+    failed_orderbook_call: int,
+) -> None:
+    clock = FakeClock()
+    config = _config(
+        tmp_path,
+        clock,
+        active_seconds=4,
+        expected_symbols=("AAPL", "MSFT"),
+        event_max_age_seconds=5,
+        receive_poll_seconds=1,
+        rest_resync_seconds=1,
+        snapshot_interval_seconds=0.1,
+    )
+    _write_contexts(config.context_path, clock, ("AAPL", "MSFT"), active_seconds=4)
+    connection = FakeConnection(
+        clock,
+        [
+            Incoming(
+                0,
+                {
+                    "type": "subscriptions",
+                    "id": f"shadow-{SESSION_DATE}-1",
+                    "subscribed": [
+                        "trade:us:AAPL",
+                        "orderbook:us:AAPL",
+                        "trade:us:MSFT",
+                        "orderbook:us:MSFT",
+                    ],
+                    "rejected": [],
+                },
+            ),
+            Incoming(0, lambda: _trade(clock, symbol="AAPL")),
+            Incoming(0, lambda: _book(clock, symbol="AAPL")),
+            Incoming(0, lambda: _trade(clock, symbol="MSFT")),
+            Incoming(0, lambda: _book(clock, symbol="MSFT")),
+            Silence(1),
+            Incoming(0, lambda: _trade(clock, symbol="MSFT")),
+            Incoming(0, lambda: _book(clock, symbol="MSFT")),
+            Silence(3),
+        ],
+    )
+    events: list[tuple[str, str, str | None]] = []
+
+    result = run_shadow_stream(
+        config,
+        client=FakeReadOnlyClient(
+            clock, fail_orderbook_calls={failed_orderbook_call}
+        ),  # type: ignore[arg-type]
+        connector=FakeConnector([connection]),
+        now=clock.now,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        jitter=lambda: 0,
+        event_sink=lambda state, kind, _at: events.append(
+            (state.context.symbol, kind, state.trade_error)
+        ),
+    )
+
+    assert result == 0
+    assert ("AAPL", "trade", "rest_resync_failed") in events
+    failure_index = events.index(("AAPL", "trade", "rest_resync_failed"))
+    assert any(
+        symbol == "MSFT" and kind in {"baseline", "trade", "orderbook"}
+        for symbol, kind, _error in events[failure_index + 1 :]
+    )
+    assert connection.closed is True
+
+
+def test_one_silent_cohort_lane_degrades_heartbeat_while_other_lane_continues(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock()
+    config = _config(
+        tmp_path,
+        clock,
+        active_seconds=7,
+        expected_symbols=("AAPL", "MSFT"),
+        event_max_age_seconds=3,
+        receive_poll_seconds=1,
+        rest_resync_seconds=60,
+        snapshot_interval_seconds=0.1,
+    )
+    _write_contexts(config.context_path, clock, ("AAPL", "MSFT"), active_seconds=7)
+    ack = {
+        "type": "subscriptions",
+        "id": f"shadow-{SESSION_DATE}-1",
+        "subscribed": [
+            "trade:us:AAPL",
+            "orderbook:us:AAPL",
+            "trade:us:MSFT",
+            "orderbook:us:MSFT",
+        ],
+        "rejected": [],
+    }
+    connection = FakeConnection(
+        clock,
+        [
+            Incoming(0, ack),
+            Incoming(0, lambda: _trade(clock, symbol="AAPL")),
+            Incoming(0, lambda: _book(clock, symbol="AAPL")),
+            Incoming(0, lambda: _trade(clock, symbol="MSFT")),
+            Incoming(0, lambda: _book(clock, symbol="MSFT")),
+            Incoming(2, lambda: _trade(clock, symbol="MSFT")),
+            Incoming(0, lambda: _book(clock, symbol="MSFT")),
+            Incoming(2, lambda: _trade(clock, symbol="MSFT")),
+            Incoming(0, lambda: _book(clock, symbol="MSFT")),
+            Incoming(2, lambda: _trade(clock, symbol="MSFT")),
+            Incoming(0, lambda: _book(clock, symbol="MSFT")),
+            Silence(2),
+        ],
+    )
+    events: list[tuple[str, str]] = []
+    heartbeats: list[tuple[str, bool, bool]] = []
+
+    result = run_shadow_stream(
+        config,
+        client=FakeReadOnlyClient(clock),  # type: ignore[arg-type]
+        connector=FakeConnector([connection]),
+        now=clock.now,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        jitter=lambda: 0,
+        event_sink=lambda state, kind, _at: events.append((state.context.symbol, kind)),
+        heartbeat_sink=lambda state, at: heartbeats.append(
+            toss_stream_module._stream_heartbeat_state(
+                state,
+                at=at,
+                rest_resync_seconds=config.rest_resync_seconds,
+                future_tolerance_seconds=config.event_future_tolerance_seconds,
+            )
+        ),
+    )
+
+    assert result == 0
+    silent_at = events.index(("AAPL", "trade"), 5)
+    assert ("MSFT", "trade") in events[silent_at + 1 :]
+    assert ("DEGRADED", True, True) in heartbeats
+    assert connection.closed is True
+
+
+def test_identifiable_malformed_lane_frame_does_not_stop_other_lane(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock()
+    config = _config(
+        tmp_path,
+        clock,
+        active_seconds=3,
+        expected_symbols=("AAPL", "MSFT"),
+        event_max_age_seconds=5,
+        receive_poll_seconds=1,
+        rest_resync_seconds=60,
+        snapshot_interval_seconds=0.1,
+    )
+    _write_contexts(config.context_path, clock, ("AAPL", "MSFT"), active_seconds=3)
+    connection = FakeConnection(
+        clock,
+        [
+            Incoming(
+                0,
+                {
+                    "type": "subscriptions",
+                    "id": f"shadow-{SESSION_DATE}-1",
+                    "subscribed": [
+                        "trade:us:AAPL",
+                        "orderbook:us:AAPL",
+                        "trade:us:MSFT",
+                        "orderbook:us:MSFT",
+                    ],
+                    "rejected": [],
+                },
+            ),
+            Incoming(
+                0,
+                {
+                    "type": "message",
+                    "topic": "trade:us:AAPL",
+                    "data": {
+                        "price": "invalid",
+                        "volume": "1",
+                        "timestamp": clock.now().isoformat(),
+                        "currency": "USD",
+                    },
+                },
+            ),
+            Incoming(0, lambda: _trade(clock, symbol="MSFT")),
+            Incoming(0, lambda: _book(clock, symbol="MSFT")),
+            Silence(3),
+        ],
+    )
+    events: list[tuple[str, str, str | None]] = []
+    heartbeats: list[tuple[str, bool, bool]] = []
+
+    result = run_shadow_stream(
+        config,
+        client=FakeReadOnlyClient(clock),  # type: ignore[arg-type]
+        connector=FakeConnector([connection]),
+        now=clock.now,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        jitter=lambda: 0,
+        event_sink=lambda state, kind, _at: events.append(
+            (state.context.symbol, kind, state.trade_error)
+        ),
+        heartbeat_sink=lambda state, at: heartbeats.append(
+            toss_stream_module._stream_heartbeat_state(
+                state,
+                at=at,
+                rest_resync_seconds=config.rest_resync_seconds,
+                future_tolerance_seconds=config.event_future_tolerance_seconds,
+            )
+        ),
+    )
+
+    assert result == 0
+    assert ("AAPL", "trade", "trade_price_invalid") in events
+    assert any(symbol == "MSFT" and kind == "trade" for symbol, kind, _ in events)
+    assert ("DEGRADED", True, True) in heartbeats
+    assert connection.closed is True
+
+
+def test_cohort_disconnect_fanout_records_other_lane_before_fatal_sink_error(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock()
+    config = _config(
+        tmp_path,
+        clock,
+        expected_symbols=("AAPL", "MSFT"),
+        max_reconnect_attempts=1,
+    )
+    _write_contexts(config.context_path, clock, ("AAPL", "MSFT"))
+    connection = FakeConnection(
+        clock,
+        [
+            Incoming(
+                0,
+                {
+                    "type": "subscriptions",
+                    "id": f"shadow-{SESSION_DATE}-1",
+                    "subscribed": [
+                        "trade:us:AAPL",
+                        "orderbook:us:AAPL",
+                        "trade:us:MSFT",
+                        "orderbook:us:MSFT",
+                    ],
+                    "rejected": [],
+                },
+            ),
+            ConnectionError("drop"),
+        ],
+    )
+    disconnected: list[str] = []
+
+    def sink(state: ShadowStreamState, kind: str, _at: datetime) -> None:
+        if kind != "disconnect":
+            return
+        disconnected.append(state.context.symbol)
+        if state.context.symbol == "AAPL":
+            raise StreamError("paper_simulation_persistence_failed")
+
+    result = run_shadow_stream(
+        config,
+        client=FakeReadOnlyClient(clock),  # type: ignore[arg-type]
+        connector=FakeConnector([connection]),
+        now=clock.now,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        jitter=lambda: 0,
+        event_sink=sink,
+    )
+
+    assert result == 2
+    assert disconnected == ["AAPL", "MSFT"]
+    snapshot = json.loads(config.snapshot_path.read_text(encoding="utf-8"))
+    assert "paper_simulation_persistence_failed" in snapshot["error_codes"]
+    assert connection.closed is True
+
+
+def test_single_disconnect_sink_error_is_snapshotted_before_fatal_exit(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock()
+    config = _config(tmp_path, clock, max_reconnect_attempts=1)
+    connection = FakeConnection(
+        clock,
+        [Incoming(0, _ack()), ConnectionError("drop")],
+    )
+
+    def sink(_state: ShadowStreamState, kind: str, _at: datetime) -> None:
+        if kind == "disconnect":
+            raise StreamError("paper_simulation_persistence_failed")
+
+    result = run_shadow_stream(
+        config,
+        client=FakeReadOnlyClient(clock),  # type: ignore[arg-type]
+        connector=FakeConnector([connection]),
+        now=clock.now,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        jitter=lambda: 0,
+        event_sink=sink,
+    )
+
+    assert result == 2
+    snapshot = json.loads(config.snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["last_disconnect_error"] == "paper_simulation_persistence_failed"
+    assert snapshot["error_codes"] == ["paper_simulation_persistence_failed"]
+    assert connection.closed is True
+
+
+@pytest.mark.parametrize(
+    "lanes,expected",
+    [
+        (
+            {
+                "A": {"status": "PLAN", "plan": {"symbol": "AAPL"}},
+                "B": {"status": "PLAN", "plan": {"symbol": "MSFT"}},
+            },
+            ("AAPL", "MSFT"),
+        ),
+        (
+            {
+                "A": {"status": "PLAN", "plan": {"symbol": "AAPL"}},
+                "B": {"status": "NO_CANDIDATE", "plan": None},
+            },
+            ("AAPL",),
+        ),
+    ],
+)
+def test_cohort_locked_symbols_follow_plan_manifest_order(
+    lanes: dict[str, dict[str, object]], expected: tuple[str, ...]
+) -> None:
+    class PlanStore:
+        def load_intraday_cohort(self, *, cohort_id: str, session_date: str):
+            assert cohort_id == "run-1"
+            assert session_date == SESSION_DATE
+            return {"lanes": lanes}
+
+    class LaneSink:
+        plan_store = PlanStore()
+
+    sink = object.__new__(toss_stream_module._PaperCohortStreamSink)
+    sink.sinks = (LaneSink(),)
+
+    assert sink.locked_symbols(
+        cohort_id="run-1", session_date=SESSION_DATE
+    ) == expected
+
+
+def test_two_symbol_ack_rejects_partial_or_extra_topics() -> None:
+    request_id = f"shadow-{SESSION_DATE}-1"
+    valid = {
+        "type": "subscriptions",
+        "id": request_id,
+        "subscribed": [
+            "trade:us:AAPL",
+            "orderbook:us:AAPL",
+            "trade:us:MSFT",
+            "orderbook:us:MSFT",
+        ],
+        "rejected": [],
+    }
+    validate_subscription_ack_for_symbols(
+        valid,
+        symbols=("AAPL", "MSFT"),
+        request_id=request_id,
+    )
+    subscribed = valid["subscribed"]
+    assert isinstance(subscribed, list)
+    for invalid in (subscribed[:-1], [*subscribed, "trade:us:NVDA"]):
+        with pytest.raises(StreamError, match="subscription_ack_incomplete"):
+            validate_subscription_ack_for_symbols(
+                {**valid, "subscribed": invalid},
+                symbols=("AAPL", "MSFT"),
+                request_id=request_id,
+            )
+
+
+@pytest.mark.parametrize(
+    "symbols,request_id,code",
+    [
+        ((), "req-1", "context_symbol_invalid"),
+        (("AAPL", "AAPL"), "req-1", "context_symbol_invalid"),
+        (("AAPL",), "bad id", "subscription_request_id_invalid"),
+    ],
+)
+def test_subscription_helpers_reject_invalid_common_inputs(
+    symbols: tuple[str, ...], request_id: str, code: str
+) -> None:
+    with pytest.raises(StreamError, match=code):
+        subscription_declaration_for_symbols(symbols, request_id)
+    with pytest.raises(StreamError, match=code):
+        validate_subscription_ack_for_symbols(
+            {"type": "subscriptions", "id": request_id, "subscribed": [], "rejected": []},
+            symbols=symbols,
+            request_id=request_id,
+        )
+
+
+def test_expected_symbols_fail_closed_at_startup_and_refresh(tmp_path: Path) -> None:
+    clock = FakeClock()
+    config = _config(tmp_path, clock, expected_symbols=("AAPL", "MSFT"))
+    connector = FakeConnector([])
+
+    with pytest.raises(StreamError, match="context_symbols_mismatch"):
+        run_shadow_stream(
+            config,
+            client=FakeReadOnlyClient(clock),  # type: ignore[arg-type]
+            connector=connector,
+            now=clock.now,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+    assert connector.tokens == []
+
+    _write_contexts(config.context_path, clock, ("AAPL", "MSFT"))
+    previous = toss_stream_module._load_contexts(config, clock.now())
+    _write_contexts(config.context_path, clock, ("MSFT", "AAPL"))
+    with pytest.raises(StreamError, match="context_symbols_mismatch"):
+        toss_stream_module._refresh_contexts(config, previous, clock.now())
 
 
 @pytest.mark.parametrize(
@@ -692,7 +1220,7 @@ def test_heartbeat_reports_ack_only_after_a_fresh_verified_baseline(tmp_path) ->
     assert observed[-1] == ("DEGRADED", False, False)
 
 
-def test_ack_loss_reconnects_with_fresh_token_and_closes_old_socket(tmp_path) -> None:
+def test_ack_loss_reconnects_with_reused_valid_token_and_closes_old_socket(tmp_path) -> None:
     clock = FakeClock()
     config = _config(tmp_path, clock, once=True, max_reconnect_attempts=2)
     first = FakeConnection(clock, [ConnectionError("drop before ack")])
@@ -714,10 +1242,24 @@ def test_ack_loss_reconnects_with_fresh_token_and_closes_old_socket(tmp_path) ->
     assert first.closed is True
     assert second.closed is True
     assert len(connector.tokens) == 2
-    assert client.calls.count("issue_token") == 2
+    assert connector.tokens[0] is connector.tokens[1]
+    assert client.calls.count("issue_token") == 1
     assert client.calls.count(("get_prices", (SYMBOL,))) == 1
     assert client.calls.count(("get_orderbook", SYMBOL)) == 1
     assert clock.sleeps == [1.0]
+
+
+def test_stream_token_refreshes_only_when_client_token_is_expiring() -> None:
+    clock = FakeClock()
+    client = FakeReadOnlyClient(clock)
+
+    first = toss_stream_module._stream_token(client, clock.now())  # type: ignore[arg-type]
+    assert toss_stream_module._stream_token(client, clock.now()) is first  # type: ignore[arg-type]
+    clock.advance(60 * 60)
+    second = toss_stream_module._stream_token(client, clock.now())  # type: ignore[arg-type]
+
+    assert second is not first
+    assert client.calls.count("issue_token") == 2
 
 
 def test_rest_failure_reconnects_and_resyncs_again(tmp_path) -> None:
@@ -1321,6 +1863,30 @@ def _paper_stream_fixture(
     return config_path, plan_db, paper_config, plan_id
 
 
+def test_paper_sink_uses_the_already_validated_locked_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path, plan_db, _paper_config, _plan_id = _paper_stream_fixture(tmp_path)
+    locked = load_config(config_path)
+    monkeypatch.setattr(
+        toss_stream_module,
+        "load_config",
+        lambda _path: pytest.fail("sink reread mutable simulation config"),
+    )
+
+    sink = toss_stream_module._PaperStreamSink(
+        simulation_config=config_path,
+        plan_db=plan_db,
+        event_max_age_seconds=15,
+        locked_config=locked,
+    )
+    try:
+        assert sink.locked_symbols(SESSION_DATE) == (SYMBOL,)
+    finally:
+        sink.close()
+
+
 def test_paper_stream_sink_preserves_causal_fill_and_marks_disconnect_gap(
     tmp_path: Path,
 ) -> None:
@@ -1335,6 +1901,7 @@ def test_paper_stream_sink_preserves_causal_fill_and_marks_disconnect_gap(
         monotonic=clock.monotonic,
     )
     try:
+        assert sink.locked_symbols(SESSION_DATE) == (SYMBOL,)
         trade_kind = _handle_frame(
             _trade(clock),
             state=state,
@@ -1557,6 +2124,50 @@ def test_paper_stream_hard_crash_before_flush_is_detected_on_restart(
         assert plan["data_gap_count"] == 1
     finally:
         restarted.close()
+
+
+def test_reaped_paper_sink_close_discards_buffer_instead_of_writing_after_backup(
+    tmp_path: Path,
+) -> None:
+    config_path, plan_db, paper_config, plan_id = _paper_stream_fixture(tmp_path)
+    clock = FakeClock()
+    clock.advance(120)
+    state = _state(clock)
+    sink = toss_stream_module._PaperStreamSink(
+        simulation_config=config_path,
+        plan_db=plan_db,
+        event_max_age_seconds=15,
+        monotonic=clock.monotonic,
+    )
+    trade_kind = _handle_frame(
+        _trade(clock),
+        state=state,
+        received_at=clock.now(),
+        max_age_seconds=15,
+        future_tolerance_seconds=2,
+    )
+    sink(state, trade_kind, clock.now())
+    assert sink.paper_store.pending_event_count == 1
+
+    with IntradayPaperStore(
+        tmp_path / "private" / "intraday-paper.sqlite3", paper_config
+    ) as peer:
+        peer.record_data_gap(
+            plan_id,
+            "stream_coverage_incomplete",
+            at=clock.now(),
+        )
+        clock.advance(16)
+        assert peer.reap_stale_terminal_streams(at=clock.now()) == 1
+        assert peer.run_is_quiescent_for_backup() is True
+
+    sink.close()
+    with IntradayPaperStore(
+        tmp_path / "private" / "intraday-paper.sqlite3", paper_config
+    ) as reopened:
+        plan = reopened.load_plan(plan_id)
+        assert plan["journaled_frame_count"] == 0
+        assert plan["data_gap_count"] == 1
 
 
 def test_stale_crash_marker_invalidates_before_planner_can_finalize_cleanly(

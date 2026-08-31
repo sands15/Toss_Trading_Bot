@@ -9,6 +9,7 @@ import math
 import os
 import re
 import sqlite3
+import stat
 import sys
 import uuid
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 
 FINNHUB_COMPANY_NEWS_URL = "https://finnhub.io/api/v1/company-news"
-CONTEXT_KEYS = {
+CONTEXT_KEYS_V1 = {
     "schema_version",
     "generated_at",
     "market",
@@ -29,6 +30,7 @@ CONTEXT_KEYS = {
     "symbol",
     "reason",
 }
+CONTEXT_KEYS_V2 = (CONTEXT_KEYS_V1 - {"symbol"}) | {"symbols"}
 FORBIDDEN_ENV_KEYS = {
     "TOSS_CLIENT_ID",
     "TOSS_CLIENT_SECRET",
@@ -50,8 +52,35 @@ TRADING_TABLES = {
     "broker_snapshots",
     "runtime_events",
     "intraday_plans",
+    "intraday_runs",
+    "intraday_plan_cohorts",
     "notification_outbox",
+    # IntradayPaperStore owns a separate trading database. Keep its complete
+    # table signature here so aliases such as hard links cannot be opened as a
+    # news store merely because they do not contain the live-trading schema.
+    "paper_simulation_topologies",
+    "paper_simulation_topology_runs",
+    "paper_runs",
+    "paper_cohorts",
+    "paper_cohort_sessions",
+    "paper_plans",
+    "market_observations",
+    "market_frames",
+    "paper_cash_ledger",
+    "paper_data_gaps",
+    "paper_market_closed_sessions",
+    "paper_no_candidate_sessions",
+    "paper_stream_instances",
+    "paper_alert_outbox",
 }
+NEWS_SCHEMA_OBJECTS = {
+    ("table", "news_articles", "news_articles"),
+    ("index", "idx_news_claim", "news_articles"),
+}
+_NEWS_SCHEMA_CACHE: tuple[
+    tuple[object, ...],
+    dict[str, tuple[object, ...]],
+] | None = None
 SAFE_ERROR_CODES = {
     "discord_send_failed",
     "llm_output_rejected",
@@ -260,12 +289,16 @@ def load_config(path: str | Path) -> NewsDigestConfig:
         candidate = Path(text)
         if not candidate.is_absolute():
             candidate = config_path.parent / candidate
-        return candidate.resolve()
+        # Normalize dot segments without dereferencing a final symlink. NewsStore
+        # must be able to reject a linked database before SQLite opens it.
+        return Path(os.path.abspath(candidate))
 
     context_path = resolved_path(value["context_path"])
     state_db = resolved_path(value["state_db"])
     if context_path == state_db:
         raise NewsDigestError("config_paths_overlap")
+    if state_db != context_path.with_name("news.sqlite3"):
+        raise NewsDigestError("config_state_db_path_mismatch")
 
     llm_raw = value.get("llm", {})
     if not isinstance(llm_raw, Mapping):
@@ -364,15 +397,43 @@ def load_context(
     now: datetime,
     max_age_seconds: int,
 ) -> SelectedContext:
+    contexts = load_contexts(path, now=now, max_age_seconds=max_age_seconds)
+    if len(contexts) != 1:
+        raise NewsDigestError("context_requires_multi_symbol_consumer")
+    return contexts[0]
+
+
+def load_contexts(
+    path: Path,
+    *,
+    now: datetime,
+    max_age_seconds: int,
+) -> tuple[SelectedContext, ...]:
     value = _load_json_file(path, maximum=8192, code="context_invalid")
-    if not isinstance(value, Mapping) or set(value) != CONTEXT_KEYS:
+    if not isinstance(value, Mapping):
         raise NewsDigestError("context_schema_invalid")
-    if value["schema_version"] != 1 or isinstance(value["schema_version"], bool):
+    version = value.get("schema_version")
+    if isinstance(version, bool) or version not in {1, 2}:
+        raise NewsDigestError("context_schema_invalid")
+    expected_keys = CONTEXT_KEYS_V1 if version == 1 else CONTEXT_KEYS_V2
+    if set(value) != expected_keys:
         raise NewsDigestError("context_schema_invalid")
     if value["market"] != "US" or value["reason"] != "intraday_plan":
         raise NewsDigestError("context_scope_invalid")
-    symbol = _strict_string(value["symbol"], maximum=16, code="context_symbol_invalid")
-    if not _SYMBOL_RE.fullmatch(symbol):
+    raw_symbols = [value["symbol"]] if version == 1 else value["symbols"]
+    if (
+        not isinstance(raw_symbols, list)
+        or not 1 <= len(raw_symbols) <= 2
+    ):
+        raise NewsDigestError("context_symbol_invalid")
+    symbols = tuple(
+        _strict_string(item, maximum=16, code="context_symbol_invalid")
+        for item in raw_symbols
+    )
+    if (
+        len(symbols) != len(set(symbols))
+        or any(not _SYMBOL_RE.fullmatch(symbol) for symbol in symbols)
+    ):
         raise NewsDigestError("context_symbol_invalid")
     session_date = _strict_string(
         value["session_date"], maximum=10, code="context_session_invalid"
@@ -405,7 +466,34 @@ def load_context(
         raise NewsDigestError("context_stale")
     if active_until <= now_utc or active_until < generated_at:
         raise NewsDigestError("context_inactive")
-    return SelectedContext(symbol, generated_at, active_until, session_date)
+    return tuple(
+        SelectedContext(symbol, generated_at, active_until, session_date)
+        for symbol in symbols
+    )
+
+
+def refresh_contexts(
+    path: Path,
+    previous: tuple[SelectedContext, ...],
+    *,
+    now: datetime,
+    max_age_seconds: int,
+) -> tuple[SelectedContext, ...]:
+    """Accept a normal planner heartbeat without accepting a changed plan."""
+
+    current = load_contexts(path, now=now, max_age_seconds=max_age_seconds)
+    previous_identity = tuple(
+        (item.symbol, item.session_date) for item in previous
+    )
+    current_identity = tuple((item.symbol, item.session_date) for item in current)
+    if current_identity != previous_identity:
+        raise NewsDigestError("context_changed")
+    for old, new in zip(previous, current, strict=True):
+        if new.generated_at < old.generated_at:
+            raise NewsDigestError("context_reverted")
+        if new.active_until > old.active_until:
+            raise NewsDigestError("context_extended")
+    return current
 
 
 def _read_response(response: Any, maximum: int, code: str) -> bytes:
@@ -573,11 +661,176 @@ def fetch_company_news(
     return sorted(items.values(), key=lambda item: item.published_at)
 
 
+def _news_database_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise NewsDigestError("news_db_path_invalid") from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise NewsDigestError("news_db_path_invalid")
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def _claim_news_database(path: Path) -> tuple[int, int]:
+    identity = _news_database_identity(path)
+    if identity is None:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor: int | None = None
+        claimed_identity: tuple[int, int] | None = None
+        try:
+            descriptor = os.open(path, flags, 0o600)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise NewsDigestError("news_db_path_invalid")
+            claimed_identity = (metadata.st_dev, metadata.st_ino)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise NewsDigestError("news_db_path_invalid") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        identity = _news_database_identity(path)
+        if claimed_identity is not None and identity != claimed_identity:
+            raise NewsDigestError("news_db_path_invalid")
+    if identity is None:
+        raise NewsDigestError("news_db_path_invalid")
+    return identity
+
+
+def _news_schema_sql(
+    connection: sqlite3.Connection, kind: str, name: str
+) -> str | None:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
+        (kind, name),
+    ).fetchone()
+    if row is None:
+        raise NewsDigestError("news_db_schema_invalid")
+    if row[0] is None:
+        return None
+    if not isinstance(row[0], str):
+        raise NewsDigestError("news_db_schema_invalid")
+    return " ".join(row[0].split())
+
+
+def _news_index_signature(
+    connection: sqlite3.Connection, table: str, index: str
+) -> tuple[object, ...]:
+    row = next(
+        (
+            item
+            for item in connection.execute(f'PRAGMA index_list("{table}")')
+            if str(item[1]) == index
+        ),
+        None,
+    )
+    if row is None:
+        raise NewsDigestError("news_db_schema_invalid")
+    return (
+        index,
+        int(row[2]),
+        str(row[3]),
+        int(row[4]),
+        tuple(
+            (
+                int(column[0]),
+                int(column[1]),
+                None if column[2] is None else str(column[2]),
+                int(column[3]),
+                None if column[4] is None else str(column[4]),
+                int(column[5]),
+            )
+            for column in connection.execute(f'PRAGMA index_xinfo("{index}")')
+        ),
+        _news_schema_sql(connection, "index", index),
+    )
+
+
+def _news_table_signature(
+    connection: sqlite3.Connection, table: str
+) -> tuple[object, ...]:
+    columns = tuple(
+        (
+            int(row[0]),
+            str(row[1]),
+            str(row[2]).upper(),
+            int(row[3]),
+            None if row[4] is None else str(row[4]),
+            int(row[5]),
+            int(row[6]),
+        )
+        for row in connection.execute(f'PRAGMA table_xinfo("{table}")')
+    )
+    foreign_keys = tuple(
+        sorted(
+            tuple(row)
+            for row in connection.execute(f'PRAGMA foreign_key_list("{table}")')
+        )
+    )
+    automatic_indexes = tuple(
+        sorted(
+            _news_index_signature(connection, table, str(row[1]))
+            for row in connection.execute(f'PRAGMA index_list("{table}")')
+            if str(row[3]) != "c"
+        )
+    )
+    table_options = next(
+        (
+            (str(row[2]), int(row[3]), int(row[4]), int(row[5]))
+            for row in connection.execute("PRAGMA table_list")
+            if str(row[1]) == table
+        ),
+        None,
+    )
+    if table_options is None:
+        raise NewsDigestError("news_db_schema_invalid")
+    return (
+        columns,
+        foreign_keys,
+        automatic_indexes,
+        table_options,
+        _news_schema_sql(connection, "table", table),
+    )
+
+
+def _canonical_news_schema() -> tuple[
+    tuple[object, ...],
+    dict[str, tuple[object, ...]],
+]:
+    global _NEWS_SCHEMA_CACHE
+    if _NEWS_SCHEMA_CACHE is None:
+        connection = sqlite3.connect(":memory:")
+        try:
+            holder = object.__new__(NewsStore)
+            holder.connection = connection
+            holder._create_schema()
+            table = _news_table_signature(connection, "news_articles")
+            indexes = {
+                str(row[1]): _news_index_signature(
+                    connection, str(row[2]), str(row[1])
+                )
+                for row in connection.execute(
+                    "SELECT type, name, tbl_name FROM sqlite_master"
+                )
+                if str(row[0]) == "index"
+                and not str(row[1]).startswith("sqlite_")
+            }
+        finally:
+            connection.close()
+        _NEWS_SCHEMA_CACHE = table, indexes
+    return _NEWS_SCHEMA_CACHE
+
+
 class NewsStore:
     def __init__(self, path: Path) -> None:
         self.connection: sqlite3.Connection | None = None
         try:
-            path = path.resolve()
+            path = Path(os.path.abspath(path))
             parent_existed = path.parent.exists()
             path.parent.mkdir(parents=True, exist_ok=True)
             if not parent_existed:
@@ -585,31 +838,36 @@ class NewsStore:
                     os.chmod(path.parent, 0o700)
                 except OSError:
                     pass
-            database_existed = path.exists()
-            if database_existed:
-                if any(
-                    Path(f"{path}{suffix}").exists()
-                    for suffix in ("-journal", "-wal", "-shm")
-                ):
-                    raise NewsDigestError("news_db_recovery_required")
-                self.connection = sqlite3.connect(
-                    f"{path.as_uri()}?mode=ro&immutable=1",
-                    uri=True,
-                    timeout=5,
-                )
-                self.connection.row_factory = sqlite3.Row
-                self._validate_database()
-                self.connection.close()
-                self.connection = None
-            self.connection = sqlite3.connect(path, timeout=5)
+            expected_identity = _claim_news_database(path)
+            if any(
+                Path(f"{path}{suffix}").exists()
+                for suffix in ("-journal", "-wal", "-shm")
+            ):
+                raise NewsDigestError("news_db_recovery_required")
+            self.connection = sqlite3.connect(
+                f"{path.as_uri()}?mode=ro&immutable=1",
+                uri=True,
+                timeout=5,
+            )
             self.connection.row_factory = sqlite3.Row
-            if not database_existed:
-                try:
-                    os.chmod(path, 0o600)
-                except OSError:
-                    pass
-            if database_existed:
-                self._validate_database()
+            self._validate_database()
+            self.connection.close()
+            self.connection = None
+            if _news_database_identity(path) != expected_identity:
+                raise NewsDigestError("news_db_path_invalid")
+            self.connection = sqlite3.connect(
+                f"{path.as_uri()}?mode=rw",
+                uri=True,
+                timeout=5,
+            )
+            self.connection.row_factory = sqlite3.Row
+            if _news_database_identity(path) != expected_identity:
+                raise NewsDigestError("news_db_path_invalid")
+            self.connection.execute("PRAGMA query_only = ON")
+            self._validate_database()
+            if _news_database_identity(path) != expected_identity:
+                raise NewsDigestError("news_db_path_invalid")
+            self.connection.execute("PRAGMA query_only = OFF")
             self._create_schema()
             try:
                 os.chmod(path, 0o600)
@@ -635,32 +893,36 @@ class NewsStore:
         result = self.connection.execute("PRAGMA quick_check").fetchone()
         if result is None or result[0] != "ok":
             raise NewsDigestError("news_db_integrity_failed")
-        names = {
-            row[0]
-            for row in self.connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+        if self.connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise NewsDigestError("news_db_integrity_failed")
+        rows = list(
+            self.connection.execute(
+                "SELECT type, name, tbl_name FROM sqlite_master"
             )
-        }
-        if names & TRADING_TABLES:
+        )
+        table_names = {row[1] for row in rows if row[0] == "table"}
+        if table_names & TRADING_TABLES:
             raise NewsDigestError("trading_db_forbidden")
-        if "news_articles" in names:
-            columns = {
-                row[1]
-                for row in self.connection.execute(
-                    "PRAGMA table_info(news_articles)"
-                )
-            }
-            required = {
-                "url_hash",
-                "session_date",
-                "symbol",
-                "status",
-                "claim_token",
-                "lease_until",
-                "attempt_count",
-                "cached_summary",
-            }
-            if not required <= columns:
+        objects = {
+            (row[0], row[1], row[2])
+            for row in rows
+            if not row[1].startswith("sqlite_")
+        }
+        if not objects:
+            if table_names:
+                raise NewsDigestError("news_db_schema_invalid")
+            return
+        if objects != NEWS_SCHEMA_OBJECTS:
+            raise NewsDigestError("news_db_schema_invalid")
+        canonical_table, canonical_indexes = _canonical_news_schema()
+        if _news_table_signature(
+            self.connection, "news_articles"
+        ) != canonical_table:
+            raise NewsDigestError("news_db_schema_invalid")
+        for kind, index, table in objects:
+            if kind == "index" and _news_index_signature(
+                self.connection, table, index
+            ) != canonical_indexes[index]:
                 raise NewsDigestError("news_db_schema_invalid")
 
     def _create_schema(self) -> None:
@@ -1149,7 +1411,7 @@ def run_once(
     if FORBIDDEN_ENV_KEYS & set(runtime_env):
         raise NewsDigestError("trading_credentials_in_news_environment")
     current = current_time()
-    context = load_context(
+    contexts = load_contexts(
         config.context_path,
         now=current,
         max_age_seconds=config.context_max_age_seconds,
@@ -1173,129 +1435,138 @@ def run_once(
         timeout=config.request_timeout_seconds,
     )
     max_age = timedelta(hours=config.article_max_age_hours)
-    fetched = fetch_company_news(
-        symbol=context.symbol,
-        api_key=api_key,
-        now=current,
-        max_age=max_age,
-        timeout=config.request_timeout_seconds,
-    )
     errors: list[str] = []
+    fetched_by_context: list[tuple[SelectedContext, list[NewsItem]]] = []
+    for context in contexts:
+        try:
+            fetched = fetch_company_news(
+                symbol=context.symbol,
+                api_key=api_key,
+                now=current,
+                max_age=max_age,
+                timeout=config.request_timeout_seconds,
+            )
+        except NewsDigestError as exc:
+            errors.append(exc.code)
+            fetched = []
+        fetched_by_context.append((context, fetched))
     sent = 0
     fallbacks = 0
     with NewsStore(config.state_db) as store:
-        inserted = store.insert_items(
-            fetched,
-            session_date=context.session_date,
-            now=current,
-        )
-        for _ in range(config.max_items_per_run):
-            cycle_time = current_time()
-            try:
-                current_context = load_context(
-                    config.context_path,
-                    now=cycle_time,
-                    max_age_seconds=config.context_max_age_seconds,
-                )
-                if (
-                    current_context.symbol != context.symbol
-                    or current_context.session_date != context.session_date
-                ):
-                    raise NewsDigestError("context_changed")
-            except NewsDigestError as exc:
-                errors.append(exc.code)
-                break
-            claim = store.claim(
-                symbol=context.symbol,
+        inserted = sum(
+            store.insert_items(
+                fetched,
                 session_date=context.session_date,
-                now=cycle_time,
-                oldest_allowed=cycle_time - max_age,
+                now=current,
             )
-            if claim is None:
-                break
-            summary = claim.cached_summary
-            kind = claim.summary_kind
-            if summary is None or kind not in {"llm", "source"}:
-                error_code: str | None = None
-                if config.llm.enabled:
-                    try:
-                        candidate = _request_llm_summary(
-                            claim.item, config=config.llm, env=runtime_env
-                        )
-                        summary = validate_llm_summary(candidate, claim.item)
-                        if summary is None:
-                            error_code = "llm_output_rejected"
-                    except NewsDigestError:
-                        error_code = "llm_request_failed"
-                if summary is None:
-                    summary = _source_fallback(claim.item)
-                    kind = "source"
-                    fallbacks += 1
-                else:
-                    kind = "llm"
-                store.cache_summary(
-                    claim,
-                    summary=summary,
-                    kind=kind,
-                    error_code=error_code,
-                    now=current_time(),
-                )
-                if error_code:
-                    errors.append(error_code)
-            send_time = current_time()
-            try:
-                current_context = load_context(
-                    config.context_path,
-                    now=send_time,
-                    max_age_seconds=config.context_max_age_seconds,
-                )
-                if (
-                    current_context.symbol != context.symbol
-                    or current_context.session_date != context.session_date
-                ):
-                    raise NewsDigestError("context_changed")
-                if current_context.active_until <= send_time + timedelta(
-                    seconds=config.request_timeout_seconds
-                ):
-                    raise NewsDigestError("context_delivery_window_too_short")
-            except NewsDigestError as exc:
-                store.expire_claim(claim, now=send_time)
-                errors.append(exc.code)
-                break
-            store.renew_claim(claim, now=send_time)
-            try:
-                # Discord metadata is mutable remote state. Resolve it for every
-                # message immediately before POST; the startup check is not a
-                # reusable authorization cache.
-                _verify_discord_webhook_channel(
-                    webhook,
-                    expected_channel_id=channel_id,
-                    timeout=config.request_timeout_seconds,
-                )
-                _send_discord(
-                    webhook,
-                    content=build_discord_message(
-                        claim.item, summary=summary, summary_kind=kind
-                    ),
-                    timeout=config.request_timeout_seconds,
-                )
-            except NewsDigestError as exc:
-                if exc.code == "discord_payload_too_large":
-                    store.expire_claim(claim, now=current_time())
+            for context, fetched in fetched_by_context
+        )
+        for context in contexts:
+            for _ in range(config.max_items_per_run):
+                cycle_time = current_time()
+                try:
+                    contexts = refresh_contexts(
+                        config.context_path,
+                        contexts,
+                        now=cycle_time,
+                        max_age_seconds=config.context_max_age_seconds,
+                    )
+                except NewsDigestError as exc:
                     errors.append(exc.code)
-                    continue
-                store.release(
-                    claim,
-                    error_code="discord_send_failed",
-                    now=current_time(),
+                    break
+                claim = store.claim(
+                    symbol=context.symbol,
+                    session_date=context.session_date,
+                    now=cycle_time,
+                    oldest_allowed=cycle_time - max_age,
                 )
-                errors.append("discord_send_failed")
-                break
-            store.mark_sent(claim, now=current_time())
-            sent += 1
+                if claim is None:
+                    break
+                summary = claim.cached_summary
+                kind = claim.summary_kind
+                if summary is None or kind not in {"llm", "source"}:
+                    error_code: str | None = None
+                    if config.llm.enabled:
+                        try:
+                            candidate = _request_llm_summary(
+                                claim.item, config=config.llm, env=runtime_env
+                            )
+                            summary = validate_llm_summary(candidate, claim.item)
+                            if summary is None:
+                                error_code = "llm_output_rejected"
+                        except NewsDigestError:
+                            error_code = "llm_request_failed"
+                    if summary is None:
+                        summary = _source_fallback(claim.item)
+                        kind = "source"
+                        fallbacks += 1
+                    else:
+                        kind = "llm"
+                    store.cache_summary(
+                        claim,
+                        summary=summary,
+                        kind=kind,
+                        error_code=error_code,
+                        now=current_time(),
+                    )
+                    if error_code:
+                        errors.append(error_code)
+                send_time = current_time()
+                try:
+                    contexts = refresh_contexts(
+                        config.context_path,
+                        contexts,
+                        now=send_time,
+                        max_age_seconds=config.context_max_age_seconds,
+                    )
+                    active = next(
+                        item for item in contexts
+                        if item.symbol == context.symbol
+                    )
+                    if active.active_until <= send_time + timedelta(
+                        seconds=config.request_timeout_seconds
+                    ):
+                        raise NewsDigestError("context_delivery_window_too_short")
+                except (NewsDigestError, StopIteration) as exc:
+                    store.expire_claim(claim, now=send_time)
+                    errors.append(
+                        exc.code if isinstance(exc, NewsDigestError) else "context_changed"
+                    )
+                    break
+                store.renew_claim(claim, now=send_time)
+                try:
+                    # Discord metadata is mutable remote state. Resolve it for every
+                    # message immediately before POST; the startup check is not a
+                    # reusable authorization cache.
+                    _verify_discord_webhook_channel(
+                        webhook,
+                        expected_channel_id=channel_id,
+                        timeout=config.request_timeout_seconds,
+                    )
+                    _send_discord(
+                        webhook,
+                        content=build_discord_message(
+                            claim.item, summary=summary, summary_kind=kind
+                        ),
+                        timeout=config.request_timeout_seconds,
+                    )
+                except NewsDigestError as exc:
+                    if exc.code == "discord_payload_too_large":
+                        store.expire_claim(claim, now=current_time())
+                        errors.append(exc.code)
+                        continue
+                    store.release(
+                        claim,
+                        error_code="discord_send_failed",
+                        now=current_time(),
+                    )
+                    errors.append("discord_send_failed")
+                    break
+                store.mark_sent(claim, now=current_time())
+                sent += 1
     return NewsDigestResult(
-        symbol=context.symbol,
-        fetched=len(fetched),
+        symbol=",".join(context.symbol for context in contexts),
+        fetched=sum(len(fetched) for _, fetched in fetched_by_context),
         inserted=inserted,
         sent=sent,
         source_fallbacks=fallbacks,

@@ -17,6 +17,8 @@
     <string>REPLACE_WITH_EXACT_COMMIT_SHA</string>
     <key>TOSS_WATCHDOG_STATE_PATH</key>
     <string>/ABSOLUTE/WATCHDOG_OWNED/STATE/state.json</string>
+    <key>TOSS_WATCHDOG_ALLOWED_CHANNEL_ID</key>
+    <string>REPLACE_WITH_ALLOWED_CHANNEL_ID</string>
   </dict>
   <key>Label</key>
   <string>com.sands15.toss-shadow-watchdog</string>

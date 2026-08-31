@@ -4,11 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 import sqlite3
 from threading import Barrier
 
 import pytest
 
+import turtle_bot.state_store as state_store_module
 from turtle_bot.domain import Candle
 from turtle_bot import PositionDirection, PositionState, PositionStatus, TurtleSystem, UnitState
 from turtle_bot.state_store import SQLiteStateStore
@@ -161,45 +163,84 @@ def test_position_roundtrip_with_units() -> None:
 
 def test_existing_position_schema_migrates_direction_column(tmp_path) -> None:
     path = tmp_path / "legacy.sqlite"
-    with SQLiteStateStore(path) as store:
-        with store._conn:
-            store._conn.execute("ALTER TABLE positions RENAME TO old_positions")
-            store._conn.execute(
-                """
-                CREATE TABLE positions (
-                  symbol TEXT PRIMARY KEY,
-                  system TEXT NOT NULL,
-                  status TEXT NOT NULL,
-                  total_qty TEXT NOT NULL,
-                  avg_entry_price TEXT NOT NULL,
-                  entry_n TEXT NOT NULL,
-                  current_stop_price TEXT NOT NULL,
-                  last_unit_entry_price TEXT NOT NULL
-                )
-                """
-            )
-            store._conn.execute(
-                """
-                INSERT INTO positions (
-                    symbol,
-                    system,
-                    status,
-                    total_qty,
-                    avg_entry_price,
-                    entry_n,
-                    current_stop_price,
-                    last_unit_entry_price
-                )
-                VALUES ('LEGACY', 'S1', 'OPEN', '1', '100', '2', '96', '100')
-                """
-            )
-            store._conn.execute("DROP TABLE old_positions")
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
+        INSERT INTO schema_migrations VALUES (1, '2026-08-28T00:00:00+00:00');
+        CREATE TABLE positions (
+          symbol TEXT PRIMARY KEY,
+          system TEXT NOT NULL,
+          status TEXT NOT NULL,
+          total_qty TEXT NOT NULL,
+          avg_entry_price TEXT NOT NULL,
+          entry_n TEXT NOT NULL,
+          current_stop_price TEXT NOT NULL,
+          last_unit_entry_price TEXT NOT NULL
+        );
+        INSERT INTO positions VALUES ('LEGACY', 'S1', 'OPEN', '1', '100', '2', '96', '100');
+        """
+    )
+    connection.close()
 
     with SQLiteStateStore(path) as reopened:
         loaded = reopened.load_position("LEGACY")
 
     assert loaded is not None
     assert loaded.direction == PositionDirection.LONG
+
+
+def test_legacy_appended_reason_column_is_an_explicit_supported_variant(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy-appended-reason.sqlite"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
+        INSERT INTO schema_migrations VALUES (1, '2026-08-28T00:00:00+00:00');
+        INSERT INTO schema_migrations VALUES (2, '2026-08-28T00:00:00+00:00');
+        INSERT INTO schema_migrations VALUES (3, '2026-08-28T00:00:00+00:00');
+        CREATE TABLE watchlists (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          generated_at TEXT NOT NULL
+        );
+        CREATE TABLE watchlist_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          watchlist_id INTEGER NOT NULL,
+          rank INTEGER NOT NULL,
+          symbol TEXT NOT NULL,
+          current_price TEXT NOT NULL,
+          entry_high_20 TEXT,
+          entry_high_55 TEXT,
+          distance_to_20 TEXT,
+          distance_to_55 TEXT,
+          nearest_distance TEXT NOT NULL,
+          is_new INTEGER NOT NULL,
+          FOREIGN KEY (watchlist_id) REFERENCES watchlists(id) ON DELETE CASCADE,
+          UNIQUE (watchlist_id, symbol)
+        );
+        ALTER TABLE watchlist_items ADD COLUMN reason TEXT NOT NULL DEFAULT '';
+        """
+    )
+    connection.close()
+
+    with SQLiteStateStore(path) as migrated:
+        versions = tuple(
+            row[0]
+            for row in migrated._conn.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        )
+
+    assert versions == (1, 2, 3, 4, 5, 6)
 
 
 def test_list_positions_filters_by_status() -> None:
@@ -411,6 +452,384 @@ def test_file_database_creates_parent_and_persists_snapshots_and_events(tmp_path
     assert events[0]["payload"] == {"mode": "paper"}
 
 
+@pytest.mark.parametrize("foreign_table", ["news_articles", "paper_runs", "unrelated"])
+def test_planner_store_refuses_foreign_database_without_mutation(
+    tmp_path: Path, foreign_table: str
+) -> None:
+    path = tmp_path / f"{foreign_table}.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute(f"CREATE TABLE {foreign_table} (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+def test_planner_store_refuses_database_hardlink_without_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "foreign.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    alias = tmp_path / "planner.sqlite3"
+    try:
+        alias.hardlink_to(database)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+    before = database.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_path_invalid"):
+        SQLiteStateStore(alias)
+
+    assert database.read_bytes() == before
+    assert alias.read_bytes() == before
+
+
+def test_planner_store_refuses_database_symlink_without_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "foreign.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    alias = tmp_path / "planner.sqlite3"
+    try:
+        alias.symlink_to(database)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unavailable: {exc}")
+    before = database.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_path_invalid"):
+        SQLiteStateStore(alias)
+
+    assert database.read_bytes() == before
+
+
+def test_planner_store_rechecks_identity_before_schema_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "planner.sqlite3"
+    with SQLiteStateStore(path):
+        pass
+    before = path.read_bytes()
+    real_identity = state_store_module._planner_database_identity
+    calls = 0
+
+    def changed_identity(candidate: Path) -> tuple[int, int] | None:
+        nonlocal calls
+        calls += 1
+        identity = real_identity(candidate)
+        if calls == 3 and identity is not None:
+            return (identity[0], identity[1] + 1)
+        return identity
+
+    monkeypatch.setattr(
+        state_store_module, "_planner_database_identity", changed_identity
+    )
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_path_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+def test_planner_store_rejects_legacy_table_with_changed_column_constraints(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "forged-legacy.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT
+        );
+        INSERT INTO schema_migrations VALUES (1, '2026-08-28T00:00:00+00:00');
+        """
+    )
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+def test_planner_store_rejects_legacy_table_with_missing_foreign_key(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "forged-foreign-key.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
+        INSERT INTO schema_migrations VALUES (1, '2026-08-28T00:00:00+00:00');
+        CREATE TABLE position_units (
+          position_symbol TEXT NOT NULL,
+          unit_no INTEGER NOT NULL,
+          qty TEXT NOT NULL,
+          entry_price TEXT NOT NULL,
+          n_at_entry TEXT NOT NULL,
+          stop_price TEXT NOT NULL,
+          broker_order_id TEXT,
+          client_order_id TEXT,
+          PRIMARY KEY (position_symbol, unit_no)
+        );
+        """
+    )
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+def test_planner_store_rejects_nonunique_replacement_for_unique_index(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "forged-index.sqlite3"
+    with SQLiteStateStore(path):
+        pass
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        DROP INDEX ux_intraday_one_entry;
+        CREATE INDEX ux_intraday_one_entry
+        ON order_intents(plan_id) WHERE order_role = 'ENTRY';
+        """
+    )
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+def test_planner_store_rejects_unique_index_with_changed_partial_predicate(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "forged-index-predicate.sqlite3"
+    with SQLiteStateStore(path):
+        pass
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        DROP INDEX ux_intraday_one_entry;
+        CREATE UNIQUE INDEX ux_intraday_one_entry
+        ON order_intents(plan_id) WHERE 0;
+        """
+    )
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+def test_planner_store_rejects_current_table_with_changed_check_constraint(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "forged-check.sqlite3"
+    with SQLiteStateStore(path):
+        pass
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA writable_schema = ON")
+    connection.execute(
+        """
+        UPDATE sqlite_master
+        SET sql = replace(
+          sql,
+          'mode TEXT NOT NULL CHECK (mode = ''shadow'')',
+          'mode TEXT NOT NULL CHECK (mode <> '''')'
+        )
+        WHERE type = 'table' AND name = 'intraday_plans'
+        """
+    )
+    connection.execute("PRAGMA writable_schema = OFF")
+    connection.commit()
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("table", "original", "replacement"),
+    [
+        (
+            "intraday_plans",
+            "plan_id TEXT PRIMARY KEY,",
+            "plan_id TEXT PRIMARY KEY ON CONFLICT REPLACE,",
+        ),
+        (
+            "runtime_events",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,",
+            "id INTEGER PRIMARY KEY,",
+        ),
+    ],
+)
+def test_planner_store_rejects_changed_current_table_sql_semantics(
+    tmp_path: Path,
+    table: str,
+    original: str,
+    replacement: str,
+) -> None:
+    path = tmp_path / f"forged-{table}.sqlite3"
+    with SQLiteStateStore(path):
+        pass
+    connection = sqlite3.connect(path)
+    schema_version = int(
+        connection.execute("PRAGMA schema_version").fetchone()[0]
+    )
+    connection.execute("PRAGMA writable_schema = ON")
+    updated = connection.execute(
+        """
+        UPDATE sqlite_master SET sql = replace(sql, ?, ?)
+        WHERE type = 'table' AND name = ?
+        """,
+        (original, replacement, table),
+    )
+    assert updated.rowcount == 1
+    connection.execute("PRAGMA writable_schema = OFF")
+    connection.execute(f"PRAGMA schema_version = {schema_version + 1}")
+    connection.commit()
+    assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("name", "schema"),
+    [
+        (
+            "migration-conflict-policy",
+            """
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY ON CONFLICT REPLACE,
+              applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations VALUES (1, '2026-08-28T00:00:00+00:00');
+            """,
+        ),
+        (
+            "runtime-autoincrement",
+            """
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY,
+              applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations VALUES (1, '2026-08-28T00:00:00+00:00');
+            CREATE TABLE runtime_events (
+              id INTEGER PRIMARY KEY,
+              level TEXT NOT NULL,
+              message TEXT NOT NULL,
+              payload TEXT,
+              created_at TEXT NOT NULL
+            );
+            """,
+        ),
+        (
+            "plan-conflict-policy",
+            """
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY,
+              applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations VALUES (1, '2026-08-28T00:00:00+00:00');
+            INSERT INTO schema_migrations VALUES (2, '2026-08-28T00:00:00+00:00');
+            CREATE TABLE intraday_plans (
+              plan_id TEXT PRIMARY KEY ON CONFLICT REPLACE,
+              account_key TEXT NOT NULL,
+              session_date TEXT NOT NULL,
+              symbol TEXT NOT NULL,
+              mode TEXT NOT NULL CHECK (mode = 'shadow'),
+              plan_hash TEXT NOT NULL CHECK (length(plan_hash) = 64),
+              payload TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              UNIQUE (account_key, session_date)
+            );
+            """,
+        ),
+    ],
+)
+def test_planner_store_rejects_changed_legacy_table_sql_before_migration(
+    tmp_path: Path,
+    name: str,
+    schema: str,
+) -> None:
+    path = tmp_path / f"forged-legacy-{name}.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(schema)
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
+def test_planner_store_rejects_changed_v5_table_sql_before_v6_migration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "forged-v5.sqlite3"
+    with SQLiteStateStore(path):
+        pass
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE intraday_plan_cohorts")
+    connection.execute("DELETE FROM schema_migrations WHERE version = 6")
+    schema_version = int(
+        connection.execute("PRAGMA schema_version").fetchone()[0]
+    )
+    connection.execute("PRAGMA writable_schema = ON")
+    connection.execute(
+        """
+        UPDATE sqlite_master
+        SET sql = replace(
+          sql,
+          'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+          'id INTEGER PRIMARY KEY,'
+        )
+        WHERE type = 'table' AND name = 'runtime_events'
+        """
+    )
+    connection.execute("PRAGMA writable_schema = OFF")
+    connection.execute(f"PRAGMA schema_version = {schema_version + 1}")
+    connection.commit()
+    assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
+        SQLiteStateStore(path)
+
+    assert path.read_bytes() == before
+
+
 def _intraday_payload(plan_id: str = "intraday-plan-1") -> dict[str, object]:
     return {
         "plan_id": plan_id,
@@ -431,6 +850,206 @@ def _intraday_notification() -> dict[str, object]:
         "level": "info",
         "payload": {"mode": "shadow", "live_order_submission": False},
     }
+
+
+def _cohort_lane(
+    plan_id: str, account_key: str, symbol: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    payload = _intraday_payload(plan_id)
+    payload["account_id"] = account_key
+    payload["symbol"] = symbol
+    notification = _intraday_notification()
+    notification["notification_key"] = f"intraday-plan:{account_key}:2026-08-28"
+    return payload, notification
+
+
+def test_intraday_cohort_locks_two_distinct_plans_atomically_and_idempotently() -> None:
+    lane_a, notification_a = _cohort_lane("plan-a", "acct-a", "AAPL")
+    lane_b, notification_b = _cohort_lane("plan-b", "acct-b", "MSFT")
+    with SQLiteStateStore() as store:
+        first, inserted = store.save_intraday_cohort_once(
+            cohort_id="cohort-1",
+            session_date="2026-08-28",
+            lane_a_status="PLAN",
+            lane_a_account_key="acct-a",
+            lane_a_symbol="AAPL",
+            lane_a_payload=lane_a,
+            lane_a_notification=notification_a,
+            lane_b_status="PLAN",
+            lane_b_account_key="acct-b",
+            lane_b_symbol="MSFT",
+            lane_b_payload=lane_b,
+            lane_b_notification=notification_b,
+        )
+        repeated, repeated_inserted = store.save_intraday_cohort_once(
+            cohort_id="cohort-1",
+            session_date="2026-08-28",
+            lane_a_status="PLAN",
+            lane_a_account_key="acct-a",
+            lane_a_symbol="AAPL",
+            lane_a_payload=lane_a,
+            lane_a_notification=notification_a,
+            lane_b_status="PLAN",
+            lane_b_account_key="acct-b",
+            lane_b_symbol="MSFT",
+            lane_b_payload=lane_b,
+            lane_b_notification=notification_b,
+        )
+
+        assert inserted is True
+        assert repeated_inserted is False
+        assert repeated == first
+        assert first["lanes"]["A"]["status"] == "PLAN"
+        assert first["lanes"]["A"]["plan"]["symbol"] == "AAPL"
+        assert first["lanes"]["B"]["plan"]["symbol"] == "MSFT"
+        assert len(store.list_intraday_plans()) == 2
+        assert len(store.list_notification_outbox()) == 2
+
+        changed_b = dict(lane_b)
+        changed_b["quantity"] = 2
+        with pytest.raises(ValueError, match="different data"):
+            store.save_intraday_cohort_once(
+                cohort_id="cohort-1",
+                session_date="2026-08-28",
+                lane_a_status="PLAN",
+                lane_a_account_key="acct-a",
+                lane_a_symbol="AAPL",
+                lane_a_payload=lane_a,
+                lane_a_notification=notification_a,
+                lane_b_status="PLAN",
+                lane_b_account_key="acct-b",
+                lane_b_symbol="MSFT",
+                lane_b_payload=changed_b,
+                lane_b_notification=notification_b,
+            )
+
+        changed_notification = dict(notification_b)
+        changed_notification["payload"] = {"plan_id": "changed-notification"}
+        with pytest.raises(ValueError, match="different data"):
+            store.save_intraday_cohort_once(
+                cohort_id="cohort-1",
+                session_date="2026-08-28",
+                lane_a_status="PLAN",
+                lane_a_account_key="acct-a",
+                lane_a_symbol="AAPL",
+                lane_a_payload=lane_a,
+                lane_a_notification=notification_a,
+                lane_b_status="PLAN",
+                lane_b_account_key="acct-b",
+                lane_b_symbol="MSFT",
+                lane_b_payload=lane_b,
+                lane_b_notification=changed_notification,
+            )
+
+
+def test_intraday_cohort_supports_non_plan_lane_outcomes() -> None:
+    lane_a, notification_a = _cohort_lane("plan-a", "acct-a", "AAPL")
+    with SQLiteStateStore() as store:
+        mixed, _ = store.save_intraday_cohort_once(
+            cohort_id="cohort-mixed",
+            session_date="2026-08-28",
+            lane_a_status="PLAN",
+            lane_a_account_key="acct-a",
+            lane_a_symbol="AAPL",
+            lane_a_payload=lane_a,
+            lane_a_notification=notification_a,
+            lane_b_status="NO_CANDIDATE",
+            lane_b_account_key="acct-b",
+        )
+        assert mixed["lanes"]["B"] == {"status": "NO_CANDIDATE", "plan": None}
+        assert mixed["manifest"]["lanes"]["B"]["symbol"] is None
+
+    with SQLiteStateStore() as store:
+        closed, _ = store.save_intraday_cohort_once(
+            cohort_id="cohort-closed",
+            session_date="2026-08-28",
+            lane_a_status="MARKET_CLOSED",
+            lane_a_account_key="acct-a",
+            lane_b_status="MARKET_CLOSED",
+            lane_b_account_key="acct-b",
+        )
+        assert closed["lanes"]["A"]["plan"] is None
+        assert closed["lanes"]["B"]["status"] == "MARKET_CLOSED"
+        with pytest.raises(ValueError, match="both"):
+            store.save_intraday_cohort_once(
+                cohort_id="cohort-invalid",
+                session_date="2026-08-29",
+                lane_a_status="MARKET_CLOSED",
+                lane_a_account_key="acct-a",
+                lane_b_status="NO_CANDIDATE",
+                lane_b_account_key="acct-b",
+            )
+
+
+def test_intraday_cohort_failure_rolls_back_both_plans_and_notifications() -> None:
+    lane_a, notification_a = _cohort_lane("plan-a", "acct-a", "AAPL")
+    lane_b, notification_b = _cohort_lane("plan-b", "acct-b", "MSFT")
+    with SQLiteStateStore() as store:
+        store._conn.execute(
+            """
+            CREATE TRIGGER reject_cohort BEFORE INSERT ON intraday_plan_cohorts
+            BEGIN SELECT RAISE(ABORT, 'forced cohort failure'); END
+            """
+        )
+        with pytest.raises(ValueError, match="transaction failed"):
+            store.save_intraday_cohort_once(
+                cohort_id="cohort-1",
+                session_date="2026-08-28",
+                lane_a_status="PLAN",
+                lane_a_account_key="acct-a",
+                lane_a_symbol="AAPL",
+                lane_a_payload=lane_a,
+                lane_a_notification=notification_a,
+                lane_b_status="PLAN",
+                lane_b_account_key="acct-b",
+                lane_b_symbol="MSFT",
+                lane_b_payload=lane_b,
+                lane_b_notification=notification_b,
+            )
+        assert store.list_intraday_plans() == []
+        assert store.list_notification_outbox() == []
+
+
+def test_intraday_cohort_database_check_rejects_duplicate_plan_symbol() -> None:
+    lane_a, _ = _cohort_lane("plan-a", "acct-a", "AAPL")
+    lane_b, _ = _cohort_lane("plan-b", "acct-b", "AAPL")
+    with SQLiteStateStore() as store:
+        store.save_intraday_plan_once(
+            account_key="acct-a",
+            session_date="2026-08-28",
+            symbol="AAPL",
+            payload=lane_a,
+        )
+        store.save_intraday_plan_once(
+            account_key="acct-b",
+            session_date="2026-08-28",
+            symbol="AAPL",
+            payload=lane_b,
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            store._conn.execute(
+                """
+                INSERT INTO intraday_plan_cohorts (
+                    cohort_id, session_date, lane_a_status, lane_b_status,
+                    lane_a_plan_id, lane_b_plan_id,
+                    lane_a_account_key, lane_b_account_key,
+                    lane_a_symbol, lane_b_symbol,
+                    manifest_hash, manifest, created_at
+                ) VALUES (?, ?, 'PLAN', 'PLAN', ?, ?, ?, ?, ?, ?, ?, '{}', ?)
+                """,
+                (
+                    "cohort-1",
+                    "2026-08-28",
+                    "plan-a",
+                    "plan-b",
+                    "acct-a",
+                    "acct-b",
+                    "AAPL",
+                    "AAPL",
+                    "0" * 64,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
 
 
 def test_intraday_plan_is_immutable_and_idempotent_per_account_session() -> None:
@@ -679,10 +1298,11 @@ def test_existing_database_receives_v4_intraday_schema_migration(
             )
         }
 
-    assert versions == [1, 2, 3, 4, 5]
+    assert versions == [1, 2, 3, 4, 5, 6]
     assert "intraday_plans" in tables
     assert "notification_outbox" in tables
     assert "intraday_runs" in tables
+    assert "intraday_plan_cohorts" in tables
 
 
 def _create_intraday_run(
@@ -774,7 +1394,7 @@ def test_v4_migration_is_complete_and_skips_when_already_applied() -> None:
         assert store._conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
 
 
-def test_v4_migration_rolls_back_all_ddl_on_failure(tmp_path) -> None:
+def test_partial_v4_schema_is_rejected_before_any_migration(tmp_path) -> None:
     path = tmp_path / "broken-v3.sqlite"
     connection = sqlite3.connect(path)
     connection.executescript(
@@ -796,10 +1416,12 @@ def test_v4_migration_rolls_back_all_ddl_on_failure(tmp_path) -> None:
         """
     )
     connection.close()
+    before = path.read_bytes()
 
-    with pytest.raises(sqlite3.OperationalError, match="duplicate column"):
+    with pytest.raises(sqlite3.DatabaseError, match="planner_db_schema_invalid"):
         SQLiteStateStore(path)
 
+    assert path.read_bytes() == before
     connection = sqlite3.connect(path)
     intent_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(order_intents)")
@@ -813,7 +1435,7 @@ def test_v4_migration_rolls_back_all_ddl_on_failure(tmp_path) -> None:
     connection.close()
     assert "account_key" not in intent_columns
     assert "intraday_runs" not in tables
-    assert versions == [1, 2, 3]
+    assert versions == [1]
 
 
 def test_intraday_writer_lease_fences_stale_process_and_cas_is_versioned() -> None:

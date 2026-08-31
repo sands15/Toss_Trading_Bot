@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -14,7 +15,7 @@ import pytest
 import turtle_bot.operations as operations
 from turtle_approval import ApprovalConfig, load_envelope
 from turtle_bot.config import intraday_simulation_experiment_hash, load_config
-from turtle_bot.intraday_paper import IntradayPaperStore
+from turtle_bot.intraday_paper import IntradayPaperStore, assert_simulation_topology
 from turtle_bot.operations import (
     IntradayPlanBlocked,
     _refresh_intraday_approval_envelope,
@@ -205,6 +206,76 @@ def test_service_rejects_invalid_effective_interval_before_io(tmp_path: Path) ->
                 transport=transport,
             )
 
+    assert transport.requests == []
+
+
+def test_simulation_rejects_same_planner_and_paper_path_before_creation(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    shared_db = (tmp_path / "intraday-paper.sqlite3").resolve()
+    _write_intraday_config(
+        config_path,
+        news_context_path=(tmp_path / "news-context.json").resolve(),
+    )
+    _enable_one_day_simulation(config_path, shared_db)
+    transport = FakeTransport([])
+
+    with pytest.raises(RuntimeError, match="ledger paths must be distinct"):
+        run_paper_service(
+            config_path=config_path,
+            state_db=shared_db,
+            log_dir=tmp_path / "logs",
+            once=True,
+            expected_mode="shadow",
+            env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+            transport=transport,
+        )
+
+    assert not shared_db.exists()
+    assert transport.requests == []
+
+
+def test_simulation_rejects_hardlinked_ledgers_without_mutation(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    planner_db = (tmp_path / "intraday.sqlite3").resolve()
+    paper_db = (tmp_path / "intraday-paper.sqlite3").resolve()
+    with sqlite3.connect(planner_db) as connection:
+        connection.execute("CREATE TABLE foreign_ledger(value TEXT)")
+    try:
+        paper_db.hardlink_to(planner_db)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+    before = planner_db.read_bytes()
+    _write_intraday_config(
+        config_path,
+        news_context_path=(tmp_path / "news-context.json").resolve(),
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    transport = FakeTransport([])
+
+    with pytest.raises(RuntimeError, match="isolated regular file"):
+        run_paper_service(
+            config_path=config_path,
+            state_db=planner_db,
+            log_dir=tmp_path / "logs",
+            once=True,
+            expected_mode="shadow",
+            env={"TOSS_CLIENT_ID": "id", "TOSS_CLIENT_SECRET": "secret"},
+            transport=transport,
+        )
+
+    assert planner_db.read_bytes() == before
+    assert paper_db.read_bytes() == before
+    with sqlite3.connect(planner_db) as connection:
+        assert {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        } == {"foreign_ledger"}
     assert transport.requests == []
 
 
@@ -531,7 +602,10 @@ def _write_automatic_intraday_config(
     path.write_text(raw, encoding="utf-8")
 
 
-def _enable_one_day_simulation(path: Path, paper_db: Path) -> None:
+def _enable_one_day_simulation(
+    path: Path, paper_db: Path, *, lanes: int = 1
+) -> None:
+    lanes_line = "      lanes: 2\n" if lanes == 2 else ""
     raw = path.read_text(encoding="utf-8").replace(
         "base_url: https://example.test",
         "base_url: https://openapi.tossinvest.com",
@@ -548,6 +622,7 @@ def _enable_one_day_simulation(path: Path, paper_db: Path) -> None:
             "      start_date: 2026-08-28\n"
             "      end_date: 2026-08-28\n"
             "      initial_cash: 10000\n"
+            f"{lanes_line}"
             "      slippage_fraction: 0.0005\n"
             f"      db_path: {json.dumps(str(paper_db.resolve()))}\n"
         ),
@@ -705,6 +780,60 @@ def _automatic_successful_responses(
         TossHttpResponse(200, {}, {"result": list(final_warnings or [])}),
         *_successful_responses()[2:5],
         *_successful_responses()[5:6],
+    ]
+
+
+def _automatic_two_candidate_responses(
+    *,
+    second_daily_incomplete: bool = False,
+) -> list[TossHttpResponse]:
+    first = _automatic_successful_responses()
+    second = _automatic_successful_responses()
+    first[7].payload["result"]["rankings"].append(
+        {
+            **first[7].payload["result"]["rankings"][0],
+            "rank": 2,
+            "symbol": "MSFT",
+        }
+    )
+    first[9].payload["result"].append(
+        {
+            "symbol": "MSFT",
+            "securityType": "STOCK",
+            "isCommonShare": True,
+            "isinCode": "US5949181045",
+        }
+    )
+    first[11].payload["result"].append(
+        {
+            **first[11].payload["result"][0],
+            "symbol": "MSFT",
+            "isinCode": "US5949181045",
+            "market": "NYSE",
+        }
+    )
+    second[19].payload["result"][0]["symbol"] = "MSFT"
+    if second_daily_incomplete:
+        second[13].payload["result"]["candles"] = second[13].payload["result"][
+            "candles"
+        ][:-1]
+    return [
+        first[0],
+        first[1],
+        first[6],
+        *first[7:12],
+        first[12],
+        first[13],
+        first[14],
+        first[19],
+        first[20],
+        second[12],
+        second[13],
+        second[14],
+        second[19],
+        second[20],
+        first[21],
+        second[21],
     ]
 
 
@@ -1011,6 +1140,533 @@ def test_intraday_simulation_sizes_from_virtual_cash_and_blocks_personal_reads(
         assert paper.current_cash() == Decimal("10000")
 
 
+def test_two_lane_simulation_locks_distinct_plans_and_publishes_cohort_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    context_path = tmp_path / "news-context.json"
+    _write_automatic_intraday_config(config_path, news_context_path=context_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        operations,
+        "_refresh_intraday_approval_envelope",
+        lambda **_kwargs: pytest.fail("two-lane simulation reached approval code"),
+    )
+    transport = FakeTransport(_automatic_two_candidate_responses())
+
+    snapshot, state_db = _run(
+        tmp_path,
+        transport,
+        config_name="two-lane.yaml",
+    )
+
+    assert snapshot.ready is True
+    assert sum(request.url.endswith("/api/v1/rankings") for request in transport.requests) == 1
+    assert all(
+        request.method == "GET" or request.url.endswith("/oauth2/token")
+        for request in transport.requests
+    )
+    assert all(request.json_body is None for request in transport.requests)
+    config = load_config(config_path)
+    paper_configs = dict(operations._intraday_paper_configs(config))
+    with SQLiteStateStore(state_db) as planner:
+        cohort = planner.load_intraday_cohort(
+            cohort_id="no-candidate-test",
+            session_date=date(2026, 8, 28),
+        )
+        assert cohort is not None
+        assert [
+            cohort["lanes"][lane]["plan"]["symbol"] for lane in ("A", "B")
+        ] == ["AAPL", "MSFT"]
+        assert len(planner.list_intraday_plans()) == 2
+        for lane in ("A", "B"):
+            simulation = cohort["lanes"][lane]["plan"]["payload"]["guardrails"][
+                "simulation"
+            ]
+            assert simulation["lanes"] == 2
+            assert simulation["lane_initial_cash"] == "5000"
+            assert simulation["cash_split"] == "50:50"
+            assert simulation["inter_lane_transfer_allowed"] is False
+
+    paper_stores = {
+        lane: IntradayPaperStore(paper_db, paper_configs[lane])
+        for lane in ("A", "B")
+    }
+    try:
+        assert [paper_stores[lane].current_cash() for lane in ("A", "B")] == [
+            Decimal("5000"),
+            Decimal("5000"),
+        ]
+        assert [
+            paper_stores[lane].daily_summary(date(2026, 8, 28))["symbol"]
+            for lane in ("A", "B")
+        ] == ["AAPL", "MSFT"]
+        coverage = paper_stores["A"].cohort_coverage("no-candidate-test")
+        assert coverage["status"] == "COMPLETE"
+        received: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        operations._publish_intraday_paper_status(
+            config=config,
+            snapshot=snapshot,
+            sink=lambda month, **metadata: received.append((month, metadata)),
+        )
+        month, metadata = received[0]
+        assert month["initial_cash"] == "10000"
+        assert month["current_cash"] == "10000"
+        assert month["distinct_trading_session_count"] == 1
+        assert month["cohort_coverage"]["covered"] == ["2026-08-28"]
+        assert month["sessions"][0]["distinct_symbols"] is True
+        assert set(month["lanes"]) == {"A", "B"}
+        assert metadata["latest_day"] is None
+    finally:
+        for paper_store in paper_stores.values():
+            paper_store.close()
+    assert json.loads(context_path.read_text(encoding="utf-8")) == {
+        "schema_version": 2,
+        "generated_at": NOW.isoformat(),
+        "market": "US",
+        "session_date": "2026-08-28",
+        "active_until": "2026-08-29T05:00:00+09:00",
+        "symbols": ["AAPL", "MSFT"],
+        "reason": "intraday_plan",
+    }
+    maintenance_calls: list[date] = []
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: maintenance_calls.append(kwargs["session_date"]),
+    )
+    late, _ = _run(
+        tmp_path,
+        FakeTransport([_token(), _calendar()]),
+        at=datetime(2026, 8, 28, 20, 0, 16, tzinfo=timezone.utc),
+        config_name="two-lane.yaml",
+    )
+    assert late.ready is True
+    assert maintenance_calls == [date(2026, 8, 28)]
+
+
+def test_two_lane_exhausted_lane_does_not_block_the_funded_lane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+    config = load_config(config_path)
+    paper_configs = dict(operations._intraday_paper_configs(config))
+    assert_simulation_topology(
+        paper_db,
+        simulation_id=config.intraday.simulation_id,
+        lanes=2,
+    )
+    with IntradayPaperStore(paper_db, paper_configs["A"]) as lane_a:
+        lane_a.ensure_two_lane_cohort(
+            cohort_id=config.intraday.simulation_id,
+            lane_b_config=paper_configs["B"],
+        )
+        with lane_a._write():
+            lane_a._conn.execute(
+                "UPDATE paper_runs SET current_cash = '0' WHERE run_id = ?",
+                (paper_configs["A"].run_id,),
+            )
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport(_automatic_two_candidate_responses()),
+        config_name="two-lane.yaml",
+    )
+
+    assert snapshot.ready is True
+    with SQLiteStateStore(state_db) as planner:
+        cohort = planner.load_intraday_cohort(
+            cohort_id="no-candidate-test",
+            session_date=date(2026, 8, 28),
+        )
+        assert cohort is not None
+        assert cohort["lanes"]["A"] == {
+            "status": "NO_CANDIDATE",
+            "plan": None,
+        }
+        assert cohort["lanes"]["B"]["status"] == "PLAN"
+        assert cohort["lanes"]["B"]["plan"]["symbol"] == "AAPL"
+    with IntradayPaperStore(paper_db, paper_configs["A"]) as lane_a:
+        assert lane_a.daily_summary(date(2026, 8, 28))["status"] == "NO_CANDIDATE"
+        assert lane_a.cohort_coverage("no-candidate-test")["status"] == "COMPLETE"
+    with IntradayPaperStore(paper_db, paper_configs["B"]) as lane_b:
+        assert lane_b.daily_summary(date(2026, 8, 28))["status"] == "WAITING_ENTRY"
+
+
+def test_two_lane_candidate_shortage_waits_then_locks_plan_and_no_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    early_responses = _automatic_successful_responses(
+        ranked_at="2026-08-28T12:28:50+00:00",
+        price_timestamp="2026-08-28T12:28:55+00:00",
+        book_timestamp="2026-08-28T12:28:56+00:00",
+    )
+    early_responses[14].payload["result"]["candles"] = [
+        _candle(f"2026-08-28T12:{minute}:00+00:00")
+        for minute in ("25", "26", "27")
+    ]
+    early, state_db = _run(
+        tmp_path,
+        FakeTransport(
+            [
+                early_responses[0],
+                early_responses[1],
+                early_responses[6],
+                *early_responses[7:15],
+                *early_responses[19:22],
+            ]
+        ),
+        at=NOW - timedelta(minutes=1, seconds=1),
+        config_name="two-lane.yaml",
+    )
+
+    assert early.blockers == ("intraday_no_eligible_candidate",)
+    with SQLiteStateStore(state_db) as planner:
+        assert planner.load_intraday_cohort(
+            cohort_id="no-candidate-test", session_date=date(2026, 8, 28)
+        ) is None
+
+    final_responses = _automatic_successful_responses()
+    final, _ = _run(
+        tmp_path,
+        FakeTransport(
+            [
+                final_responses[0],
+                final_responses[1],
+                final_responses[6],
+                final_responses[7],
+                *final_responses[11:15],
+                *final_responses[19:22],
+            ]
+        ),
+        config_name="two-lane.yaml",
+    )
+    assert final.ready is True
+    with SQLiteStateStore(state_db) as planner:
+        cohort = planner.load_intraday_cohort(
+            cohort_id="no-candidate-test", session_date=date(2026, 8, 28)
+        )
+        assert cohort is not None
+        assert cohort["lanes"]["A"]["status"] == "PLAN"
+        assert cohort["lanes"]["B"] == {"status": "NO_CANDIDATE", "plan": None}
+
+    config = load_config(config_path)
+    paper_configs = dict(operations._intraday_paper_configs(config))
+    with IntradayPaperStore(paper_db, paper_configs["A"]) as lane_a:
+        assert lane_a.daily_summary(date(2026, 8, 28))["status"] == "WAITING_ENTRY"
+        assert lane_a.cohort_coverage("no-candidate-test")["status"] == "COMPLETE"
+    with IntradayPaperStore(paper_db, paper_configs["B"]) as lane_b:
+        assert lane_b.daily_summary(date(2026, 8, 28))["status"] == "NO_CANDIDATE"
+    received: list[dict[str, Any]] = []
+    operations._publish_intraday_paper_status(
+        config=config,
+        snapshot=final,
+        sink=lambda month, **_metadata: received.append(month),
+    )
+    assert received[0]["coverage_covered"] == 1
+    assert received[0]["no_candidate_sessions"] == 1
+    assert received[0]["distinct_trading_session_count"] == 1
+    assert received[0]["lanes"]["B"]["no_candidate_sessions"] == 1
+    assert received[0]["drawdown_policy"] == "conservative_sum_of_lane_maxima"
+    from turtle_runtime.paper_status import PaperStatusWriter
+
+    writer = PaperStatusWriter(
+        (tmp_path / "status" / "paper-status.json").resolve(),
+        release_sha="a" * 40,
+        boot_id_hash="b" * 64,
+        clock=lambda: NOW,
+    )
+    operations._publish_intraday_paper_status(
+        config=config,
+        snapshot=final,
+        sink=writer.write,
+    )
+    status_payload = json.loads(writer.path.read_text(encoding="ascii"))
+    assert status_payload["no_candidate_count"] == 1
+    assert status_payload["simulation_lanes"] == 2
+    assert status_payload["distinct_trading_session_count"] == 1
+    assert status_payload["lanes"]["B"]["no_candidate_count"] == 1
+    context = json.loads((tmp_path / "news-context.json").read_text(encoding="utf-8"))
+    assert context["schema_version"] == 2
+    assert context["symbols"] == ["AAPL"]
+
+    restarted, _ = _run(
+        tmp_path,
+        FakeTransport([_token(), _calendar()]),
+        config_name="two-lane.yaml",
+    )
+    assert restarted.ready is True
+
+
+def test_two_lane_data_quality_error_never_creates_cohort_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport(
+            _automatic_two_candidate_responses(second_daily_incomplete=True)
+        ),
+        config_name="two-lane.yaml",
+    )
+
+    assert snapshot.blockers == ("intraday_daily_candles_incomplete",)
+    with SQLiteStateStore(state_db) as planner:
+        assert planner.load_intraday_cohort(
+            cohort_id="no-candidate-test", session_date=date(2026, 8, 28)
+        ) is None
+    config = load_config(config_path)
+    paper_configs = dict(operations._intraday_paper_configs(config))
+    with IntradayPaperStore(paper_db, paper_configs["A"]) as lane_a:
+        coverage = lane_a.cohort_coverage("no-candidate-test")
+        assert coverage["covered"] == []
+        assert coverage["missing"] == ["2026-08-28"]
+
+
+def test_two_lane_earlier_data_error_blocks_two_later_valid_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+
+    first = _automatic_successful_responses()
+    second = _automatic_successful_responses()
+    third = _automatic_successful_responses()
+    ranking = first[7].payload["result"]["rankings"]
+    ranking.extend(
+        [
+            {**ranking[0], "rank": 2, "symbol": "MSFT"},
+            {**ranking[0], "rank": 3, "symbol": "GOOG"},
+        ]
+    )
+    first[9].payload["result"].extend(
+        [
+            {
+                "symbol": "MSFT",
+                "securityType": "STOCK",
+                "isCommonShare": True,
+                "isinCode": "US5949181045",
+            },
+            {
+                "symbol": "GOOG",
+                "securityType": "STOCK",
+                "isCommonShare": True,
+                "isinCode": "US02079K1079",
+            },
+        ]
+    )
+    first[11].payload["result"].extend(
+        [
+            {
+                **first[11].payload["result"][0],
+                "symbol": "MSFT",
+                "isinCode": "US5949181045",
+                "market": "NYSE",
+            },
+            {
+                **first[11].payload["result"][0],
+                "symbol": "GOOG",
+                "isinCode": "US02079K1079",
+                "market": "NYSE",
+            },
+        ]
+    )
+    first[13].payload["result"]["candles"] = first[13].payload["result"][
+        "candles"
+    ][:-1]
+    second[19].payload["result"][0]["symbol"] = "MSFT"
+    third[19].payload["result"][0]["symbol"] = "GOOG"
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport(
+            [
+                first[0],
+                first[1],
+                first[6],
+                *first[7:14],
+                second[12],
+                second[13],
+                second[14],
+                second[19],
+                second[20],
+                third[12],
+                third[13],
+                third[14],
+                third[19],
+                third[20],
+            ]
+        ),
+        config_name="two-lane.yaml",
+    )
+
+    assert snapshot.blockers == ("intraday_daily_candles_incomplete",)
+    with SQLiteStateStore(state_db) as planner:
+        assert planner.load_intraday_cohort(
+            cohort_id="no-candidate-test",
+            session_date=date(2026, 8, 28),
+        ) is None
+
+
+def test_two_lane_empty_ranking_counts_one_distinct_no_candidate_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    responses = _automatic_successful_responses()
+    responses[7].payload["result"]["rankings"] = []
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport([responses[0], responses[1], responses[6], responses[7]]),
+        config_name="two-lane.yaml",
+    )
+
+    assert snapshot.ready is True
+    with SQLiteStateStore(state_db) as planner:
+        cohort = planner.load_intraday_cohort(
+            cohort_id="no-candidate-test", session_date=date(2026, 8, 28)
+        )
+        assert cohort is not None
+        assert [cohort["lanes"][lane]["status"] for lane in ("A", "B")] == [
+            "NO_CANDIDATE",
+            "NO_CANDIDATE",
+        ]
+    config = load_config(config_path)
+    received: list[dict[str, Any]] = []
+    operations._publish_intraday_paper_status(
+        config=config,
+        snapshot=snapshot,
+        sink=lambda month, **_metadata: received.append(month),
+    )
+    month = received[0]
+    assert month["coverage_covered"] == 1
+    assert month["no_candidate_sessions"] == 1
+    assert month["distinct_trading_session_count"] == 0
+    assert month["lanes"]["A"]["no_candidate_sessions"] == 1
+    assert month["lanes"]["B"]["no_candidate_sessions"] == 1
+
+
+def test_two_lane_drawdown_uses_conservative_sum_of_lane_maxima() -> None:
+    coverage = {
+        "status": "ACTIVE",
+        "expected": [],
+        "covered": [],
+        "missing": [],
+        "expected_count": 0,
+        "covered_count": 0,
+        "missing_count": 0,
+    }
+
+    def paper_store(*, drawdown: str, realized: str):
+        summary = {
+            "run_id": f"lane-{drawdown}",
+            "status": "ACTIVE",
+            "start_date": "2026-08-28",
+            "end_date_inclusive": "2026-08-28",
+            "initial_cash_usd": "5000",
+            "current_cash_usd": str(Decimal("5000") + Decimal(realized)),
+            "final_equity_usd": "5000",
+            "realized_pnl_usd": realized,
+            "clean_realized_pnl_usd": realized,
+            "return_fraction": "0",
+            "clean_return_fraction": str(Decimal(realized) / Decimal("5000")),
+            "total_fees_usd": "0",
+            "max_closed_equity_drawdown_usd": drawdown,
+            "max_drawdown_fraction": str(Decimal(drawdown) / Decimal("5000")),
+            "trade_count": 1,
+            "wins": 0,
+            "losses": 1,
+            "no_entry_count": 0,
+            "no_candidate_count": 0,
+            "invalid_result_count": 0,
+            "unresolved_position_count": 0,
+            "waiting_plan_count": 0,
+            "accepted_event_count": 0,
+            "journaled_frame_count": 0,
+            "data_gap_count": 0,
+            "coverage": coverage,
+        }
+        return SimpleNamespace(
+            config=SimpleNamespace(end_date=date(2026, 8, 28)),
+            summary=lambda **_kwargs: summary,
+            cohort_coverage=lambda _cohort_id: coverage,
+        )
+
+    month = operations._paper_cohort_public_payload(
+        cohort_id="drawdown-test",
+        paper_stores={
+            "A": paper_store(drawdown="100", realized="-100"),
+            "B": paper_store(drawdown="200", realized="-200"),
+        },
+        as_of=NOW,
+    )
+
+    assert month["max_drawdown"] == "300"
+    assert month["max_drawdown_fraction"] == "0.03"
+    assert month["drawdown_policy"] == "conservative_sum_of_lane_maxima"
+
+
+def test_two_lane_market_holiday_is_atomically_covered(tmp_path: Path) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport([_token(), _calendar(holiday=True)]),
+        config_name="two-lane.yaml",
+    )
+
+    assert snapshot.blockers == ("intraday_market_holiday",)
+    with SQLiteStateStore(state_db) as planner:
+        cohort = planner.load_intraday_cohort(
+            cohort_id="no-candidate-test", session_date=date(2026, 8, 28)
+        )
+        assert cohort is not None
+        assert [cohort["lanes"][lane]["status"] for lane in ("A", "B")] == [
+            "MARKET_CLOSED",
+            "MARKET_CLOSED",
+        ]
+    config = load_config(config_path)
+    paper_configs = dict(operations._intraday_paper_configs(config))
+    with IntradayPaperStore(paper_db, paper_configs["A"]) as lane_a:
+        assert lane_a.cohort_coverage("no-candidate-test")["covered"] == [
+            "2026-08-28"
+        ]
+    with IntradayPaperStore(paper_db, paper_configs["B"]) as lane_b:
+        assert lane_b.daily_summary(date(2026, 8, 28))["status"] == "MARKET_CLOSED"
+
+
 def test_paper_status_sink_receives_only_public_month_and_latest_day(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1090,10 +1746,12 @@ def test_paper_status_sink_receives_only_public_month_and_latest_day(
         strategy_kind="intraday",
         live_enabled=False,
         runtime=SimpleNamespace(mode="shadow"),
-        intraday=SimpleNamespace(
-            simulation_enabled=True,
-            simulation_db_path=tmp_path / "intraday-paper.sqlite3",
-        ),
+            intraday=SimpleNamespace(
+                simulation_enabled=True,
+                simulation_db_path=tmp_path / "intraday-paper.sqlite3",
+                simulation_id="august-forward-test",
+                simulation_lanes=1,
+            ),
     )
     received: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
@@ -1233,6 +1891,69 @@ def _paper_market_payload(
     }
 
 
+def _close_paper_plan_at_target(
+    paper: IntradayPaperStore,
+    plan: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    payload = plan["payload"]
+    entry_at = datetime.fromisoformat(payload["entry_start"]) + timedelta(seconds=1)
+    entry_trigger = Decimal(payload["entry_trigger"])
+    armed = paper.process_payload(
+        plan["plan_id"],
+        _paper_market_payload(
+            plan,
+            entry_at,
+            trade=entry_trigger,
+            bid=entry_trigger - Decimal("0.01"),
+            ask=entry_trigger,
+        ),
+        event_kind="trade",
+        now=entry_at,
+    )
+    filled_at = entry_at + timedelta(seconds=1)
+    entered = paper.process_payload(
+        plan["plan_id"],
+        _paper_market_payload(
+            plan,
+            filled_at,
+            trade=entry_trigger,
+            bid=entry_trigger - Decimal("0.01"),
+            ask=entry_trigger,
+        ),
+        event_kind="orderbook",
+        now=filled_at,
+    )
+    target_at = filled_at + timedelta(minutes=1)
+    target = Decimal(payload["target_trigger"])
+    exit_bid = target + Decimal("1")
+    exit_armed = paper.process_payload(
+        plan["plan_id"],
+        _paper_market_payload(
+            plan,
+            target_at,
+            trade=target,
+            bid=exit_bid,
+            ask=exit_bid + Decimal("0.01"),
+        ),
+        event_kind="trade",
+        now=target_at,
+    )
+    exited_at = target_at + timedelta(seconds=1)
+    exited = paper.process_payload(
+        plan["plan_id"],
+        _paper_market_payload(
+            plan,
+            exited_at,
+            trade=target,
+            bid=exit_bid,
+            ask=exit_bid + Decimal("0.01"),
+        ),
+        event_kind="orderbook",
+        now=exited_at,
+    )
+    return armed, entered, exit_armed, exited
+
+
 def test_intraday_simulation_forwards_fill_and_daily_reports_from_durable_outbox(
     tmp_path, monkeypatch
 ) -> None:
@@ -1281,61 +2002,9 @@ def test_intraday_simulation_forwards_fill_and_daily_reports_from_durable_outbox
     ) as paper:
         plan = state.list_intraday_plans()[0]
         payload = plan["payload"]
-        entry_at = datetime.fromisoformat(payload["entry_start"]) + timedelta(seconds=1)
-        entry_trigger = Decimal(payload["entry_trigger"])
-        entry_limit = Decimal(payload["entry_limit"])
-        armed = paper.process_payload(
-            plan["plan_id"],
-            _paper_market_payload(
-                plan,
-                entry_at,
-                trade=entry_trigger,
-                bid=entry_trigger - Decimal("0.01"),
-                ask=entry_trigger,
-            ),
-            event_kind="trade",
-            now=entry_at,
-        )
-        filled_at = entry_at + timedelta(seconds=1)
-        entered = paper.process_payload(
-            plan["plan_id"],
-            _paper_market_payload(
-                plan,
-                filled_at,
-                trade=entry_trigger,
-                bid=entry_trigger - Decimal("0.01"),
-                ask=entry_trigger,
-            ),
-            event_kind="orderbook",
-            now=filled_at,
-        )
-        target_at = filled_at + timedelta(minutes=1)
-        target = Decimal(payload["target_trigger"])
-        exit_bid = target + Decimal("1")
-        exit_armed = paper.process_payload(
-            plan["plan_id"],
-            _paper_market_payload(
-                plan,
-                target_at,
-                trade=target,
-                bid=exit_bid,
-                ask=exit_bid + Decimal("0.01"),
-            ),
-            event_kind="trade",
-            now=target_at,
-        )
-        exited_at = target_at + timedelta(seconds=1)
-        exited = paper.process_payload(
-            plan["plan_id"],
-            _paper_market_payload(
-                plan,
-                exited_at,
-                trade=target,
-                bid=exit_bid,
-                ask=exit_bid + Decimal("0.01"),
-            ),
-            event_kind="orderbook",
-            now=exited_at,
+        armed, entered, exit_armed, exited = _close_paper_plan_at_target(
+            paper,
+            plan,
         )
         regular_close = datetime.fromisoformat(payload["regular_close"])
         operations._sync_intraday_paper_plan(
@@ -1361,6 +2030,77 @@ def test_intraday_simulation_forwards_fill_and_daily_reports_from_durable_outbox
             "intraday_paper_exit_filled",
             "intraday_paper_daily_report",
         }
+
+
+def test_restart_reconciles_prior_terminal_fill_alerts_and_daily_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    operations._bootstrap_intraday_news_ledger(
+        (tmp_path / "news.sqlite3").resolve()
+    )
+    monkeypatch.setattr(operations.time, "sleep", lambda _seconds: None)
+    responses = _automatic_successful_responses()
+    first_transport = FakeTransport(
+        [responses[0], responses[1], responses[6], *responses[7:15], *responses[19:22]]
+    )
+
+    first, state_db = _run(
+        tmp_path,
+        first_transport,
+        config_name="simulation.yaml",
+    )
+    assert first.ready is True
+    config = load_config(config_path)
+    with SQLiteStateStore(state_db) as state, IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        plan = state.list_intraday_plans()[0]
+        _close_paper_plan_at_target(paper, plan)
+        assert paper.daily_summary(plan["session_date"])["status"] == "CLOSED"
+        assert {
+            alert["event"] for alert in paper.list_alerts(pending_only=True)
+        } >= {"entry_filled", "exit_filled"}
+        assert not any(
+            item["message"] == "intraday_paper_daily_report"
+            for item in state.list_notification_outbox()
+        )
+
+    restart_at = datetime(2026, 8, 31, 12, 30, tzinfo=timezone.utc)
+    restarted, _ = _run(
+        tmp_path,
+        FakeTransport([]),
+        config_name="simulation.yaml",
+        at=restart_at,
+    )
+    assert restarted.blockers == ("intraday_simulation_complete",)
+    with SQLiteStateStore(state_db) as state, IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.list_alerts(pending_only=True) == []
+        messages = [item["message"] for item in state.list_notification_outbox()]
+        assert messages.count("intraday_paper_entry_filled") == 1
+        assert messages.count("intraday_paper_exit_filled") == 1
+        assert messages.count("intraday_paper_daily_report") == 1
+
+    repeated, _ = _run(
+        tmp_path,
+        FakeTransport([]),
+        config_name="simulation.yaml",
+        at=restart_at + timedelta(minutes=1),
+    )
+    assert repeated.blockers == ("intraday_simulation_complete",)
+    with SQLiteStateStore(state_db) as state:
+        messages = [item["message"] for item in state.list_notification_outbox()]
+    assert messages.count("intraday_paper_entry_filled") == 1
+    assert messages.count("intraday_paper_exit_filled") == 1
+    assert messages.count("intraday_paper_daily_report") == 1
 
 
 def test_intraday_automatic_restart_never_reselects(tmp_path, monkeypatch) -> None:
@@ -3128,3 +3868,1375 @@ def test_intraday_configured_cost_must_cover_both_commission_legs(tmp_path) -> N
 def test_intraday_cash_parser_fails_closed(payload: Mapping[str, Any]) -> None:
     with pytest.raises(IntradayPlanBlocked):
         _strict_intraday_cash(payload)
+
+
+def _maintenance_test_config(paper_db: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        intraday=SimpleNamespace(
+            simulation_db_path=str(paper_db),
+            news_context_path=None,
+        )
+    )
+
+
+def _create_maintenance_test_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE sample(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO sample VALUES ('row')")
+
+
+@pytest.mark.parametrize("crash_stage", ["after_enqueue", "after_mark"])
+def test_paper_alert_forwarding_invalidates_before_cross_database_writes_and_rebacks_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_stage: str,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    session = date(2026, 8, 28)
+
+    class CrashingPaper:
+        mark_calls = 0
+        forwarded = False
+
+        def list_alerts(self, *, pending_only: bool):
+            assert pending_only is True
+            return [
+                {
+                    "alert_id": "alert-crash",
+                    "plan_id": "plan-crash",
+                    "event": "entry_filled",
+                    "level": "info",
+                    "payload": {
+                        "session_date": session.isoformat(),
+                        "price": "100",
+                    },
+                    "created_at": NOW.isoformat(),
+                }
+            ]
+
+        def daily_summary(self, requested):
+            assert str(requested) == session.isoformat()
+            return {
+                "run_id": "run-crash",
+                "plan_id": "plan-crash",
+                "session_date": session.isoformat(),
+                "status": "OPEN",
+            }
+
+        def summary(self, *, as_of):
+            assert as_of == NOW
+            return {"days": []}
+
+        def mark_alert_forwarded(self, alert_id: str, *, forwarded_at: datetime):
+            assert alert_id == "alert-crash"
+            assert forwarded_at == NOW
+            self.mark_calls += 1
+            self.forwarded = True
+            if crash_stage == "after_mark":
+                raise RuntimeError("synthetic crash after paper commit")
+            return True
+
+    paper = CrashingPaper()
+    real_enqueue = SQLiteStateStore.enqueue_notification_once
+
+    def enqueue_then_crash(self, **kwargs):
+        result = real_enqueue(self, **kwargs)
+        if (
+            crash_stage == "after_enqueue"
+            and kwargs.get("message") == "intraday_paper_entry_filled"
+        ):
+            raise RuntimeError("synthetic crash after planner commit")
+        return result
+
+    monkeypatch.setattr(
+        SQLiteStateStore, "enqueue_notification_once", enqueue_then_crash
+    )
+    with SQLiteStateStore(state_db) as store:
+        store.record_runtime_event(
+            "INFO",
+            "intraday_backup_completed",
+            {
+                "session_date": session.isoformat(),
+                "databases": ["planner", "paper"],
+            },
+        )
+        with pytest.raises(RuntimeError, match="synthetic crash"):
+            operations._forward_intraday_paper_alerts(
+                paper_store=paper,
+                store=store,
+                at=NOW,
+            )
+        events = store.list_runtime_events_for_messages(
+            ("intraday_backup_completed", "intraday_backup_invalidated")
+        )
+        completion_id = max(
+            event["id"]
+            for event in events
+            if event["message"] == "intraday_backup_completed"
+        )
+        invalidation_id = max(
+            event["id"]
+            for event in events
+            if event["message"] == "intraday_backup_invalidated"
+        )
+        assert invalidation_id > completion_id
+        assert any(
+            item["message"] == "intraday_paper_entry_filled"
+            for item in store.list_notification_outbox()
+        )
+
+        operations._run_intraday_post_close_maintenance(
+            config=_maintenance_test_config(paper_db),
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW + timedelta(minutes=1),
+        )
+        recovered_events = store.list_runtime_events_for_messages(
+            ("intraday_backup_completed", "intraday_backup_invalidated")
+        )
+
+    assert paper.mark_calls == (0 if crash_stage == "after_enqueue" else 1)
+    assert paper.forwarded is (crash_stage == "after_mark")
+    assert max(
+        event["id"]
+        for event in recovered_events
+        if event["message"] == "intraday_backup_completed"
+    ) > max(
+        event["id"]
+        for event in recovered_events
+        if event["message"] == "intraday_backup_invalidated"
+    )
+
+
+def test_post_close_maintenance_phases_run_once_per_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    config = _maintenance_test_config(paper_db)
+    backup_calls: list[str] = []
+    real_backup = operations.backup_sqlite
+
+    def tracked_backup(source, destination, **kwargs):
+        backup_calls.append(Path(destination).name)
+        return real_backup(source, destination, **kwargs)
+
+    monkeypatch.setattr(operations, "backup_sqlite", tracked_backup)
+    with SQLiteStateStore(state_db) as store:
+        for _ in range(2):
+            operations._run_intraday_post_close_maintenance(
+                config=config,
+                store=store,
+                state_db=state_db,
+                log_dir=logs,
+                session_date=date(2026, 8, 28),
+                at=NOW,
+            )
+        messages = [event["message"] for event in store.list_runtime_events()]
+
+    assert sorted(backup_calls) == [
+        "paper-2026-08-28.sqlite3",
+        "planner-2026-08-28.sqlite3",
+    ]
+    for message in (
+        "intraday_backup_completed",
+        "intraday_backup_retention_completed",
+        "intraday_log_rotation_completed",
+        "intraday_disk_check_completed",
+    ):
+        assert messages.count(message) == 1
+
+
+def test_completed_backup_missing_both_files_is_invalidated_and_rebuilt_only_for_current_session(
+    tmp_path: Path,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    config = _maintenance_test_config(paper_db)
+    session = date(2026, 8, 28)
+
+    with SQLiteStateStore(state_db) as store:
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW,
+        )
+        destination = tmp_path / "backups" / "planner-2026-08-28.sqlite3"
+        destination.unlink()
+        operations.sha256_manifest_path(destination).unlink()
+
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW + timedelta(minutes=1),
+        )
+        events = store.list_runtime_events_for_messages(
+            ("intraday_backup_completed", "intraday_backup_invalidated")
+        )
+        outbox = store.list_notification_outbox()
+
+    assert destination.exists()
+    assert operations.sha256_manifest_path(destination).exists()
+    assert sum(
+        event["message"] == "intraday_backup_completed" for event in events
+    ) == 2
+    assert any(
+        event["message"] == "intraday_backup_invalidated"
+        and event["payload"]["session_date"] == session.isoformat()
+        and event["payload"]["database"] == "planner"
+        for event in events
+    )
+    assert any(item["message"] == "intraday_backup_invalidated" for item in outbox)
+
+
+def test_logical_paper_invalidation_replaces_the_whole_backup_generation(
+    tmp_path: Path,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    config = _maintenance_test_config(paper_db)
+    session = date(2026, 8, 28)
+    backup_root = tmp_path / "backups"
+
+    with SQLiteStateStore(state_db) as store:
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW,
+        )
+        first_completion = max(
+            event["id"]
+            for event in store.list_runtime_events_for_messages(
+                ("intraday_backup_completed",)
+            )
+        )
+        with sqlite3.connect(paper_db) as connection:
+            connection.execute("INSERT INTO sample VALUES ('reconciled-row')")
+            connection.commit()
+        operations._invalidate_completed_paper_backup_if_any(
+            store=store,
+            session_date=session,
+            at=NOW + timedelta(seconds=1),
+        )
+
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW + timedelta(minutes=1),
+        )
+        second_completion = max(
+            event["id"]
+            for event in store.list_runtime_events_for_messages(
+                ("intraday_backup_completed",)
+            )
+        )
+        operations._invalidate_completed_paper_backup_if_any(
+            store=store,
+            session_date=session,
+            at=NOW + timedelta(minutes=1, seconds=1),
+        )
+        invalidation_alerts = [
+            item
+            for item in store.list_notification_outbox()
+            if item["message"] == "intraday_backup_invalidated"
+            and item["payload"].get("database") == "paper"
+        ]
+
+    assert second_completion > first_completion
+    with sqlite3.connect(
+        backup_root / "paper-2026-08-28.sqlite3"
+    ) as snapshot:
+        assert snapshot.execute("SELECT value FROM sample ORDER BY rowid").fetchall() == [
+            ("row",),
+            ("reconciled-row",),
+        ]
+    for alias in ("planner", "paper"):
+        destination = backup_root / f"{alias}-2026-08-28.sqlite3"
+        assert len(list(backup_root.glob(f".{destination.name}.quarantine-*"))) == 1
+        assert len(
+            list(
+                backup_root.glob(
+                    f".{operations.sha256_manifest_path(destination).name}.quarantine-*"
+                )
+            )
+        ) == 1
+    assert {
+        item["payload"]["backup_generation_id"]
+        for item in invalidation_alerts
+    } == {first_completion, second_completion}
+    assert len({item["notification_key"] for item in invalidation_alerts}) == 2
+
+
+def test_paper_backlog_invalidates_before_cross_database_materialization() -> None:
+    session = date(2026, 8, 28)
+    record = {
+        "plan_id": "planner-plan",
+        "account_key": "simulation-account",
+        "session_date": session,
+    }
+
+    class Planner:
+        def __init__(self) -> None:
+            self.events = [
+                {
+                    "id": 41,
+                    "message": "intraday_backup_completed",
+                    "payload": {
+                        "session_date": session.isoformat(),
+                        "databases": ["planner", "paper"],
+                    },
+                }
+            ]
+
+        def list_intraday_plans(self):
+            return [record]
+
+        def list_runtime_events_for_messages(self, _messages):
+            return list(self.events)
+
+        def record_runtime_event(self, level, message, payload):
+            self.events.append(
+                {
+                    "id": 42,
+                    "level": level,
+                    "message": message,
+                    "payload": dict(payload),
+                }
+            )
+
+        def enqueue_notification_once(self, **_kwargs):
+            return True
+
+    planner = Planner()
+
+    class CrashingPaper:
+        account_key = "simulation-account"
+
+        def summary(self, *, as_of):
+            assert as_of == NOW
+            return {"days": []}
+
+        def ensure_plan(self, _record, *, registered_at):
+            assert registered_at is None
+            assert planner.events[-1]["message"] == "intraday_backup_invalidated"
+            raise RuntimeError("synthetic crash after write-ahead fence")
+
+    with pytest.raises(RuntimeError, match="synthetic crash"):
+        operations._reconcile_intraday_paper_backlog(
+            paper_store=CrashingPaper(),
+            store=planner,
+            at=NOW,
+        )
+
+    assert planner.events[-1]["payload"] == {
+        "session_date": session.isoformat(),
+        "database": "paper",
+        "code": "paper_ledger_reconciled",
+        "backup_generation_id": 41,
+    }
+
+
+def test_untrusted_backup_root_temporarily_blocks_validation_then_recovers(
+    tmp_path: Path,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    config = _maintenance_test_config(paper_db)
+    session = date(2026, 8, 28)
+
+    with SQLiteStateStore(state_db) as store:
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW,
+        )
+        backup_root = tmp_path / "backups"
+        for artifact in tuple(backup_root.iterdir()):
+            artifact.unlink()
+        backup_root.rmdir()
+        backup_root.write_text("not-a-directory", encoding="utf-8")
+
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW + timedelta(minutes=1),
+        )
+        events = store.list_runtime_events_for_messages(
+            (
+                "intraday_backup_invalidated",
+                "intraday_backup_validation_failed",
+                "intraday_backup_validation_completed",
+                "intraday_maintenance_failed",
+            )
+        )
+        assert not any(
+            event["message"] == "intraday_backup_invalidated"
+            for event in events
+        )
+        assert any(
+            event["message"] == "intraday_backup_validation_failed"
+            for event in events
+        )
+        assert any(
+            event["message"] == "intraday_maintenance_failed"
+            and event["payload"]["code"] == "backup_directory_invalid"
+            for event in events
+        )
+
+        backup_root.unlink()
+        backup_root.mkdir()
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW + timedelta(minutes=2),
+        )
+        recovered = store.list_runtime_events_for_messages(
+            (
+                "intraday_backup_invalidated",
+                "intraday_backup_validation_completed",
+            )
+        )
+
+    assert {
+        event["payload"]["database"]
+        for event in recovered
+        if event["message"] == "intraday_backup_invalidated"
+    } == {"planner", "paper"}
+    assert any(
+        event["message"] == "intraday_backup_validation_completed"
+        for event in recovered
+    )
+
+
+def test_maintenance_event_ledger_failure_preserves_generation_and_blocks_catchup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    config = _maintenance_test_config(paper_db)
+    session = date(2026, 8, 28)
+
+    with SQLiteStateStore(state_db) as store:
+        assert operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW,
+        ) is True
+        backup_root = tmp_path / "backups"
+        before = {
+            path.name: path.read_bytes()
+            for path in backup_root.iterdir()
+            if path.is_file()
+        }
+        real_list = SQLiteStateStore.list_runtime_events_for_messages
+        reads = 0
+
+        def fail_first_event_ledger_read(self, messages):
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                raise sqlite3.OperationalError("synthetic event ledger read failure")
+            return real_list(self, messages)
+
+        def forbidden_backup_call(*_args, **_kwargs):
+            pytest.fail("backup artifacts cannot be touched without the event ledger")
+
+        monkeypatch.setattr(
+            SQLiteStateStore,
+            "list_runtime_events_for_messages",
+            fail_first_event_ledger_read,
+        )
+        for name in (
+            "backup_sqlite",
+            "finish_backup_retention_removal",
+            "quarantine_invalid_sqlite_backup",
+            "prune_backup_retention",
+        ):
+            monkeypatch.setattr(operations, name, forbidden_backup_call)
+
+        class QuiescentPaper:
+            def summary(self, *, as_of):
+                assert as_of == NOW + timedelta(days=3)
+                return {"coverage": {"covered": [session.isoformat()]}}
+
+            def run_is_quiescent_for_backup(self):
+                return True
+
+        with pytest.raises(IntradayPlanBlocked) as blocked:
+            operations._run_intraday_maintenance_catchup(
+                config=config,
+                paper_stores=(QuiescentPaper(),),
+                store=store,
+                state_db=state_db,
+                log_dir=logs,
+                before=date(2026, 8, 31),
+                at=NOW + timedelta(days=3),
+            )
+
+        assert blocked.value.code == "intraday_backup_validation_incomplete"
+        assert reads == 1
+        assert {
+            path.name: path.read_bytes()
+            for path in backup_root.iterdir()
+            if path.is_file()
+        } == before
+        events = real_list(
+            store,
+            (
+                "intraday_backup_completed",
+                "intraday_backup_invalidated",
+                "intraday_backup_validation_failed",
+            ),
+        )
+
+    assert sum(
+        event["message"] == "intraday_backup_completed" for event in events
+    ) == 1
+    assert not any(
+        event["message"] == "intraday_backup_invalidated" for event in events
+    )
+    assert any(
+        event["message"] == "intraday_backup_validation_failed"
+        and event["payload"]["code"] == "backup_event_ledger_read_failed"
+        for event in events
+    )
+
+
+def test_post_close_backup_failure_does_not_skip_disk_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    disk_calls: list[Path] = []
+
+    def fail_backup(_source, _destination, **_kwargs):
+        raise operations.MaintenanceError("forced_backup_failure")
+
+    def checked_disk(path):
+        disk_calls.append(Path(path))
+        return SimpleNamespace(
+            level="ok",
+            free_bytes=20 * 1024**3,
+            free_fraction=0.5,
+        )
+
+    monkeypatch.setattr(operations, "backup_sqlite", fail_backup)
+    monkeypatch.setattr(operations, "check_disk_space", checked_disk)
+    with SQLiteStateStore(state_db) as store:
+        operations._run_intraday_post_close_maintenance(
+            config=_maintenance_test_config(paper_db),
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=date(2026, 8, 28),
+            at=NOW,
+        )
+        events = store.list_runtime_events()
+        outbox = store.list_notification_outbox()
+
+    assert disk_calls == [tmp_path]
+    assert any(
+        event["message"] == "intraday_maintenance_failed"
+        and event["payload"]["code"] == "forced_backup_failure"
+        for event in events
+    )
+    assert any(event["message"] == "intraday_disk_check_completed" for event in events)
+    assert any(
+        item["message"] == "intraday_maintenance_failure"
+        and item["level"] == "error"
+        and item["payload"] == {
+            "session_date": "2026-08-28",
+            "code": "forced_backup_failure",
+        }
+        for item in outbox
+    )
+
+
+def test_partial_backup_generation_never_runs_retention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    real_backup = operations.backup_sqlite
+    calls: list[str] = []
+
+    def fail_second_source(source, destination, **kwargs):
+        alias = Path(destination).name.split("-", 1)[0]
+        calls.append(alias)
+        if alias == "paper":
+            raise operations.MaintenanceError("forced_paper_backup_failure")
+        return real_backup(source, destination, **kwargs)
+
+    monkeypatch.setattr(operations, "backup_sqlite", fail_second_source)
+    monkeypatch.setattr(
+        operations,
+        "prune_backup_retention",
+        lambda *_args, **_kwargs: pytest.fail(
+            "retention cannot run for a partial backup generation"
+        ),
+    )
+    with SQLiteStateStore(state_db) as store:
+        operations._run_intraday_post_close_maintenance(
+            config=_maintenance_test_config(paper_db),
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=date(2026, 8, 28),
+            at=NOW,
+        )
+        messages = [event["message"] for event in store.list_runtime_events()]
+
+    assert calls == ["planner", "paper"]
+    assert "intraday_backup_completed" not in messages
+    assert "intraday_backup_retention_completed" not in messages
+    assert "intraday_log_rotation_completed" in messages
+    assert "intraday_disk_check_completed" in messages
+
+
+def test_backup_completion_must_commit_before_retention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    real_record = SQLiteStateStore.record_runtime_event
+
+    def reject_completion(self, level, message, payload):
+        if message == "intraday_backup_completed":
+            raise sqlite3.OperationalError("synthetic completion failure")
+        return real_record(self, level, message, payload)
+
+    monkeypatch.setattr(
+        SQLiteStateStore, "record_runtime_event", reject_completion
+    )
+    monkeypatch.setattr(
+        operations,
+        "prune_backup_retention",
+        lambda *_args, **_kwargs: pytest.fail(
+            "retention requires a durable backup completion"
+        ),
+    )
+    with SQLiteStateStore(state_db) as store:
+        operations._run_intraday_post_close_maintenance(
+            config=_maintenance_test_config(paper_db),
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=date(2026, 8, 28),
+            at=NOW,
+        )
+        events = store.list_runtime_events()
+
+    assert not any(
+        event["message"] == "intraday_backup_completed" for event in events
+    )
+    assert any(
+        event["message"] == "intraday_maintenance_failed"
+        and event["payload"]["code"] == "backup_completion_record_failed"
+        for event in events
+    )
+
+
+def test_repeated_maintenance_code_alerts_once_per_recovered_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    config = _maintenance_test_config(paper_db)
+    session = date(2026, 8, 28)
+    real_backup = operations.backup_sqlite
+    should_fail = True
+
+    def flaky_backup(source, destination, **kwargs):
+        if should_fail:
+            raise operations.MaintenanceError("repeatable_backup_failure")
+        return real_backup(source, destination, **kwargs)
+
+    monkeypatch.setattr(operations, "backup_sqlite", flaky_backup)
+    with SQLiteStateStore(state_db) as store:
+        for minute in (0, 1):
+            operations._run_intraday_post_close_maintenance(
+                config=config,
+                store=store,
+                state_db=state_db,
+                log_dir=logs,
+                session_date=session,
+                at=NOW + timedelta(minutes=minute),
+            )
+        first_episode = [
+            item
+            for item in store.list_notification_outbox()
+            if item["message"] == "intraday_maintenance_failure"
+            and item["payload"].get("code") == "repeatable_backup_failure"
+        ]
+        assert len(first_episode) == 1
+
+        should_fail = False
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW + timedelta(minutes=2),
+        )
+        operations._invalidate_completed_paper_backup_if_any(
+            store=store,
+            session_date=session,
+            at=NOW + timedelta(minutes=2, seconds=1),
+        )
+        should_fail = True
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=session,
+            at=NOW + timedelta(minutes=3),
+        )
+        both_episodes = [
+            item
+            for item in store.list_notification_outbox()
+            if item["message"] == "intraday_maintenance_failure"
+            and item["payload"].get("code") == "repeatable_backup_failure"
+        ]
+
+    assert len(both_episodes) == 2
+    assert len({item["notification_key"] for item in both_episodes}) == 2
+
+
+def test_retention_candidates_resume_partly_retired_restore_sets_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    backup_root = tmp_path / "backups"
+    backup_root.mkdir()
+    for alias, dates in {
+        "planner": ("2026-08-27", "2026-08-28"),
+        "paper": (
+            "2026-08-25",
+            "2026-08-26",
+            "2026-08-27",
+            "2026-08-28",
+        ),
+    }.items():
+        for artifact_date in dates:
+            (backup_root / f"{alias}-{artifact_date}.sqlite3").write_bytes(b"x")
+    (
+        backup_root / "planner-2026-08-26.sqlite3.retention-delete"
+    ).write_text("retention-delete-v1\n", encoding="ascii")
+    monkeypatch.setattr(
+        operations, "quarantine_invalid_sqlite_backup", lambda _path: False
+    )
+    observed: dict[str, set[str]] = {}
+
+    def capture(items, **_kwargs):
+        materialized = tuple(items)
+        alias = materialized[0].path.name.split("-", 1)[0]
+        observed[alias] = {
+            item.path.name.removeprefix(f"{alias}-").removesuffix(".sqlite3")
+            for item in materialized
+        }
+
+    monkeypatch.setattr(operations, "prune_backup_retention", capture)
+    with SQLiteStateStore(state_db) as store:
+        store.record_runtime_event(
+            "INFO",
+            "intraday_backup_completed",
+            {
+                "session_date": "2026-08-28",
+                "databases": ["planner", "paper"],
+            },
+        )
+        operations._run_intraday_post_close_maintenance(
+            config=_maintenance_test_config(paper_db),
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=date(2026, 8, 28),
+            at=NOW,
+        )
+
+    assert observed == {
+        "planner": {"2026-08-27", "2026-08-28"},
+        "paper": {"2026-08-26", "2026-08-27", "2026-08-28"},
+    }
+
+
+def test_post_close_backup_waits_for_quiescent_paper_but_other_phases_run(
+    tmp_path: Path,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+    config = _maintenance_test_config(paper_db)
+
+    with SQLiteStateStore(state_db) as store:
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=date(2026, 8, 28),
+            at=NOW,
+            backup_ready=False,
+        )
+        first_messages = {
+            event["message"] for event in store.list_runtime_events()
+        }
+        assert "intraday_backup_completed" not in first_messages
+        assert "intraday_backup_retention_completed" not in first_messages
+        assert "intraday_log_rotation_completed" in first_messages
+        assert "intraday_disk_check_completed" in first_messages
+
+        operations._run_intraday_post_close_maintenance(
+            config=config,
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=date(2026, 8, 28),
+            at=NOW + timedelta(minutes=1),
+            backup_ready=True,
+        )
+        final_messages = {
+            event["message"] for event in store.list_runtime_events()
+        }
+
+    assert "intraday_backup_completed" in final_messages
+    assert "intraday_backup_retention_completed" in final_messages
+
+
+def test_iteration_marks_backup_not_ready_when_paper_is_not_quiescent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    observed: list[bool] = []
+    monkeypatch.setattr(
+        operations.IntradayPaperStore,
+        "run_is_quiescent_for_backup",
+        lambda _self: False,
+    )
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: observed.append(kwargs["backup_ready"]),
+    )
+
+    _run(
+        tmp_path,
+        FakeTransport([_token(), _calendar()]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 20, 0, 16, tzinfo=timezone.utc),
+    )
+
+    assert observed == [False]
+
+
+def test_terminal_backlog_failure_blocks_backup_and_new_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    observed: list[bool] = []
+
+    def fail_reconciliation(**_kwargs) -> None:
+        raise RuntimeError("forced terminal backlog failure")
+
+    monkeypatch.setattr(
+        operations,
+        "_reconcile_intraday_paper_backlog",
+        fail_reconciliation,
+    )
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: observed.append(kwargs["backup_ready"]),
+    )
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport([]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 21, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.blockers == ("intraday_read_or_integrity_failure",)
+    assert observed == [False]
+    with SQLiteStateStore(state_db) as state:
+        assert state.list_intraday_plans() == []
+
+
+def test_retention_failure_preserves_current_backups_and_other_phases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_db = tmp_path / "state.sqlite3"
+    paper_db = tmp_path / "paper.sqlite3"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _create_maintenance_test_database(paper_db)
+
+    def fail_retention(_items, **_kwargs):
+        raise operations.MaintenanceError("forced_retention_failure")
+
+    monkeypatch.setattr(operations, "prune_backup_retention", fail_retention)
+    with SQLiteStateStore(state_db) as store:
+        operations._run_intraday_post_close_maintenance(
+            config=_maintenance_test_config(paper_db),
+            store=store,
+            state_db=state_db,
+            log_dir=logs,
+            session_date=date(2026, 8, 28),
+            at=NOW,
+        )
+        messages = [event["message"] for event in store.list_runtime_events()]
+
+    backup_root = tmp_path / "backups"
+    for alias in ("planner", "paper"):
+        destination = backup_root / f"{alias}-2026-08-28.sqlite3"
+        assert destination.exists()
+        assert operations.sha256_manifest_path(destination).exists()
+    assert "intraday_backup_completed" in messages
+    assert "intraday_backup_retention_completed" not in messages
+    assert "intraday_log_rotation_completed" in messages
+    assert "intraday_disk_check_completed" in messages
+
+
+def test_preclose_does_not_run_maintenance(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    calls: list[date] = []
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: calls.append(kwargs["session_date"]),
+    )
+
+    snapshot, _ = _run(
+        tmp_path,
+        FakeTransport([_token(), _calendar()]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 11, tzinfo=timezone.utc),
+    )
+
+    assert isinstance(snapshot, operations.HealthSnapshot)
+    assert calls == []
+
+
+def test_maintenance_exception_cannot_replace_snapshot_and_runs_after_close(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    order: list[str] = []
+    real_close = operations.IntradayPaperStore.close
+
+    def tracked_close(self):
+        order.append("close")
+        return real_close(self)
+
+    def fail_maintenance(**_kwargs):
+        order.append("maintenance")
+        raise RuntimeError("forced maintenance failure")
+
+    monkeypatch.setattr(operations.IntradayPaperStore, "close", tracked_close)
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        fail_maintenance,
+    )
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport([_token(), _calendar()]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 20, 0, 16, tzinfo=timezone.utc),
+    )
+
+    assert isinstance(snapshot, operations.HealthSnapshot)
+    assert order == ["close", "maintenance"]
+    with SQLiteStateStore(state_db) as store:
+        assert any(
+            event["message"] == "intraday_maintenance_failed"
+            and event["payload"]["code"] == "maintenance_unhandled_error"
+            for event in store.list_runtime_events()
+        )
+
+
+def test_persisted_plan_triggers_maintenance_when_calendar_fetch_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    responses = _successful_responses()
+    first, _ = _run(
+        tmp_path,
+        FakeTransport(
+            [responses[0], responses[1], responses[6], responses[7], responses[8]]
+        ),
+        config_name="simulation.yaml",
+    )
+    assert first.ready is True
+    order: list[str] = []
+    real_close = operations.IntradayPaperStore.close
+
+    def tracked_close(self):
+        order.append("close")
+        return real_close(self)
+
+    monkeypatch.setattr(operations.IntradayPaperStore, "close", tracked_close)
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **_kwargs: order.append("maintenance"),
+    )
+    snapshot, _ = _run(
+        tmp_path,
+        FakeTransport([_token(), OSError("calendar unavailable")]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 20, 0, 16, tzinfo=timezone.utc),
+    )
+
+    assert isinstance(snapshot, operations.HealthSnapshot)
+    assert order == ["close", "maintenance"]
+
+
+def test_two_lane_postclose_attempts_both_closes_before_maintenance(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+    order: list[str] = []
+    real_close = operations.IntradayPaperStore.close
+    close_count = 0
+
+    def tracked_close(self):
+        nonlocal close_count
+        close_count += 1
+        order.append(f"close-{close_count}")
+        if close_count == 1:
+            raise RuntimeError("forced first close failure")
+        return real_close(self)
+
+    monkeypatch.setattr(operations.IntradayPaperStore, "close", tracked_close)
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **_kwargs: order.append("maintenance"),
+    )
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport([_token(), _calendar()]),
+        config_name="two-lane.yaml",
+        at=datetime(2026, 8, 28, 20, 0, 16, tzinfo=timezone.utc),
+    )
+
+    assert isinstance(snapshot, operations.HealthSnapshot)
+    assert order == ["close-1", "close-2", "maintenance"]
+    with SQLiteStateStore(state_db) as store:
+        assert any(
+            event["message"] == "intraday_maintenance_failed"
+            and event["payload"]["code"] == "paper_store_close_failed"
+            for event in store.list_runtime_events()
+        )
+
+
+def test_weekday_17_local_runs_maintenance_without_schedule_or_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    calls: list[date] = []
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: calls.append(kwargs["session_date"]),
+    )
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport([_token(), OSError("calendar unavailable")]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 21, tzinfo=timezone.utc),
+    )
+
+    assert isinstance(snapshot, operations.HealthSnapshot)
+    assert calls == [date(2026, 8, 28)]
+    with SQLiteStateStore(state_db) as store:
+        assert store.list_intraday_plans() == []
+    config = load_config(config_path)
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_PLAN"
+
+
+def test_weekday_fallback_without_durable_coverage_cannot_complete_a_backup(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+
+    _snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport([_token(), OSError("calendar unavailable")]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 21, tzinfo=timezone.utc),
+    )
+
+    with SQLiteStateStore(state_db) as store:
+        messages = {event["message"] for event in store.list_runtime_events()}
+    assert "intraday_backup_completed" not in messages
+    assert "intraday_backup_retention_completed" not in messages
+    assert "intraday_log_rotation_completed" in messages
+    assert "intraday_disk_check_completed" in messages
+    assert not (tmp_path / "backups").exists()
+
+
+@pytest.mark.parametrize(
+    "at",
+    [
+        datetime(2026, 8, 28, 20, 59, tzinfo=timezone.utc),
+        datetime(2026, 8, 29, 21, tzinfo=timezone.utc),
+        datetime(2026, 9, 1, 21, tzinfo=timezone.utc),
+    ],
+)
+def test_local_maintenance_fallback_skips_preclose_weekend_and_outside_run(
+    tmp_path: Path,
+    monkeypatch,
+    at: datetime,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "      end_date: 2026-08-28",
+            "      end_date: 2026-08-31",
+        ),
+        encoding="utf-8",
+    )
+    calls: list[date] = []
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: calls.append(kwargs["session_date"]),
+    )
+
+    _run(
+        tmp_path,
+        FakeTransport([_token(), OSError("calendar unavailable")]),
+        config_name="simulation.yaml",
+        at=at,
+    )
+
+    assert calls == []
+
+
+def test_two_lane_weekday_17_local_fallback_runs_once_without_cohort_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "two-lane.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db, lanes=2)
+    calls: list[date] = []
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: calls.append(kwargs["session_date"]),
+    )
+
+    snapshot, state_db = _run(
+        tmp_path,
+        FakeTransport([_token(), OSError("calendar unavailable")]),
+        config_name="two-lane.yaml",
+        at=datetime(2026, 8, 28, 21, tzinfo=timezone.utc),
+    )
+
+    assert isinstance(snapshot, operations.HealthSnapshot)
+    assert calls == [date(2026, 8, 28)]
+    with SQLiteStateStore(state_db) as store:
+        assert store.list_intraday_plans() == []
+
+
+def test_weekday_holiday_still_runs_maintenance_after_17_local(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_intraday_config(
+        config_path,
+        news_context_path=tmp_path / "news-context.json",
+    )
+    _enable_one_day_simulation(config_path, paper_db)
+    calls: list[date] = []
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: calls.append(kwargs["session_date"]),
+    )
+
+    _run(
+        tmp_path,
+        FakeTransport([_token(), _calendar(holiday=True)]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 21, tzinfo=timezone.utc),
+    )
+
+    assert calls == [date(2026, 8, 28)]
+
+
+def test_no_candidate_coverage_is_unchanged_by_local_maintenance_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "simulation.yaml"
+    paper_db = tmp_path / "intraday-paper.sqlite3"
+    _write_automatic_intraday_config(config_path)
+    _enable_one_day_simulation(config_path, paper_db)
+    config = load_config(config_path)
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        paper.record_no_candidate(date(2026, 8, 28), recorded_at=NOW)
+    calls: list[date] = []
+    monkeypatch.setattr(
+        operations,
+        "_run_intraday_post_close_maintenance",
+        lambda **kwargs: calls.append(kwargs["session_date"]),
+    )
+
+    _run(
+        tmp_path,
+        FakeTransport([_token(), OSError("calendar unavailable")]),
+        config_name="simulation.yaml",
+        at=datetime(2026, 8, 28, 21, tzinfo=timezone.utc),
+    )
+
+    assert calls == [date(2026, 8, 28)]
+    with IntradayPaperStore(
+        paper_db,
+        operations._intraday_paper_config(config),
+    ) as paper:
+        assert paper.daily_summary(date(2026, 8, 28))["status"] == "NO_CANDIDATE"

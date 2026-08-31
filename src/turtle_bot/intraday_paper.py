@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import stat
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -17,6 +20,8 @@ __all__ = [
     "IntradayPaperStore",
     "PaperSimulationBlocked",
     "PaperSimulationError",
+    "PaperStreamInstanceInactive",
+    "assert_simulation_topology",
     "simulation_account_key",
 ]
 
@@ -27,6 +32,11 @@ _SYMBOL_RE = re.compile(r"(?=.{1,16}\Z)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?\Z")
 _DECIMAL_RE = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
+_PAPER_SCHEMA_CACHE: tuple[
+    dict[str, frozenset[tuple[object, ...]]],
+    dict[str, frozenset[tuple[object, ...]]],
+    frozenset[tuple[str, str, str]],
+] | None = None
 
 
 class PaperSimulationError(RuntimeError):
@@ -35,6 +45,29 @@ class PaperSimulationError(RuntimeError):
 
 class PaperSimulationBlocked(PaperSimulationError):
     """Raised when unresolved state makes another simulated plan unsafe."""
+
+
+class PaperStreamInstanceInactive(PaperSimulationError):
+    """Raised when a stopped or superseded stream attempts another write."""
+
+
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    """Enable/read WAL with bounded retries for simultaneous process startup."""
+
+    for attempt in range(20):
+        try:
+            row = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            if attempt == 19:
+                break
+            time.sleep(0.01 * (attempt + 1))
+            continue
+        if row is not None and str(row[0]).lower() == "wal":
+            return
+        break
+    raise PaperSimulationError("paper simulation SQLite WAL mode is unavailable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +126,477 @@ def simulation_account_key(config: IntradayPaperConfig) -> str:
     return f"simulation-{_config_hash(config)[:24]}"
 
 
+def _paper_database_path(path: str | Path) -> Path:
+    if str(path) == ":memory:":
+        raise ValueError("paper simulation requires a durable SQLite file")
+    return Path(os.path.abspath(Path(path).expanduser()))
+
+
+def _paper_database_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PaperSimulationError(
+            "paper simulation database path is not isolated"
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise PaperSimulationError("paper simulation database path is not isolated")
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def _paper_schema_sql(
+    connection: sqlite3.Connection, kind: str, name: str
+) -> str | None:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
+        (kind, name),
+    ).fetchone()
+    if row is None:
+        raise PaperSimulationError(
+            "paper simulation database schema is not paper-owned"
+        )
+    if row[0] is None:
+        return None
+    if not isinstance(row[0], str):
+        raise PaperSimulationError(
+            "paper simulation database schema is not paper-owned"
+        )
+    return " ".join(row[0].split())
+
+
+def _paper_index_signature(
+    connection: sqlite3.Connection, table: str, index: str
+) -> tuple[object, ...]:
+    row = next(
+        (
+            item
+            for item in connection.execute(f'PRAGMA index_list("{table}")')
+            if str(item[1]) == index
+        ),
+        None,
+    )
+    if row is None:
+        raise PaperSimulationError(
+            "paper simulation database schema is not paper-owned"
+        )
+    xinfo = tuple(
+        (
+            int(column[0]),
+            int(column[1]),
+            None if column[2] is None else str(column[2]),
+            int(column[3]),
+            None if column[4] is None else str(column[4]),
+            int(column[5]),
+        )
+        for column in connection.execute(f'PRAGMA index_xinfo("{index}")')
+    )
+    return (
+        index,
+        int(row[2]),
+        str(row[3]),
+        int(row[4]),
+        xinfo,
+        _paper_schema_sql(connection, "index", index),
+    )
+
+
+def _paper_table_signature(
+    connection: sqlite3.Connection, table: str
+) -> tuple[object, ...]:
+    columns = tuple(
+        (
+            int(row[0]),
+            str(row[1]),
+            str(row[2]).upper(),
+            int(row[3]),
+            None if row[4] is None else str(row[4]),
+            int(row[5]),
+            int(row[6]),
+        )
+        for row in connection.execute(f'PRAGMA table_xinfo("{table}")')
+    )
+    foreign_keys = tuple(
+        sorted(
+            tuple(row)
+            for row in connection.execute(f'PRAGMA foreign_key_list("{table}")')
+        )
+    )
+    automatic_indexes = []
+    for row in connection.execute(f'PRAGMA index_list("{table}")'):
+        if str(row[3]) != "c":
+            automatic_indexes.append(
+                _paper_index_signature(connection, table, str(row[1]))
+            )
+    table_options = next(
+        (
+            (str(row[2]), int(row[3]), int(row[4]), int(row[5]))
+            for row in connection.execute("PRAGMA table_list")
+            if str(row[1]) == table
+        ),
+        None,
+    )
+    if table_options is None:
+        raise PaperSimulationError(
+            "paper simulation database schema is not paper-owned"
+        )
+    return (
+        columns,
+        foreign_keys,
+        tuple(sorted(automatic_indexes)),
+        table_options,
+        _paper_schema_sql(connection, "table", table),
+    )
+
+
+def _canonical_paper_schema() -> tuple[
+    dict[str, frozenset[tuple[object, ...]]],
+    dict[str, frozenset[tuple[object, ...]]],
+    frozenset[tuple[str, str, str]],
+]:
+    global _PAPER_SCHEMA_CACHE
+    if _PAPER_SCHEMA_CACHE is None:
+        connection = sqlite3.connect(":memory:", isolation_level=None)
+        try:
+            connection.row_factory = sqlite3.Row
+            holder = object.__new__(IntradayPaperStore)
+            holder._conn = connection
+            holder._create_schema()
+            rows = connection.execute(
+                "SELECT type, name, tbl_name FROM sqlite_master"
+            ).fetchall()
+            objects = frozenset(
+                (str(row[0]), str(row[1]), str(row[2]))
+                for row in rows
+                if not str(row[1]).startswith("sqlite_")
+            )
+            tables = {
+                str(row[1]) for row in rows if str(row[0]) == "table"
+                and not str(row[1]).startswith("sqlite_")
+            }
+            contracts = {
+                table: frozenset({_paper_table_signature(connection, table)})
+                for table in tables
+            }
+            indexes = {
+                str(row[1]): frozenset(
+                    {
+                        _paper_index_signature(
+                            connection, str(row[2]), str(row[1])
+                        )
+                    }
+                )
+                for row in rows
+                if str(row[0]) == "index"
+                and not str(row[1]).startswith("sqlite_")
+            }
+            stream_table = "paper_stream_instances"
+            connection.execute(
+                f'ALTER TABLE "{stream_table}" DROP COLUMN last_seen_at'
+            )
+            without_last_seen = _paper_table_signature(connection, stream_table)
+            legacy_stream_index = _paper_index_signature(
+                connection,
+                stream_table,
+                "idx_paper_stream_instances_open",
+            )
+            connection.execute(
+                f'ALTER TABLE "{stream_table}" ADD COLUMN last_seen_at TEXT'
+            )
+            appended_last_seen = _paper_table_signature(connection, stream_table)
+            contracts[stream_table] = frozenset(
+                set(contracts[stream_table])
+                | {without_last_seen, appended_last_seen}
+            )
+            indexes["idx_paper_stream_instances_open"] = frozenset(
+                set(indexes["idx_paper_stream_instances_open"])
+                | {legacy_stream_index}
+            )
+        finally:
+            connection.close()
+        _PAPER_SCHEMA_CACHE = contracts, indexes, objects
+    return _PAPER_SCHEMA_CACHE
+
+
+def _validate_paper_schema(connection: sqlite3.Connection) -> None:
+    quick_check = connection.execute("PRAGMA quick_check").fetchone()
+    if quick_check is None or str(quick_check[0]) != "ok":
+        raise PaperSimulationError("paper simulation database integrity check failed")
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise PaperSimulationError(
+            "paper simulation database foreign key check failed"
+        )
+    rows = connection.execute(
+        "SELECT type, name, tbl_name FROM sqlite_master"
+    ).fetchall()
+    objects = frozenset(
+        (str(row[0]), str(row[1]), str(row[2]))
+        for row in rows
+        if not str(row[1]).startswith("sqlite_")
+    )
+    if not objects:
+        if rows:
+            raise PaperSimulationError(
+                "paper simulation database schema is not paper-owned"
+            )
+        return
+    contracts, canonical_indexes, canonical_objects = _canonical_paper_schema()
+    if not objects <= canonical_objects:
+        raise PaperSimulationError(
+            "paper simulation database schema is not paper-owned"
+        )
+    tables = {name for kind, name, _owner in objects if kind == "table"}
+    if not tables:
+        raise PaperSimulationError(
+            "paper simulation database schema is not paper-owned"
+        )
+    for table in tables:
+        if _paper_table_signature(connection, table) not in contracts[table]:
+            raise PaperSimulationError(
+                "paper simulation database schema is not paper-owned"
+            )
+    for kind, index, table in objects:
+        if kind == "index" and _paper_index_signature(
+            connection, table, index
+        ) not in canonical_indexes[index]:
+            raise PaperSimulationError(
+                "paper simulation database schema is not paper-owned"
+            )
+
+
+def _prepare_paper_database(path: Path) -> tuple[int, int]:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        identity = _paper_database_identity(path)
+        if identity is None:
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                descriptor = os.open(path, flags, 0o600)
+            except FileExistsError:
+                pass
+            else:
+                os.close(descriptor)
+            identity = _paper_database_identity(path)
+        if identity is None:
+            raise PaperSimulationError(
+                "paper simulation database path is not isolated"
+            )
+        connection = sqlite3.connect(
+            f"{path.as_uri()}?mode=ro", uri=True, timeout=30
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only = ON")
+            _validate_paper_schema(connection)
+        finally:
+            connection.close()
+        if _paper_database_identity(path) != identity:
+            raise PaperSimulationError(
+                "paper simulation database identity changed during validation"
+            )
+        return identity
+    except PaperSimulationError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise PaperSimulationError(
+            "paper simulation database could not be validated"
+        ) from exc
+
+
+def _open_paper_database(
+    path: Path, expected_identity: tuple[int, int]
+) -> sqlite3.Connection:
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(str(path), timeout=30, isolation_level=None)
+        if _paper_database_identity(path) != expected_identity:
+            raise PaperSimulationError(
+                "paper simulation database identity changed while opening"
+            )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        _validate_paper_schema(connection)
+        connection.execute("PRAGMA query_only = OFF")
+        return connection
+    except Exception:
+        if connection is not None:
+            connection.close()
+        raise
+
+
+def assert_simulation_topology(
+    path: str | Path,
+    *,
+    simulation_id: str,
+    lanes: int,
+) -> None:
+    """Atomically claim or verify one immutable lane topology."""
+
+    base_id = _identifier(simulation_id, "simulation_id")
+    if type(lanes) is not int or lanes not in {1, 2}:
+        raise ValueError("lanes must be exactly 1 or 2")
+    database = _paper_database_path(path)
+    expected_identity = _prepare_paper_database(database)
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = _open_paper_database(database, expected_identity)
+        connection.execute("PRAGMA busy_timeout = 30000")
+        _enable_wal(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS paper_simulation_topologies (
+                simulation_id TEXT PRIMARY KEY,
+                lanes INTEGER NOT NULL CHECK (lanes IN (1, 2)),
+                claimed_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS paper_simulation_topology_runs (
+                run_id TEXT PRIMARY KEY,
+                simulation_id TEXT NOT NULL,
+                lane TEXT NOT NULL CHECK (lane IN ('SINGLE', 'A', 'B')),
+                FOREIGN KEY (simulation_id)
+                    REFERENCES paper_simulation_topologies(simulation_id)
+            )
+            """
+        )
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        existing = connection.execute(
+            "SELECT lanes FROM paper_simulation_topologies WHERE simulation_id = ?",
+            (base_id,),
+        ).fetchone()
+        if existing is not None and int(existing[0]) != lanes:
+            raise PaperSimulationBlocked(
+                "simulation_id already belongs to a different lane topology"
+            )
+        expected_runs = (
+            ((base_id, "SINGLE"),)
+            if lanes == 1
+            else ((f"{base_id}-a", "A"), (f"{base_id}-b", "B"))
+        )
+        expected_run_ids = {run_id for run_id, _lane in expected_runs}
+        conflict = False
+        for topology in connection.execute(
+            "SELECT simulation_id, lanes FROM paper_simulation_topologies"
+        ).fetchall():
+            owner_id = str(topology[0])
+            owner_lanes = int(topology[1])
+            owner_runs = (
+                {owner_id}
+                if owner_lanes == 1
+                else {f"{owner_id}-a", f"{owner_id}-b"}
+            )
+            if owner_runs & expected_run_ids and (
+                owner_id != base_id or owner_lanes != lanes
+            ):
+                conflict = True
+                break
+        if not conflict:
+            owners = connection.execute(
+                """
+                SELECT run_id, simulation_id, lane
+                FROM paper_simulation_topology_runs
+                WHERE run_id IN ({})
+                """.format(",".join("?" for _ in expected_runs)),
+                tuple(run_id for run_id, _lane in expected_runs),
+            ).fetchall()
+            expected_owner = {
+                run_id: (base_id, lane) for run_id, lane in expected_runs
+            }
+            conflict = any(
+                expected_owner.get(str(row[0])) != (str(row[1]), str(row[2]))
+                for row in owners
+            )
+        cohort = (
+            connection.execute(
+                """
+                SELECT cohort_id, lane_a_run_id, lane_b_run_id
+                FROM paper_cohorts
+                WHERE cohort_id = ? OR lane_a_run_id IN ({})
+                   OR lane_b_run_id IN ({})
+                LIMIT 1
+                """.format(
+                    ",".join("?" for _ in expected_runs),
+                    ",".join("?" for _ in expected_runs),
+                ),
+                (
+                    base_id,
+                    *(run_id for run_id, _lane in expected_runs),
+                    *(run_id for run_id, _lane in expected_runs),
+                ),
+            ).fetchone()
+            if "paper_cohorts" in tables
+            else None
+        )
+        if not conflict and lanes == 1 and cohort is not None:
+            conflict = True
+        if not conflict and lanes == 2 and cohort is not None:
+            conflict = not (
+                str(cohort[0]) == base_id
+                and str(cohort[1]) == f"{base_id}-a"
+                and str(cohort[2]) == f"{base_id}-b"
+            )
+        if not conflict and lanes == 2 and "paper_runs" in tables:
+            base_run = connection.execute(
+                "SELECT 1 FROM paper_runs WHERE run_id = ? LIMIT 1",
+                (base_id,),
+            ).fetchone()
+            derived_run = connection.execute(
+                "SELECT 1 FROM paper_runs WHERE run_id IN (?, ?) LIMIT 1",
+                (f"{base_id}-a", f"{base_id}-b"),
+            ).fetchone()
+            conflict = base_run is not None or bool(
+                existing is None and cohort is None and derived_run is not None
+            )
+        if conflict:
+            raise PaperSimulationBlocked(
+                "simulation_id already belongs to a different lane topology"
+            )
+        if existing is None:
+            connection.execute(
+                """
+                INSERT INTO paper_simulation_topologies (
+                    simulation_id, lanes, claimed_at
+                ) VALUES (?, ?, ?)
+                """,
+                (base_id, lanes, _iso(datetime.now(timezone.utc))),
+            )
+        for run_id, lane in expected_runs:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO paper_simulation_topology_runs (
+                    run_id, simulation_id, lane
+                ) VALUES (?, ?, ?)
+                """,
+                (run_id, base_id, lane),
+            )
+        connection.commit()
+    except PaperSimulationError:
+        if connection is not None:
+            connection.rollback()
+        raise
+    except (OSError, sqlite3.Error):
+        if connection is not None:
+            connection.rollback()
+        raise PaperSimulationError(
+            "paper simulation topology could not be verified"
+        ) from None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 class IntradayPaperStore:
     """SQLite-backed virtual USD account driven only by normalized market snapshots.
 
@@ -103,27 +607,24 @@ class IntradayPaperStore:
     MAX_PENDING_EVENTS = 128
 
     def __init__(self, path: str | Path, config: IntradayPaperConfig) -> None:
-        self.path = Path(path).expanduser()
-        if str(path) == ":memory:":
-            raise ValueError("paper simulation requires a durable SQLite file")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = _paper_database_path(path)
+        expected_identity = _prepare_paper_database(self.path)
         self.config = config
         self.account_key = simulation_account_key(config)
         self._write_depth = 0
         self._pending_events: list[dict[str, Any]] = []
-        self._conn = sqlite3.connect(
-            str(self.path), timeout=30, isolation_level=None
-        )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.execute("PRAGMA busy_timeout = 30000")
-        mode = str(self._conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]).lower()
-        if mode != "wal":
+        self._conn = _open_paper_database(self.path, expected_identity)
+        try:
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute("PRAGMA busy_timeout = 30000")
+            _enable_wal(self._conn)
+            self._conn.execute("PRAGMA synchronous = FULL")
+            self._create_schema()
+            self._ensure_run()
+        except Exception:
             self._conn.close()
-            raise PaperSimulationError("paper simulation SQLite WAL mode is unavailable")
-        self._conn.execute("PRAGMA synchronous = FULL")
-        self._create_schema()
-        self._ensure_run()
+            raise
 
     def __enter__(self) -> IntradayPaperStore:
         return self
@@ -141,6 +642,13 @@ class IntradayPaperStore:
     def pending_event_count(self) -> int:
         return len(self._pending_events)
 
+    def discard_pending(self) -> int:
+        """Drop an unfenced in-memory tail after its stream lease is lost."""
+
+        count = len(self._pending_events)
+        self._pending_events.clear()
+        return count
+
     def queue_payload(
         self,
         plan_id: str,
@@ -149,6 +657,7 @@ class IntradayPaperStore:
         event_kind: str,
         now: datetime,
         commission_fraction: Decimal | str | None = None,
+        stream_instance_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Queue one frame without disk I/O; auto-flush at a fixed bounded size.
 
@@ -173,16 +682,20 @@ class IntradayPaperStore:
             }
         )
         if len(self._pending_events) >= self.MAX_PENDING_EVENTS:
-            return self.flush_pending()
+            return self.flush_pending(stream_instance_id=stream_instance_id)
         return []
 
-    def flush_pending(self) -> list[dict[str, Any]]:
+    def flush_pending(
+        self, *, stream_instance_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Durably process the pending frame tail with one SQLite FULL commit."""
 
         if not self._pending_events:
             return []
         pending = list(self._pending_events)
         with self._write():
+            if stream_instance_id is not None:
+                self._require_active_stream_instance_locked(stream_instance_id)
             results = [self.process_payload(**event) for event in pending]
         del self._pending_events[: len(pending)]
         return results
@@ -190,6 +703,110 @@ class IntradayPaperStore:
     def current_cash(self) -> Decimal:
         row = self._run_row()
         return _stored_decimal(row["current_cash"], "stored current_cash")
+
+    def session_is_quiescent_for_backup(self, session_date: date | str) -> bool:
+        """Return true only when this session cannot receive another stream write."""
+
+        session = _date(session_date, "session_date")
+        row = self._conn.execute(
+            """
+            SELECT plan_id, status FROM paper_plans
+            WHERE run_id = ? AND session_date = ?
+            """,
+            (self.config.run_id, session.isoformat()),
+        ).fetchone()
+        if row is None:
+            covered = self._conn.execute(
+                """
+                SELECT (
+                    EXISTS(
+                        SELECT 1 FROM paper_market_closed_sessions
+                        WHERE run_id = ? AND session_date = ?
+                    ) + EXISTS(
+                        SELECT 1 FROM paper_no_candidate_sessions
+                        WHERE run_id = ? AND session_date = ?
+                    )
+                )
+                """,
+                (
+                    self.config.run_id,
+                    session.isoformat(),
+                    self.config.run_id,
+                    session.isoformat(),
+                ),
+            ).fetchone()[0]
+            return int(covered) == 1
+        if row["status"] not in {"CLOSED", "INVALID", "NO_ENTRY", "UNRESOLVED"}:
+            return False
+        active = self._conn.execute(
+            """
+            SELECT 1 FROM paper_stream_instances
+            WHERE run_id = ? AND plan_id = ? AND ended_at IS NULL
+            LIMIT 1
+            """,
+            (self.config.run_id, row["plan_id"]),
+        ).fetchone()
+        return active is None
+
+    def run_is_quiescent_for_backup(self) -> bool:
+        """Return true only when this run has no state a stream may still change."""
+
+        nonterminal = self._conn.execute(
+            """
+            SELECT 1 FROM paper_plans
+            WHERE run_id = ?
+              AND status NOT IN ('CLOSED','INVALID','NO_ENTRY','UNRESOLVED')
+            LIMIT 1
+            """,
+            (self.config.run_id,),
+        ).fetchone()
+        if nonterminal is not None:
+            return False
+        active = self._conn.execute(
+            """
+            SELECT 1 FROM paper_stream_instances
+            WHERE run_id = ? AND ended_at IS NULL
+            LIMIT 1
+            """,
+            (self.config.run_id,),
+        ).fetchone()
+        return active is None
+
+    def reap_stale_terminal_streams(self, *, at: datetime) -> int:
+        """Close crash-left stream markers only after their liveness TTL expires."""
+
+        observed_at = _utc_datetime(at, "at")
+        reaped = 0
+        with self._write():
+            rows = self._conn.execute(
+                """
+                SELECT stream.instance_id, stream.last_seen_at
+                FROM paper_stream_instances AS stream
+                JOIN paper_plans AS plan
+                  ON plan.run_id = stream.run_id AND plan.plan_id = stream.plan_id
+                WHERE stream.run_id = ? AND stream.ended_at IS NULL
+                  AND plan.status IN ('CLOSED','INVALID','NO_ENTRY','UNRESOLVED')
+                ORDER BY stream.started_at
+                """,
+                (self.config.run_id,),
+            ).fetchall()
+            for row in rows:
+                last_seen = _parse_datetime(row["last_seen_at"], "stream last_seen_at")
+                age = (observed_at - last_seen).total_seconds()
+                if age < -self.config.future_tolerance_seconds:
+                    raise PaperSimulationError("stream liveness timestamp is from the future")
+                if age <= self.config.quote_max_age_seconds:
+                    continue
+                updated = self._conn.execute(
+                    """
+                    UPDATE paper_stream_instances
+                    SET ended_at = ?, end_reason = 'terminal_stream_liveness_expired'
+                    WHERE run_id = ? AND instance_id = ? AND ended_at IS NULL
+                    """,
+                    (_iso(observed_at), self.config.run_id, row["instance_id"]),
+                )
+                reaped += int(updated.rowcount == 1)
+        return reaped
 
     def assert_ready(self, session_date: date | str) -> None:
         session = _date(session_date, "session_date")
@@ -431,6 +1048,233 @@ class IntradayPaperStore:
             "recorded_at": str(existing["recorded_at"]),
         }
 
+    def ensure_two_lane_cohort(
+        self,
+        *,
+        cohort_id: str,
+        lane_b_config: IntradayPaperConfig,
+        created_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Register fixed A/B sub-runs; this store's config owns lane A."""
+
+        clean_cohort_id = _identifier(cohort_id, "cohort_id")
+        if not isinstance(lane_b_config, IntradayPaperConfig):
+            raise TypeError("lane_b_config must be an IntradayPaperConfig")
+        lane_a_config = self.config
+        if lane_a_config.run_id == lane_b_config.run_id:
+            raise PaperSimulationError("cohort lanes require different run_id values")
+        if (
+            lane_a_config.start_date != lane_b_config.start_date
+            or lane_a_config.end_date != lane_b_config.end_date
+        ):
+            raise PaperSimulationError("cohort lanes require the same date window")
+        expected = {
+            "lane_a_run_id": lane_a_config.run_id,
+            "lane_b_run_id": lane_b_config.run_id,
+            "lane_a_initial_cash": _dstr(lane_a_config.initial_cash_usd),
+            "lane_b_initial_cash": _dstr(lane_b_config.initial_cash_usd),
+            "start_date": lane_a_config.start_date.isoformat(),
+            "end_date": lane_a_config.end_date.isoformat(),
+            "lane_a_config_hash": _config_hash(lane_a_config),
+            "lane_b_config_hash": _config_hash(lane_b_config),
+        }
+        at = _utc_datetime(created_at or datetime.now(timezone.utc), "created_at")
+        with self._write():
+            self._ensure_run_locked(lane_b_config)
+            existing = self._conn.execute(
+                "SELECT * FROM paper_cohorts WHERE cohort_id = ?",
+                (clean_cohort_id,),
+            ).fetchone()
+            if existing is None:
+                self._conn.execute(
+                    """
+                    INSERT INTO paper_cohorts (
+                        cohort_id, lane_a_run_id, lane_b_run_id,
+                        lane_a_initial_cash, lane_b_initial_cash,
+                        start_date, end_date, lane_a_config_hash,
+                        lane_b_config_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        clean_cohort_id,
+                        expected["lane_a_run_id"],
+                        expected["lane_b_run_id"],
+                        expected["lane_a_initial_cash"],
+                        expected["lane_b_initial_cash"],
+                        expected["start_date"],
+                        expected["end_date"],
+                        expected["lane_a_config_hash"],
+                        expected["lane_b_config_hash"],
+                        _iso(at),
+                    ),
+                )
+                existing = self._paper_cohort_row(clean_cohort_id)
+            elif any(existing[key] != value for key, value in expected.items()):
+                raise PaperSimulationError(
+                    "cohort_id already exists with different immutable config"
+                )
+        return self._paper_cohort_payload(existing)
+
+    def record_cohort_session(
+        self,
+        *,
+        cohort_id: str,
+        session_date: date | str,
+        lane_a_status: str,
+        lane_b_status: str,
+        lane_a_plan_id: str | None = None,
+        lane_a_symbol: str | None = None,
+        lane_b_plan_id: str | None = None,
+        lane_b_symbol: str | None = None,
+        recorded_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Atomically cover one date for both registered paper sub-runs."""
+
+        clean_cohort_id = _identifier(cohort_id, "cohort_id")
+        session = _date(session_date, "session_date")
+        at = _utc_datetime(recorded_at or datetime.now(timezone.utc), "recorded_at")
+        lane_a = _paper_cohort_lane_values(
+            lane_a_status, lane_a_plan_id, lane_a_symbol, "A"
+        )
+        lane_b = _paper_cohort_lane_values(
+            lane_b_status, lane_b_plan_id, lane_b_symbol, "B"
+        )
+        if (lane_a[0] == "MARKET_CLOSED") != (lane_b[0] == "MARKET_CLOSED"):
+            raise PaperSimulationError("MARKET_CLOSED must apply to both cohort lanes")
+        if lane_a[2] is not None and lane_a[2] == lane_b[2]:
+            raise PaperSimulationError("cohort PLAN symbols must be different")
+        values = (*lane_a, *lane_b)
+        with self._write():
+            cohort = self._paper_cohort_row(clean_cohort_id)
+            self._assert_paper_cohort_owner(cohort)
+            start = _date(cohort["start_date"], "cohort start_date")
+            end = _date(cohort["end_date"], "cohort end_date")
+            if not start <= session <= end or session.weekday() >= 5:
+                raise PaperSimulationError(
+                    "cohort session must be an expected weekday in the run window"
+                )
+            existing = self._conn.execute(
+                """
+                SELECT * FROM paper_cohort_sessions
+                WHERE cohort_id = ? AND session_date = ?
+                """,
+                (clean_cohort_id, session.isoformat()),
+            ).fetchone()
+            if existing is not None:
+                if not _stored_paper_cohort_lane_complete(existing, "a") or not (
+                    _stored_paper_cohort_lane_complete(existing, "b")
+                ):
+                    raise PaperSimulationError(
+                        "cohort session is incomplete and cannot be repaired implicitly"
+                    )
+                stored = tuple(
+                    existing[key]
+                    for key in (
+                        "lane_a_status",
+                        "lane_a_plan_id",
+                        "lane_a_symbol",
+                        "lane_b_status",
+                        "lane_b_plan_id",
+                        "lane_b_symbol",
+                    )
+                )
+                if stored != values:
+                    raise PaperSimulationError(
+                        "cohort session already exists with different immutable data"
+                    )
+                return self._paper_cohort_session_payload(cohort, existing)
+            self._apply_cohort_lane_coverage(
+                run_id=str(cohort["lane_a_run_id"]),
+                session=session,
+                lane=lane_a,
+                at=at,
+            )
+            self._apply_cohort_lane_coverage(
+                run_id=str(cohort["lane_b_run_id"]),
+                session=session,
+                lane=lane_b,
+                at=at,
+            )
+            self._conn.execute(
+                """
+                INSERT INTO paper_cohort_sessions (
+                    cohort_id, session_date,
+                    lane_a_status, lane_a_plan_id, lane_a_symbol,
+                    lane_b_status, lane_b_plan_id, lane_b_symbol, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (clean_cohort_id, session.isoformat(), *values, _iso(at)),
+            )
+            stored = self._conn.execute(
+                """
+                SELECT * FROM paper_cohort_sessions
+                WHERE cohort_id = ? AND session_date = ?
+                """,
+                (clean_cohort_id, session.isoformat()),
+            ).fetchone()
+        return self._paper_cohort_session_payload(cohort, stored)
+
+    def cohort_coverage(self, cohort_id: str) -> dict[str, Any]:
+        """Treat a date as covered only when both fixed lanes are present."""
+
+        clean_cohort_id = _identifier(cohort_id, "cohort_id")
+        cohort = self._paper_cohort_row(clean_cohort_id)
+        self._assert_paper_cohort_owner(cohort)
+        expected = _expected_weekday_dates(
+            _date(cohort["start_date"], "cohort start_date"),
+            _date(cohort["end_date"], "cohort end_date"),
+        )
+        rows = {
+            str(row["session_date"]): row
+            for row in self._conn.execute(
+                """
+                SELECT * FROM paper_cohort_sessions
+                WHERE cohort_id = ? ORDER BY session_date
+                """,
+                (clean_cohort_id,),
+            )
+        }
+        lane_covered = {
+            lane: [
+                day
+                for day in expected
+                if day in rows and _stored_paper_cohort_lane_complete(rows[day], lane)
+            ]
+            for lane in ("a", "b")
+        }
+        covered = [
+            day
+            for day in expected
+            if day in lane_covered["a"] and day in lane_covered["b"]
+        ]
+        missing = [day for day in expected if day not in covered]
+        return {
+            "cohort_id": clean_cohort_id,
+            "status": "COMPLETE" if not missing else "INCOMPLETE",
+            "start_date": cohort["start_date"],
+            "end_date_inclusive": cohort["end_date"],
+            "expected": expected,
+            "covered": covered,
+            "missing": missing,
+            "expected_count": len(expected),
+            "covered_count": len(covered),
+            "missing_count": len(missing),
+            "lanes": {
+                "A": {
+                    "run_id": cohort["lane_a_run_id"],
+                    "initial_cash_usd": cohort["lane_a_initial_cash"],
+                    "covered": lane_covered["a"],
+                    "missing": [day for day in expected if day not in lane_covered["a"]],
+                },
+                "B": {
+                    "run_id": cohort["lane_b_run_id"],
+                    "initial_cash_usd": cohort["lane_b_initial_cash"],
+                    "covered": lane_covered["b"],
+                    "missing": [day for day in expected if day not in lane_covered["b"]],
+                },
+            },
+        }
+
     def load_plan(self, plan_id: str) -> dict[str, Any]:
         """Return the current durable paper-plan state for stream integration."""
 
@@ -449,7 +1293,11 @@ class IntradayPaperStore:
         clean_instance_id = _identifier(instance_id, "instance_id")
         at = _utc_datetime(started_at, "started_at")
         with self._write():
-            self._plan_row(clean_plan_id)
+            plan = self._plan_row(clean_plan_id)
+            if plan["status"] not in {"WAITING_ENTRY", "OPEN"}:
+                raise PaperStreamInstanceInactive(
+                    "a terminal plan cannot start a stream instance"
+                )
             previous = self._conn.execute(
                 """
                 SELECT instance_id, started_at FROM paper_stream_instances
@@ -540,6 +1388,19 @@ class IntradayPaperStore:
                 ),
             )
             return updated.rowcount == 1
+
+    def _require_active_stream_instance_locked(self, instance_id: str) -> None:
+        clean_instance_id = _identifier(instance_id, "instance_id")
+        active = self._conn.execute(
+            """
+            SELECT 1 FROM paper_stream_instances
+            WHERE run_id = ? AND instance_id = ? AND ended_at IS NULL
+            LIMIT 1
+            """,
+            (self.config.run_id, clean_instance_id),
+        ).fetchone()
+        if active is None:
+            raise PaperStreamInstanceInactive("stream instance is no longer active")
 
     def process_payload(
         self,
@@ -671,6 +1532,7 @@ class IntradayPaperStore:
         reason: str,
         *,
         at: datetime | None = None,
+        stream_instance_id: str | None = None,
     ) -> dict[str, Any]:
         """Record stream unavailability; an open position exits on the next fresh bid."""
 
@@ -678,8 +1540,10 @@ class IntradayPaperStore:
         clean_reason = _safe_reason(reason)
         observed_at = _utc_datetime(at or datetime.now(timezone.utc), "at")
         if self._pending_events:
-            self.flush_pending()
+            self.flush_pending(stream_instance_id=stream_instance_id)
         with self._write():
+            if stream_instance_id is not None:
+                self._require_active_stream_instance_locked(stream_instance_id)
             return self._record_data_gap_locked(
                 self._plan_row(clean_plan_id), reason=clean_reason, at=observed_at
             )
@@ -1119,6 +1983,18 @@ class IntradayPaperStore:
     def _create_schema(self) -> None:
         self._conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS paper_simulation_topologies (
+                simulation_id TEXT PRIMARY KEY,
+                lanes INTEGER NOT NULL CHECK (lanes IN (1, 2)),
+                claimed_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS paper_simulation_topology_runs (
+                run_id TEXT PRIMARY KEY,
+                simulation_id TEXT NOT NULL,
+                lane TEXT NOT NULL CHECK (lane IN ('SINGLE', 'A', 'B')),
+                FOREIGN KEY (simulation_id)
+                    REFERENCES paper_simulation_topologies(simulation_id)
+            );
             CREATE TABLE IF NOT EXISTS paper_runs (
                 run_id TEXT PRIMARY KEY,
                 config_hash TEXT NOT NULL,
@@ -1129,6 +2005,66 @@ class IntradayPaperStore:
                 blocked_reason TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS paper_cohorts (
+                cohort_id TEXT PRIMARY KEY,
+                lane_a_run_id TEXT NOT NULL,
+                lane_b_run_id TEXT NOT NULL,
+                lane_a_initial_cash TEXT NOT NULL,
+                lane_b_initial_cash TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                lane_a_config_hash TEXT NOT NULL,
+                lane_b_config_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                CHECK (lane_a_run_id <> lane_b_run_id),
+                FOREIGN KEY (lane_a_run_id) REFERENCES paper_runs(run_id),
+                FOREIGN KEY (lane_b_run_id) REFERENCES paper_runs(run_id)
+            );
+            CREATE TABLE IF NOT EXISTS paper_cohort_sessions (
+                cohort_id TEXT NOT NULL,
+                session_date TEXT NOT NULL,
+                lane_a_status TEXT,
+                lane_a_plan_id TEXT,
+                lane_a_symbol TEXT,
+                lane_b_status TEXT,
+                lane_b_plan_id TEXT,
+                lane_b_symbol TEXT,
+                recorded_at TEXT NOT NULL,
+                PRIMARY KEY (cohort_id, session_date),
+                CHECK (
+                    lane_a_status IS NULL
+                    OR lane_a_status IN ('PLAN', 'NO_CANDIDATE', 'MARKET_CLOSED')
+                ),
+                CHECK (
+                    lane_b_status IS NULL
+                    OR lane_b_status IN ('PLAN', 'NO_CANDIDATE', 'MARKET_CLOSED')
+                ),
+                CHECK (
+                    (lane_a_status IS NULL AND lane_a_plan_id IS NULL
+                        AND lane_a_symbol IS NULL)
+                    OR (lane_a_status = 'PLAN' AND lane_a_plan_id IS NOT NULL
+                        AND lane_a_symbol IS NOT NULL)
+                    OR (lane_a_status IN ('NO_CANDIDATE', 'MARKET_CLOSED')
+                        AND lane_a_plan_id IS NULL AND lane_a_symbol IS NULL)
+                ),
+                CHECK (
+                    (lane_b_status IS NULL AND lane_b_plan_id IS NULL
+                        AND lane_b_symbol IS NULL)
+                    OR (lane_b_status = 'PLAN' AND lane_b_plan_id IS NOT NULL
+                        AND lane_b_symbol IS NOT NULL)
+                    OR (lane_b_status IN ('NO_CANDIDATE', 'MARKET_CLOSED')
+                        AND lane_b_plan_id IS NULL AND lane_b_symbol IS NULL)
+                ),
+                CHECK (
+                    lane_a_status <> 'PLAN' OR lane_b_status <> 'PLAN'
+                    OR lane_a_symbol <> lane_b_symbol
+                ),
+                CHECK (
+                    (lane_a_status = 'MARKET_CLOSED') =
+                    (lane_b_status = 'MARKET_CLOSED')
+                ),
+                FOREIGN KEY (cohort_id) REFERENCES paper_cohorts(cohort_id)
             );
             CREATE TABLE IF NOT EXISTS paper_plans (
                 run_id TEXT NOT NULL,
@@ -1300,47 +2236,51 @@ class IntradayPaperStore:
             )
 
     def _ensure_run(self) -> None:
-        config_json = _config_json(self.config)
+        with self._write():
+            self._ensure_run_locked(self.config)
+
+    def _ensure_run_locked(self, config: IntradayPaperConfig) -> None:
+        config_json = _config_json(config)
         config_hash = _sha256(config_json)
         now = _iso(datetime.now(timezone.utc))
-        with self._write():
-            row = self._conn.execute(
-                "SELECT * FROM paper_runs WHERE run_id = ?", (self.config.run_id,)
-            ).fetchone()
-            if row is None:
-                self._conn.execute(
-                    """
-                    INSERT INTO paper_runs (
-                        run_id, config_hash, config_json, account_key, initial_cash,
-                        current_cash, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.config.run_id,
-                        config_hash,
-                        config_json,
-                        self.account_key,
-                        _dstr(self.config.initial_cash_usd),
-                        _dstr(self.config.initial_cash_usd),
-                        now,
-                        now,
-                    ),
-                )
-                self._conn.execute(
-                    """
-                    INSERT INTO paper_cash_ledger (
-                        run_id, event_key, event_type, amount, cash_after, created_at
-                    ) VALUES (?, 'initial', 'INITIAL', ?, ?, ?)
-                    """,
-                    (
-                        self.config.run_id,
-                        _dstr(self.config.initial_cash_usd),
-                        _dstr(self.config.initial_cash_usd),
-                        now,
-                    ),
-                )
-            elif row["config_hash"] != config_hash or row["config_json"] != config_json:
-                raise PaperSimulationError("run_id already exists with different immutable config")
+        row = self._conn.execute(
+            "SELECT * FROM paper_runs WHERE run_id = ?", (config.run_id,)
+        ).fetchone()
+        if row is None:
+            account_key = simulation_account_key(config)
+            self._conn.execute(
+                """
+                INSERT INTO paper_runs (
+                    run_id, config_hash, config_json, account_key, initial_cash,
+                    current_cash, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    config.run_id,
+                    config_hash,
+                    config_json,
+                    account_key,
+                    _dstr(config.initial_cash_usd),
+                    _dstr(config.initial_cash_usd),
+                    now,
+                    now,
+                ),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO paper_cash_ledger (
+                    run_id, event_key, event_type, amount, cash_after, created_at
+                ) VALUES (?, 'initial', 'INITIAL', ?, ?, ?)
+                """,
+                (
+                    config.run_id,
+                    _dstr(config.initial_cash_usd),
+                    _dstr(config.initial_cash_usd),
+                    now,
+                ),
+            )
+        elif row["config_hash"] != config_hash or row["config_json"] != config_json:
+            raise PaperSimulationError("run_id already exists with different immutable config")
 
     def _advance(
         self,
@@ -2124,6 +3064,170 @@ class IntradayPaperStore:
             raise PaperSimulationError("paper run does not exist")
         return row
 
+    def _paper_cohort_row(self, cohort_id: str) -> sqlite3.Row:
+        row = self._conn.execute(
+            "SELECT * FROM paper_cohorts WHERE cohort_id = ?", (cohort_id,)
+        ).fetchone()
+        if row is None:
+            raise PaperSimulationError("paper cohort does not exist")
+        return row
+
+    def _assert_paper_cohort_owner(self, row: sqlite3.Row) -> None:
+        if (
+            row["lane_a_run_id"] != self.config.run_id
+            or row["lane_a_config_hash"] != _config_hash(self.config)
+        ):
+            raise PaperSimulationError("paper cohort is not owned by this lane A store")
+
+    @staticmethod
+    def _paper_cohort_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "cohort_id": row["cohort_id"],
+            "start_date": row["start_date"],
+            "end_date_inclusive": row["end_date"],
+            "created_at": row["created_at"],
+            "lanes": {
+                "A": {
+                    "run_id": row["lane_a_run_id"],
+                    "initial_cash_usd": row["lane_a_initial_cash"],
+                    "config_hash": row["lane_a_config_hash"],
+                },
+                "B": {
+                    "run_id": row["lane_b_run_id"],
+                    "initial_cash_usd": row["lane_b_initial_cash"],
+                    "config_hash": row["lane_b_config_hash"],
+                },
+            },
+        }
+
+    @staticmethod
+    def _paper_cohort_session_payload(
+        cohort: sqlite3.Row, row: sqlite3.Row
+    ) -> dict[str, Any]:
+        return {
+            "cohort_id": row["cohort_id"],
+            "session_date": row["session_date"],
+            "recorded_at": row["recorded_at"],
+            "lanes": {
+                "A": {
+                    "run_id": cohort["lane_a_run_id"],
+                    "status": row["lane_a_status"],
+                    "plan_id": row["lane_a_plan_id"],
+                    "symbol": row["lane_a_symbol"],
+                },
+                "B": {
+                    "run_id": cohort["lane_b_run_id"],
+                    "status": row["lane_b_status"],
+                    "plan_id": row["lane_b_plan_id"],
+                    "symbol": row["lane_b_symbol"],
+                },
+            },
+        }
+
+    def _apply_cohort_lane_coverage(
+        self,
+        *,
+        run_id: str,
+        session: date,
+        lane: tuple[str, str | None, str | None],
+        at: datetime,
+    ) -> None:
+        status, plan_id, symbol = lane
+        session_value = session.isoformat()
+        plan = self._conn.execute(
+            """
+            SELECT plan_id, symbol FROM paper_plans
+            WHERE run_id = ? AND session_date = ?
+            """,
+            (run_id, session_value),
+        ).fetchone()
+        market_closed = self._conn.execute(
+            """
+            SELECT 1 FROM paper_market_closed_sessions
+            WHERE run_id = ? AND session_date = ?
+            """,
+            (run_id, session_value),
+        ).fetchone()
+        no_candidate = self._conn.execute(
+            """
+            SELECT 1 FROM paper_no_candidate_sessions
+            WHERE run_id = ? AND session_date = ?
+            """,
+            (run_id, session_value),
+        ).fetchone()
+        if status == "PLAN":
+            if plan is None:
+                raise PaperSimulationError(
+                    "cohort PLAN coverage requires a registered paper plan"
+                )
+            if plan["plan_id"] != plan_id or plan["symbol"] != symbol:
+                raise PaperSimulationError(
+                    "cohort PLAN coverage does not match the registered paper plan"
+                )
+            if market_closed is not None or no_candidate is not None:
+                raise PaperSimulationError("paper session has conflicting coverage")
+            return
+
+        if plan is not None:
+            raise PaperSimulationError("paper session already has a simulation plan")
+        if status == "MARKET_CLOSED":
+            if no_candidate is not None:
+                raise PaperSimulationError(
+                    "paper session is already recorded as NO_CANDIDATE"
+                )
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO paper_market_closed_sessions (
+                    run_id, session_date, recorded_at
+                ) VALUES (?, ?, ?)
+                """,
+                (run_id, session_value, _iso(at)),
+            )
+            return
+
+        if market_closed is not None:
+            raise PaperSimulationError(
+                "paper session is already recorded as MARKET_CLOSED"
+            )
+        if no_candidate is not None:
+            return
+        run = self._conn.execute(
+            "SELECT blocked_reason, current_cash FROM paper_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if run is None:
+            raise PaperSimulationError("cohort paper run does not exist")
+        if run["blocked_reason"]:
+            raise PaperSimulationBlocked(str(run["blocked_reason"]))
+        nonterminal = self._conn.execute(
+            """
+            SELECT plan_id, status FROM paper_plans
+            WHERE run_id = ? AND status IN ('WAITING_ENTRY', 'OPEN', 'UNRESOLVED')
+            ORDER BY session_date LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if nonterminal is not None:
+            raise PaperSimulationBlocked(
+                "nonterminal_simulation_plan:"
+                f"{nonterminal['plan_id']}:{nonterminal['status']}"
+            )
+        latest = self._conn.execute(
+            "SELECT MAX(session_date) FROM paper_plans WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
+        if latest is not None and session_value <= str(latest):
+            raise PaperSimulationBlocked(
+                "simulation plans must be registered in date order"
+            )
+        self._conn.execute(
+            """
+            INSERT INTO paper_no_candidate_sessions (
+                run_id, session_date, recorded_at
+            ) VALUES (?, ?, ?)
+            """,
+            (run_id, session_value, _iso(at)),
+        )
+
     @contextmanager
     def _write(self) -> Iterator[None]:
         if self._write_depth:
@@ -2144,6 +3248,44 @@ class IntradayPaperStore:
             self._conn.commit()
         finally:
             self._write_depth = 0
+
+
+def _paper_cohort_lane_values(
+    status: str,
+    plan_id: str | None,
+    symbol: str | None,
+    label: str,
+) -> tuple[str, str | None, str | None]:
+    clean_status = str(status or "").strip().upper()
+    if clean_status not in {"PLAN", "NO_CANDIDATE", "MARKET_CLOSED"}:
+        raise PaperSimulationError(
+            f"lane {label} status must be PLAN, NO_CANDIDATE, or MARKET_CLOSED"
+        )
+    if clean_status != "PLAN":
+        if plan_id is not None or symbol is not None:
+            raise PaperSimulationError(
+                f"lane {label} plan_id and symbol require PLAN status"
+            )
+        return clean_status, None, None
+    try:
+        clean_plan_id = _identifier(plan_id, f"lane {label} plan_id")
+    except ValueError as exc:
+        raise PaperSimulationError(str(exc)) from exc
+    clean_symbol = str(symbol or "").strip().upper()
+    if not _SYMBOL_RE.fullmatch(clean_symbol):
+        raise PaperSimulationError(f"lane {label} symbol is invalid")
+    return clean_status, clean_plan_id, clean_symbol
+
+
+def _stored_paper_cohort_lane_complete(row: sqlite3.Row, lane: str) -> bool:
+    status = row[f"lane_{lane}_status"]
+    plan_id = row[f"lane_{lane}_plan_id"]
+    symbol = row[f"lane_{lane}_symbol"]
+    if status == "PLAN":
+        return plan_id is not None and symbol is not None
+    if status in {"NO_CANDIDATE", "MARKET_CLOSED"}:
+        return plan_id is None and symbol is None
+    return False
 
 
 def _validated_plan(

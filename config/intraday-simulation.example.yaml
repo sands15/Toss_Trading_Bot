@@ -85,6 +85,9 @@ strategy:
       end_date: 2026-09-30
       initial_cash: 10000
       slippage_fraction: 0.0005
+      # Keep this existing run on one lane. A new experiment may set 2 to use
+      # two isolated 50:50 ledgers; never change it after the run starts.
+      lanes: 1
       db_path: ../state/intraday-paper.sqlite3
 
 live:

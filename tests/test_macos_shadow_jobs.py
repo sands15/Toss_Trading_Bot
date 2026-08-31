@@ -165,6 +165,7 @@ def test_each_job_has_only_its_required_authority() -> None:
         "TOSS_NEWS_HEARTBEAT_PATH",
     }
     assert environments["com.sands15.toss-shadow-watchdog"] == {
+        "TOSS_WATCHDOG_ALLOWED_CHANNEL_ID",
         "TOSS_WATCHDOG_CONTEXT_PATH",
         "TOSS_WATCHDOG_EXPECTATION_PATH",
         "TOSS_WATCHDOG_HEARTBEAT_ROOT",

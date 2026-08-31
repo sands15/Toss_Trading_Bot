@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Trading-unprivileged shadow heartbeat watchdog.
 
-This file is intentionally standalone and standard-library-only.  It reads the
-redacted heartbeat contract and launchd state; it does not import the trading
-package, open SQLite, or perform network I/O.
+This file is intentionally standalone and standard-library-only. It reads the
+redacted heartbeat contract and launchd state, never imports the trading package
+or opens SQLite, and can send only redacted changes to one verified Discord channel.
 """
 
 from __future__ import annotations
@@ -11,9 +11,11 @@ from __future__ import annotations
 import ctypes
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 import re
+import ssl
 import stat
 import subprocess
 import sys
@@ -55,7 +57,15 @@ _UTC_TIMESTAMP = re.compile(
 )
 _LAUNCHD_FIELD = re.compile(r"^\s*([a-z][a-z ]*[a-z]|[a-z])\s*=\s*(.*?)\s*$")
 _SYMBOL = re.compile(r"(?=.{1,16}\Z)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?\Z")
-STREAM_CONTEXT_KEYS = frozenset(
+_DISCORD_CHANNEL_ID = re.compile(r"[1-9][0-9]{16,19}\Z")
+_DISCORD_BOT_TOKEN = re.compile(r"[A-Za-z0-9._-]{40,256}\Z")
+DISCORD_API_HOST = "discord.com"
+DISCORD_API_VERSION = 10
+DISCORD_TIMEOUT_SECONDS = 5.0
+DISCORD_RESPONSE_LIMIT = 65_536
+DISCORD_TOKEN_ENV = "TOSS_WATCHDOG_DISCORD_BOT_TOKEN"
+DISCORD_CHANNEL_ENV = "TOSS_WATCHDOG_ALLOWED_CHANNEL_ID"
+STREAM_CONTEXT_KEYS_V1 = frozenset(
     {
         "schema_version",
         "generated_at",
@@ -66,6 +76,7 @@ STREAM_CONTEXT_KEYS = frozenset(
         "reason",
     }
 )
+STREAM_CONTEXT_KEYS_V2 = (STREAM_CONTEXT_KEYS_V1 - {"symbol"}) | {"symbols"}
 STREAM_EXPECTATION_KEYS = frozenset(
     {
         "schema_version",
@@ -127,6 +138,41 @@ COMPONENTS: tuple[ComponentSpec, ...] = (
     ),
 )
 ALLOWED_LAUNCHD_LABELS = frozenset(spec.launchd_label for spec in COMPONENTS)
+PUBLIC_HEALTH_CODES = frozenset(
+    {
+        "OK",
+        "UNKNOWN",
+        "BASELINE_STALE",
+        "BOOT_MISMATCH",
+        "COMPONENT_MISMATCH",
+        "DB_QUICK_CHECK_FAILED",
+        "HARD_OFF_INVARIANT_FAILED",
+        "HEARTBEAT_CLOCK_SKEW",
+        "HEARTBEAT_DB_CHECK_INVALID",
+        "HEARTBEAT_JSON_INVALID",
+        "HEARTBEAT_SCHEMA_INVALID",
+        "HEARTBEAT_STALE",
+        "HEARTBEAT_STATUS_INVALID",
+        "HEARTBEAT_TIMESTAMP_INVALID",
+        "HEARTBEAT_UNREADABLE",
+        "LAUNCHD_DOMAIN_INVALID",
+        "LAUNCHD_LABEL_MISMATCH",
+        "LAUNCHD_LABEL_NOT_ALLOWED",
+        "LAUNCHD_QUERY_FAILED",
+        "LAUNCHD_RESPONSE_INVALID",
+        "PROCESS_LAST_EXIT_FAILED",
+        "PROCESS_NOT_LOADED",
+        "PROCESS_NOT_RUNNING",
+        "RELEASE_MISMATCH",
+        "STREAM_ACK_MISSING",
+        "STREAM_CONTEXT_INVALID",
+        "STREAM_EXPECTATION_INVALID",
+    }
+    | {
+        f"COMPONENT_{status}"
+        for status in ALLOWED_STATUS_CODES - HEALTHY_STATUS_CODES
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -225,16 +271,30 @@ def stream_context_state(path: Path, *, now: dt.datetime) -> str:
         raise WatchdogError("STREAM_CONTEXT_INVALID") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WatchdogError("STREAM_CONTEXT_INVALID") from exc
+    if type(value) is not dict:
+        raise WatchdogError("STREAM_CONTEXT_INVALID")
+    version = value.get("schema_version")
+    expected_keys = (
+        STREAM_CONTEXT_KEYS_V1
+        if version == 1 and type(version) is int
+        else STREAM_CONTEXT_KEYS_V2
+        if version == 2 and type(version) is int
+        else None
+    )
     if (
-        type(value) is not dict
-        or frozenset(value) != STREAM_CONTEXT_KEYS
-        or type(value["schema_version"]) is not int
-        or value["schema_version"] != 1
+        expected_keys is None
+        or frozenset(value) != expected_keys
         or value["market"] != "US"
         or value["reason"] != "intraday_plan"
-        or type(value["symbol"]) is not str
-        or _SYMBOL.fullmatch(value["symbol"]) is None
         or type(value["session_date"]) is not str
+    ):
+        raise WatchdogError("STREAM_CONTEXT_INVALID")
+    raw_symbols = [value["symbol"]] if version == 1 else value["symbols"]
+    if (
+        type(raw_symbols) is not list
+        or not 1 <= len(raw_symbols) <= 2
+        or any(type(symbol) is not str or _SYMBOL.fullmatch(symbol) is None for symbol in raw_symbols)
+        or len(raw_symbols) != len(set(raw_symbols))
     ):
         raise WatchdogError("STREAM_CONTEXT_INVALID")
     try:
@@ -498,42 +558,81 @@ def component_health(
     return "OK"
 
 
-def _load_previous_state(path: Path, components: Sequence[ComponentSpec]) -> dict[str, str] | None:
+def _load_previous_state(
+    path: Path, components: Sequence[ComponentSpec]
+) -> tuple[dict[str, str], list[dict[str, object]]] | None:
     try:
         raw = _read_small_regular_file(path, limit=16_384, code="STATE_UNREADABLE")
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (WatchdogError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     names = {spec.component for spec in components}
+    if type(value) is not dict or type(value.get("schema_version")) is not int:
+        return None
+    version = value["schema_version"]
+    if version == 1 and frozenset(value) == {"schema_version", "components"}:
+        pending_alerts: object = []
+    elif version == 2 and frozenset(value) == {
+        "schema_version",
+        "components",
+        "pending_alerts",
+    }:
+        pending_alerts = value["pending_alerts"]
+    else:
+        return None
     if (
-        type(value) is not dict
-        or frozenset(value) != {"schema_version", "components"}
-        or type(value["schema_version"]) is not int
-        or value["schema_version"] != 1
-        or type(value["components"]) is not dict
+        type(value.get("components")) is not dict
         or set(value["components"]) != names
-        or any(type(code) is not str for code in value["components"].values())
+        or any(
+            type(code) is not str or code not in PUBLIC_HEALTH_CODES
+            for code in value["components"].values()
+        )
+        or type(pending_alerts) is not list
+        or len(pending_alerts) > len(names) + 1
     ):
         return None
-    return dict(value["components"])
+    try:
+        for alert in pending_alerts:
+            _validate_watchdog_alert(alert, component_names=names)
+    except WatchdogError:
+        return None
+    return dict(value["components"]), [dict(alert) for alert in pending_alerts]
 
 
-def _store_state(path: Path, state: Mapping[str, str]) -> None:
+def _store_state(
+    path: Path,
+    state: Mapping[str, str],
+    pending_alerts: Sequence[Mapping[str, object]] = (),
+) -> None:
+    component_names = set(state)
+    for alert in pending_alerts:
+        _validate_watchdog_alert(alert, component_names=component_names)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = json.dumps(
-        {"schema_version": 1, "components": dict(sorted(state.items()))},
+        {
+            "schema_version": 2,
+            "components": dict(sorted(state.items())),
+            "pending_alerts": [dict(alert) for alert in pending_alerts],
+        },
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
         allow_nan=False,
     ).encode("ascii")
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(temporary, flags, 0o600)
     try:
-        os.write(descriptor, payload)
+        remaining = payload
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("short watchdog state write")
+            remaining = remaining[written:]
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -545,6 +644,209 @@ def _store_state(path: Path, state: Mapping[str, str]) -> None:
         except OSError:
             pass
         raise
+    _fsync_state_directory(path.parent)
+
+
+def _fsync_state_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise WatchdogError("STATE_DURABILITY_FAILED") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _validate_watchdog_alert(
+    alert: object, *, component_names: set[str]
+) -> tuple[str, str, str, str]:
+    if type(alert) is not dict or frozenset(alert) != {
+        "schema_version",
+        "event",
+        "component",
+        "from",
+        "to",
+    }:
+        raise WatchdogError("DISCORD_ALERT_INVALID")
+    event = alert["event"]
+    component = alert["component"]
+    old = alert["from"]
+    new = alert["to"]
+    if type(alert["schema_version"]) is not int or alert["schema_version"] != 1:
+        raise WatchdogError("DISCORD_ALERT_INVALID")
+    if type(event) is not str or type(component) is not str:
+        raise WatchdogError("DISCORD_ALERT_INVALID")
+    if event == "WATCHDOG_STARTED":
+        if (
+            component != "watchdog"
+            or old is not None
+            or type(new) is not str
+            or new not in {"OK", "DEGRADED"}
+        ):
+            raise WatchdogError("DISCORD_ALERT_INVALID")
+        old_text = "NONE"
+    elif event in {"WATCHDOG_STATE_CHANGED", "WATCHDOG_RECOVERED"}:
+        if (
+            component not in component_names
+            or type(old) is not str
+            or old not in PUBLIC_HEALTH_CODES
+            or type(new) is not str
+            or new not in PUBLIC_HEALTH_CODES
+            or event == "WATCHDOG_RECOVERED" and new != "OK"
+            or event == "WATCHDOG_STATE_CHANGED" and new == "OK"
+        ):
+            raise WatchdogError("DISCORD_ALERT_INVALID")
+        old_text = old
+    else:
+        raise WatchdogError("DISCORD_ALERT_INVALID")
+    return event, component, old_text, new
+
+
+def _discord_alert_content(alert: Mapping[str, object]) -> str:
+    """Render only the watchdog's fixed redacted alert schema."""
+
+    event, component, old_text, new = _validate_watchdog_alert(
+        alert,
+        component_names={spec.component for spec in COMPONENTS},
+    )
+    return f"[Toss bot watchdog] {event} | {component}: {old_text} -> {new}"
+
+
+def _discord_response_body(response: object) -> bytes:
+    try:
+        payload = response.read(DISCORD_RESPONSE_LIMIT + 1)
+    except Exception as exc:
+        raise WatchdogError("DISCORD_REQUEST_FAILED") from exc
+    if type(payload) is not bytes or len(payload) > DISCORD_RESPONSE_LIMIT:
+        raise WatchdogError("DISCORD_RESPONSE_INVALID")
+    return payload
+
+
+def _require_discord_status(status: object, *, phase: str) -> None:
+    if type(status) is not int:
+        raise WatchdogError("DISCORD_RESPONSE_INVALID")
+    if status == 429:
+        raise WatchdogError("DISCORD_RATE_LIMITED")
+    if 500 <= status <= 599:
+        raise WatchdogError("DISCORD_UNAVAILABLE")
+    if status != 200:
+        raise WatchdogError(
+            "DISCORD_CHANNEL_VERIFY_FAILED"
+            if phase == "verify"
+            else "DISCORD_SEND_FAILED"
+        )
+
+
+def send_discord_alert(
+    alert: Mapping[str, object],
+    *,
+    bot_token: str,
+    allowed_channel_id: str,
+    connection_factory: Callable[..., object] = http.client.HTTPSConnection,
+    timeout_seconds: float = DISCORD_TIMEOUT_SECONDS,
+) -> None:
+    """Verify and send one redacted alert to exactly one Discord channel."""
+
+    if (
+        type(bot_token) is not str
+        or _DISCORD_BOT_TOKEN.fullmatch(bot_token) is None
+        or type(allowed_channel_id) is not str
+        or _DISCORD_CHANNEL_ID.fullmatch(allowed_channel_id) is None
+        or type(timeout_seconds) not in {int, float}
+        or isinstance(timeout_seconds, bool)
+        or not 0 < timeout_seconds <= 10
+    ):
+        raise WatchdogError("DISCORD_CONFIGURATION_INVALID")
+    content = _discord_alert_content(alert)
+    path = f"/api/v{DISCORD_API_VERSION}/channels/{allowed_channel_id}"
+    headers = {
+        "Authorization": f"Bot {bot_token}",
+        "User-Agent": "TossTradingBot-Watchdog/1",
+    }
+    connection = None
+    try:
+        connection = connection_factory(
+            DISCORD_API_HOST,
+            timeout=float(timeout_seconds),
+            context=ssl.create_default_context(),
+        )
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
+        _require_discord_status(getattr(response, "status", None), phase="verify")
+        raw = _discord_response_body(response)
+        try:
+            channel = json.loads(
+                raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, WatchdogError) as exc:
+            raise WatchdogError("DISCORD_CHANNEL_RESPONSE_INVALID") from exc
+        if (
+            type(channel) is not dict
+            or type(channel.get("id")) is not str
+            or channel["id"] != allowed_channel_id
+        ):
+            raise WatchdogError("DISCORD_CHANNEL_MISMATCH")
+
+        body = json.dumps(
+            {"content": content, "allowed_mentions": {"parse": []}},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+        connection.request(
+            "POST",
+            f"{path}/messages",
+            body=body,
+            headers=headers | {"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        _require_discord_status(getattr(response, "status", None), phase="send")
+        _discord_response_body(response)
+    except WatchdogError:
+        raise
+    except Exception as exc:
+        raise WatchdogError("DISCORD_REQUEST_FAILED") from exc
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+
+def _stdout_sender(alert: Mapping[str, object]) -> None:
+    print(
+        json.dumps(
+            alert,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ),
+        flush=True,
+    )
+
+
+def _drain_alert_outbox(
+    *,
+    state_path: Path,
+    state: Mapping[str, str],
+    pending_alerts: Sequence[Mapping[str, object]],
+    sender: Callable[[Mapping[str, object]], None],
+) -> None:
+    remaining = [dict(alert) for alert in pending_alerts]
+    while remaining:
+        sender(remaining[0])
+        remaining.pop(0)
+        _store_state(state_path, state, remaining)
 
 
 def run_once(
@@ -610,7 +912,17 @@ def run_once(
             required=(stream_requirement == "active") if spec.component == "stream" else None,
             launchctl_runner=launchctl_runner,
         )
-    previous = _load_previous_state(state_path, components)
+    stored = _load_previous_state(state_path, components)
+    if stored is None:
+        previous = None
+    else:
+        previous, pending_alerts = stored
+        _drain_alert_outbox(
+            state_path=state_path,
+            state=previous,
+            pending_alerts=pending_alerts,
+            sender=sender,
+        )
     alerts: list[dict[str, object]] = []
     if previous is None:
         alerts.append(
@@ -647,9 +959,13 @@ def run_once(
                     "to": code,
                 }
             )
-    for alert in alerts:
-        sender(alert)
-    _store_state(state_path, current)
+    _store_state(state_path, current, alerts)
+    _drain_alert_outbox(
+        state_path=state_path,
+        state=current,
+        pending_alerts=alerts,
+        sender=sender,
+    )
     return current
 
 
@@ -708,9 +1024,31 @@ def main() -> int:
         state_path = Path(os.environ.pop("TOSS_WATCHDOG_STATE_PATH"))
         release_sha = os.environ.pop("TOSS_WATCHDOG_RELEASE_SHA")
         launchd_domain = os.environ.pop("TOSS_WATCHDOG_LAUNCHD_DOMAIN")
+        discord_token = os.environ.pop(DISCORD_TOKEN_ENV, "")
+        discord_channel = os.environ.pop(DISCORD_CHANNEL_ENV, "")
     except KeyError:
         print("watchdog_configuration_invalid", file=sys.stderr)
         return 64
+    if bool(discord_token) != bool(discord_channel):
+        print("DISCORD_CONFIGURATION_INVALID", file=sys.stderr)
+        return 64
+    if discord_token and (
+        _DISCORD_BOT_TOKEN.fullmatch(discord_token) is None
+        or _DISCORD_CHANNEL_ID.fullmatch(discord_channel) is None
+    ):
+        print("DISCORD_CONFIGURATION_INVALID", file=sys.stderr)
+        return 64
+    sender = (
+        (
+            lambda alert: send_discord_alert(
+                alert,
+                bot_token=discord_token,
+                allowed_channel_id=discord_channel,
+            )
+        )
+        if discord_token
+        else _stdout_sender
+    )
     try:
         run_once(
             heartbeat_root=heartbeat_root,
@@ -720,16 +1058,7 @@ def main() -> int:
             expected_release_sha=release_sha,
             expected_boot_id_hash=macos_boot_id_hash(),
             launchd_domain=launchd_domain,
-            sender=lambda alert: print(
-                json.dumps(
-                    alert,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=True,
-                    allow_nan=False,
-                ),
-                flush=True,
-            ),
+            sender=sender,
             now=dt.datetime.now(dt.timezone.utc),
         )
     except WatchdogError as exc:

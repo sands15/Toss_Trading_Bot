@@ -30,7 +30,7 @@ _MONTH_STATUSES = frozenset(
 _DAY_STATUSES = frozenset(
     {"WAITING_ENTRY", "OPEN", "UNRESOLVED", "CLOSED", "INVALID", "NO_ENTRY", "NO_CANDIDATE", "MARKET_CLOSED", "NO_PLAN"}
 )
-_TOP_LEVEL_KEYS = frozenset(
+_TOP_LEVEL_KEYS_V2 = frozenset(
     {
         "schema_version",
         "release_sha",
@@ -61,6 +61,26 @@ _TOP_LEVEL_KEYS = frozenset(
         "unresolved_position_count",
         "waiting_plan_count",
         "coverage_expected_count",
+        "coverage_covered_count",
+        "coverage_missing_count",
+        "latest_day",
+    }
+)
+_TOP_LEVEL_KEYS_V3 = _TOP_LEVEL_KEYS_V2 | {
+    "simulation_lanes",
+    "distinct_trading_session_count",
+    "lanes",
+}
+_LANE_KEYS = frozenset(
+    {
+        "status",
+        "current_cash_usd",
+        "realized_pnl_usd",
+        "return_fraction",
+        "trade_count",
+        "no_candidate_count",
+        "invalid_result_count",
+        "unresolved_position_count",
         "coverage_covered_count",
         "coverage_missing_count",
         "latest_day",
@@ -141,8 +161,9 @@ class PaperStatusWriter:
             coverage_expected = _count(month_summary.get("coverage_expected"))
             coverage_covered = _count(month_summary.get("coverage_covered"))
             coverage_missing = _count(month_summary.get("coverage_missing"))
+            cohort = month_summary.get("simulation_lanes") == 2
             payload: dict[str, object] = {
-                "schema_version": 2,
+                "schema_version": 3 if cohort else 2,
                 "release_sha": self.release_sha,
                 "boot_id_hash": self.boot_id_hash,
                 "mode": "shadow",
@@ -175,6 +196,15 @@ class PaperStatusWriter:
                 "coverage_missing_count": coverage_missing,
                 "latest_day": _latest_day(latest_day),
             }
+            if cohort:
+                lanes, distinct_sessions = _cohort_status(month_summary)
+                payload.update(
+                    {
+                        "simulation_lanes": 2,
+                        "distinct_trading_session_count": distinct_sessions,
+                        "lanes": lanes,
+                    }
+                )
             _validate_payload(
                 payload,
                 expected_release_sha=self.release_sha,
@@ -318,6 +348,97 @@ def _latest_day(value: Mapping[str, object] | None) -> dict[str, object] | None:
     }
 
 
+def _cohort_status(
+    month_summary: Mapping[str, object],
+) -> tuple[dict[str, dict[str, object]], int]:
+    raw_lanes = month_summary.get("lanes")
+    raw_sessions = month_summary.get("sessions")
+    if (
+        not isinstance(raw_lanes, Mapping)
+        or set(raw_lanes) != {"A", "B"}
+        or not isinstance(raw_sessions, list)
+    ):
+        raise ValueError
+    latest: dict[str, dict[str, object] | None] = {"A": None, "B": None}
+    distinct_sessions = 0
+    seen_dates: set[str] = set()
+    previous_date: str | None = None
+    trading_statuses = _DAY_STATUSES - {"NO_CANDIDATE", "MARKET_CLOSED", "NO_PLAN"}
+    for session in raw_sessions:
+        if (
+            not isinstance(session, Mapping)
+            or set(session) != {
+                "session_date",
+                "covered",
+                "distinct_symbols",
+                "lanes",
+            }
+            or type(session.get("covered")) is not bool
+            or session.get("distinct_symbols") is not True
+        ):
+            raise ValueError
+        session_date = _date_string(session.get("session_date"))
+        if session_date in seen_dates or (
+            previous_date is not None and session_date <= previous_date
+        ):
+            raise ValueError
+        seen_dates.add(session_date)
+        previous_date = session_date
+        session_lanes = session.get("lanes")
+        if not isinstance(session_lanes, Mapping) or set(session_lanes) != {"A", "B"}:
+            raise ValueError
+        symbols: list[str] = []
+        has_plan = False
+        for lane in ("A", "B"):
+            day = session_lanes[lane]
+            if not isinstance(day, Mapping) or day.get("session_date") != session_date:
+                raise ValueError
+            normalized = _latest_day(day)
+            if normalized is None:
+                raise ValueError
+            status = str(normalized["status"])
+            if status != "NO_PLAN":
+                latest[lane] = normalized
+            if status in trading_statuses:
+                has_plan = True
+            symbol = normalized["symbol"]
+            if isinstance(symbol, str):
+                symbols.append(symbol)
+        if len(symbols) != len(set(symbols)):
+            raise ValueError
+        if session["covered"] and any(
+            str(_latest_day(session_lanes[lane])["status"]) == "NO_PLAN"
+            for lane in ("A", "B")
+        ):
+            raise ValueError
+        if has_plan:
+            distinct_sessions += 1
+
+    lanes: dict[str, dict[str, object]] = {}
+    for lane in ("A", "B"):
+        source = raw_lanes[lane]
+        if not isinstance(source, Mapping):
+            raise ValueError
+        lanes[lane] = {
+            "status": _enum(source.get("status"), _MONTH_STATUSES),
+            "current_cash_usd": _decimal_string(
+                source.get("current_cash"), nonnegative=True
+            ),
+            "realized_pnl_usd": _decimal_string(source.get("net_pnl")),
+            "return_fraction": _decimal_string(
+                source.get("return_fraction"), nullable=True
+            ),
+            "trade_count": _count(source.get("trades")),
+            "no_candidate_count": _count(source.get("no_candidate_sessions")),
+            "invalid_result_count": _count(source.get("invalid_sessions")),
+            "unresolved_position_count": _count(source.get("unresolved_positions")),
+            "coverage_covered_count": _count(source.get("coverage_covered")),
+            "coverage_missing_count": _count(source.get("coverage_missing")),
+            "latest_day": latest[lane],
+        }
+    return lanes, distinct_sessions
+
+
 def _validate_payload(
     payload: Mapping[str, object],
     *,
@@ -326,9 +447,11 @@ def _validate_payload(
     now: datetime,
     max_age_seconds: float,
 ) -> None:
-    if set(payload) != _TOP_LEVEL_KEYS:
+    version = payload.get("schema_version")
+    if type(version) is not int or version not in {2, 3}:
         raise ValueError
-    if payload.get("schema_version") != 2 or type(payload.get("schema_version")) is not int:
+    expected_keys = _TOP_LEVEL_KEYS_V2 if version == 2 else _TOP_LEVEL_KEYS_V3
+    if set(payload) != expected_keys:
         raise ValueError
     if payload.get("mode") != "shadow" or payload.get("live_order_submission") is not False:
         raise ValueError
@@ -382,6 +505,71 @@ def _validate_payload(
         raise ValueError
     if no_candidates > covered:
         raise ValueError
+
+    if version == 3:
+        if payload.get("simulation_lanes") != 2 or type(
+            payload.get("simulation_lanes")
+        ) is not int:
+            raise ValueError
+        distinct_sessions = _count(payload.get("distinct_trading_session_count"))
+        if distinct_sessions > expected:
+            raise ValueError
+        lanes = payload.get("lanes")
+        if not isinstance(lanes, Mapping) or set(lanes) != {"A", "B"}:
+            raise ValueError
+        lane_trade_total = 0
+        lane_realized_total = Decimal("0")
+        lane_cash_total = Decimal("0")
+        lane_no_candidate_total = 0
+        for lane in ("A", "B"):
+            value = lanes[lane]
+            if not isinstance(value, Mapping) or set(value) != _LANE_KEYS:
+                raise ValueError
+            _enum(value.get("status"), _MONTH_STATUSES)
+            lane_cash_total += Decimal(
+                _decimal_string(value.get("current_cash_usd"), nonnegative=True)
+            )
+            lane_realized_total += Decimal(
+                _decimal_string(value.get("realized_pnl_usd"))
+            )
+            _decimal_string(value.get("return_fraction"), nullable=True)
+            lane_trade_total += _count(value.get("trade_count"))
+            lane_no_candidates = _count(value.get("no_candidate_count"))
+            lane_no_candidate_total += lane_no_candidates
+            _count(value.get("invalid_result_count"))
+            _count(value.get("unresolved_position_count"))
+            lane_covered = _count(value.get("coverage_covered_count"))
+            lane_missing = _count(value.get("coverage_missing_count"))
+            if lane_covered > expected or lane_missing != expected - lane_covered:
+                raise ValueError
+            if lane_no_candidates > lane_covered:
+                raise ValueError
+            lane_latest = value.get("latest_day")
+            if lane_latest is not None:
+                if not isinstance(lane_latest, Mapping) or set(lane_latest) != _LATEST_DAY_KEYS:
+                    raise ValueError
+                latest_date = _date_string(lane_latest.get("session_date"))
+                if not start <= latest_date <= end:
+                    raise ValueError
+                _latest_day(
+                    {
+                        "session_date": lane_latest.get("session_date"),
+                        "symbol": lane_latest.get("symbol"),
+                        "status": lane_latest.get("status"),
+                        "net_pnl": lane_latest.get("net_pnl_usd"),
+                        "fees": lane_latest.get("fees_usd"),
+                        "cash_start": lane_latest.get("cash_start_usd"),
+                        "cash_end": lane_latest.get("cash_end_usd"),
+                        "data_gaps": lane_latest.get("data_gap_count"),
+                    }
+                )
+        if (
+            lane_trade_total != trades
+            or lane_realized_total != Decimal(str(payload.get("realized_pnl_usd")))
+            or lane_cash_total != Decimal(str(payload.get("current_cash_usd")))
+            or no_candidates > lane_no_candidate_total
+        ):
+            raise ValueError
 
     latest = payload.get("latest_day")
     if latest is not None:

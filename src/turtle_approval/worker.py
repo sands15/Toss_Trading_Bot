@@ -2100,7 +2100,11 @@ def render_paper_status(snapshot: Mapping[str, Any]) -> str:
     return_fraction = snapshot["return_fraction"]
     max_drawdown_fraction = snapshot["max_drawdown_fraction"]
     lines = [
-        "📊 한 달 모의투자 현황",
+        (
+            "📊 2레인 한 달 모의투자 현황"
+            if snapshot.get("schema_version") == 3
+            else "📊 한 달 모의투자 현황"
+        ),
         f"상태: {_PAPER_RUN_LABELS.get(run_status, run_status)} · 플래너: {planner_label}",
         f"기간: {snapshot['start_date']} ~ {snapshot['end_date']}",
         (
@@ -2140,6 +2144,37 @@ def render_paper_status(snapshot: Mapping[str, Any]) -> str:
             f" · 미해결 {snapshot['unresolved_position_count']}"
         ),
     ]
+    if snapshot.get("schema_version") == 3:
+        lines.append(
+            "서로 다른 거래일: "
+            f"{snapshot['distinct_trading_session_count']}일 "
+            "(같은 날 A/B 거래는 1일)"
+        )
+        lane_values = snapshot["lanes"]
+        for lane in ("A", "B"):
+            value = lane_values[lane]
+            lane_status = str(value["status"])
+            lane_return = value["return_fraction"]
+            lines.append(
+                f"레인 {lane}: {_PAPER_RUN_LABELS.get(lane_status, lane_status)} · "
+                f"현금 {_paper_usd(value['current_cash_usd'])} · "
+                f"손익 {_paper_usd(value['realized_pnl_usd'], signed=True)}"
+                + (
+                    f" ({_paper_percent(lane_return, signed=True)})"
+                    if lane_return is not None
+                    else ""
+                )
+                + f" · 거래 {value['trade_count']}회"
+            )
+            lane_latest = value["latest_day"]
+            if isinstance(lane_latest, Mapping):
+                symbol = lane_latest["symbol"] or "-"
+                day_status = str(lane_latest["status"])
+                lines.append(
+                    f"최근 {lane}: {lane_latest['session_date']} · {symbol} · "
+                    f"{_PAPER_DAY_LABELS.get(day_status, day_status)} · "
+                    f"손익 {_paper_usd(lane_latest['net_pnl_usd'], signed=True)}"
+                )
     final_equity = snapshot["final_equity_usd"]
     if final_equity is not None:
         equity_label = "최종 평가액" if run_status == "COMPLETE" else "현재 평가액"

@@ -2,16 +2,685 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import stat
 from uuid import uuid4
 
 from .domain import Candle, PositionDirection, PositionStatus, TurtleSystem, UnitState, PositionState, as_decimal
 from .watchlist import Watchlist, WatchlistRow
+
+
+_PLANNER_TABLE_COLUMNS = {
+    "schema_migrations": frozenset("version applied_at".split()),
+    "watchlists": frozenset("id name generated_at".split()),
+    "watchlist_items": frozenset(
+        """
+        id watchlist_id rank symbol current_price entry_high_20 entry_high_55
+        distance_to_20 distance_to_55 nearest_distance reason is_new
+        """.split()
+    ),
+    "positions": frozenset(
+        """
+        symbol system status total_qty avg_entry_price entry_n current_stop_price
+        last_unit_entry_price direction
+        """.split()
+    ),
+    "position_units": frozenset(
+        """
+        position_symbol unit_no qty entry_price n_at_entry stop_price
+        broker_order_id client_order_id
+        """.split()
+    ),
+    "paper_positions": frozenset(
+        """
+        symbol system status total_qty avg_entry_price entry_n current_stop_price
+        last_unit_entry_price direction
+        """.split()
+    ),
+    "paper_position_units": frozenset(
+        """
+        position_symbol unit_no qty entry_price n_at_entry stop_price
+        broker_order_id client_order_id
+        """.split()
+    ),
+    "broker_orders": frozenset(
+        "client_order_id symbol side status broker_order_id raw".split()
+    ),
+    "order_intents": frozenset(
+        """
+        intent_id idempotency_key symbol side quantity order_type limit_price
+        payload created_at account_key plan_id order_role request_hash request_json
+        first_attempt_at recovery_deadline_at reserved_at send_by
+        reserved_writer_fence reserved_run_version
+        """.split()
+    ),
+    "execution_orders": frozenset(
+        """
+        intent_id idempotency_key symbol side status broker_order_id raw updated_at
+        filled_quantity remaining_quantity average_fill_price last_broker_observed_at
+        """.split()
+    ),
+    "execution_events": frozenset(
+        """
+        id intent_id event_type status payload created_at plan_id run_version writer_fence
+        """.split()
+    ),
+    "market_data_snapshots": frozenset(
+        "id kind symbol captured_at payload".split()
+    ),
+    "broker_snapshots": frozenset("id kind captured_at payload".split()),
+    "runtime_events": frozenset("id level message payload created_at".split()),
+    "intraday_plans": frozenset(
+        "plan_id account_key session_date symbol mode plan_hash payload created_at".split()
+    ),
+    "notification_outbox": frozenset(
+        """
+        notification_key message level payload status attempt_count claim_token
+        claimed_at last_error_code created_at sent_at
+        """.split()
+    ),
+    "intraday_runs": frozenset(
+        """
+        plan_id state version writer_id writer_fence writer_lease_until
+        broker_sync_fence boot_id_hash approval_generation approved_envelope_sha256
+        approval_receipt_sha256 approval_interaction_id approved_at
+        approved_writer_fence entry_disabled_at entry_disabled_reason
+        entry_submit_count entry_intent_id protection_intent_id active_exit_intent_id
+        triggered_exit_order_id owned_qty protected_qty average_entry_price
+        unprotected_since loss_fuse_at last_broker_sync_at last_stream_sync_at
+        reason_code created_at updated_at approval_expires_at
+        """.split()
+    ),
+    "intraday_plan_cohorts": frozenset(
+        """
+        cohort_id session_date lane_a_status lane_b_status lane_a_plan_id
+        lane_b_plan_id lane_a_account_key lane_b_account_key lane_a_symbol
+        lane_b_symbol manifest_hash manifest created_at
+        """.split()
+    ),
+}
+_PLANNER_V4_COLUMN_ADDITIONS = {
+    "order_intents": frozenset(
+        """
+        account_key plan_id order_role request_hash request_json first_attempt_at
+        recovery_deadline_at reserved_at send_by reserved_writer_fence
+        reserved_run_version
+        """.split()
+    ),
+    "execution_orders": frozenset(
+        """
+        filled_quantity remaining_quantity average_fill_price last_broker_observed_at
+        """.split()
+    ),
+    "execution_events": frozenset("plan_id run_version writer_fence".split()),
+}
+_PLANNER_INDEX_COLUMNS = {
+    "idx_runtime_events_message_id": ("runtime_events", ("message", "id")),
+    "idx_notification_outbox_pending": (
+        "notification_outbox",
+        ("status", "created_at"),
+    ),
+    "ux_order_intents_account_client": (
+        "order_intents",
+        ("account_key", "idempotency_key"),
+    ),
+    "ux_intraday_one_entry": ("order_intents", ("plan_id",)),
+    "ux_intraday_one_protection": ("order_intents", ("plan_id",)),
+    "ux_intraday_one_local_exit": ("order_intents", ("plan_id",)),
+    "ux_intraday_event_plan_version": (
+        "execution_events",
+        ("plan_id", "run_version"),
+    ),
+    "ux_intraday_one_shot_event": (
+        "execution_events",
+        ("intent_id", "event_type"),
+    ),
+    "ux_intraday_receipt_once": ("intraday_runs", ("approval_receipt_sha256",)),
+}
+_PLANNER_V4_INDEXES = frozenset(
+    {
+        "ux_order_intents_account_client",
+        "ux_intraday_one_entry",
+        "ux_intraday_one_protection",
+        "ux_intraday_one_local_exit",
+        "ux_intraday_event_plan_version",
+        "ux_intraday_one_shot_event",
+        "ux_intraday_receipt_once",
+    }
+)
+_PLANNER_PRE_V4_TABLES = frozenset(_PLANNER_TABLE_COLUMNS) - {
+    "intraday_runs",
+    "intraday_plan_cohorts",
+}
+_PLANNER_PRE_V4_INDEXES = frozenset(
+    {"idx_runtime_events_message_id", "idx_notification_outbox_pending"}
+)
+_PLANNER_LEGACY_APPENDED_COLUMNS = {
+    "watchlist_items": ("reason",),
+    "positions": ("direction",),
+    "paper_positions": ("direction",),
+}
+
+
+class _PlannerDatabaseError(sqlite3.DatabaseError):
+    pass
+
+
+def _planner_database_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise _PlannerDatabaseError("planner_db_path_invalid") from None
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise _PlannerDatabaseError("planner_db_path_invalid")
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def _claim_planner_database_path(path: Path) -> tuple[int, int]:
+    identity = _planner_database_identity(path)
+    if identity is None:
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        except OSError:
+            raise _PlannerDatabaseError("planner_db_path_invalid") from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        identity = _planner_database_identity(path)
+    if identity is None:  # pragma: no cover - O_EXCL/lstat filesystem invariant
+        raise _PlannerDatabaseError("planner_db_path_invalid")
+    return identity
+
+
+def _planner_table_signature(
+    connection: sqlite3.Connection, table: str
+) -> tuple[
+    dict[str, tuple[str, int, str | None, int, int]],
+    tuple[tuple[object, ...], ...],
+    tuple[tuple[object, ...], ...],
+    tuple[str, ...],
+    tuple[int, int],
+    str,
+]:
+    columns = {
+        str(row[1]): (
+            str(row[2]).upper(),
+            int(row[3]),
+            None if row[4] is None else str(row[4]),
+            int(row[5]),
+            int(row[6]),
+        )
+        for row in connection.execute(f"PRAGMA table_xinfo({table})")
+    }
+    foreign_keys = tuple(
+        sorted(
+            (
+                int(row[1]),
+                str(row[2]),
+                str(row[3]),
+                str(row[4]),
+                str(row[5]),
+                str(row[6]),
+                str(row[7]),
+            )
+            for row in connection.execute(f"PRAGMA foreign_key_list({table})")
+        )
+    )
+    automatic_indexes = []
+    for row in connection.execute(f"PRAGMA index_list({table})"):
+        if str(row[3]) == "c":
+            continue
+        automatic_indexes.append(
+            (
+                int(row[2]),
+                str(row[3]),
+                int(row[4]),
+                tuple(
+                    (
+                        int(column[1]),
+                        None if column[2] is None else str(column[2]),
+                        int(column[3]),
+                        None if column[4] is None else str(column[4]),
+                        int(column[5]),
+                    )
+                    for column in connection.execute(
+                        f"PRAGMA index_xinfo({row[1]})"
+                    )
+                ),
+            )
+        )
+    table_options = next(
+        (
+            (int(row[4]), int(row[5]))
+            for row in connection.execute("PRAGMA table_list")
+            if str(row[1]) == table and str(row[2]) == "table"
+        ),
+        None,
+    )
+    if table_options is None:
+        raise _PlannerDatabaseError("planner_db_schema_invalid")
+    return (
+        columns,
+        foreign_keys,
+        tuple(sorted(automatic_indexes)),
+        _planner_check_constraints(connection, table),
+        table_options,
+        _planner_normalized_table_sql(connection, table),
+    )
+
+
+def _planner_normalized_table_sql(
+    connection: sqlite3.Connection, table: str
+) -> str:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if row is None or not isinstance(row[0], str):
+        raise _PlannerDatabaseError("planner_db_schema_invalid")
+    return _planner_normalize_schema_sql(row[0])
+
+
+def _planner_normalize_schema_sql(sql: str) -> str:
+    normalized: list[str] = []
+    pending_space = False
+    quote: str | None = None
+    cursor = 0
+    while cursor < len(sql):
+        character = sql[cursor]
+        if quote is not None:
+            normalized.append(character)
+            if character == quote:
+                if cursor + 1 < len(sql) and sql[cursor + 1] == quote:
+                    cursor += 1
+                    normalized.append(sql[cursor])
+                else:
+                    quote = None
+        elif character.isspace():
+            pending_space = True
+        elif character in {"'", '"'}:
+            if pending_space and normalized and normalized[-1] not in {"(", ","}:
+                normalized.append(" ")
+            pending_space = False
+            quote = character
+            normalized.append(character)
+        elif character in {"(", ")", ","}:
+            if normalized and normalized[-1] == " ":
+                normalized.pop()
+            normalized.append(character)
+            pending_space = False
+        else:
+            if pending_space and normalized and normalized[-1] not in {"(", ","}:
+                normalized.append(" ")
+            pending_space = False
+            normalized.append(character)
+        cursor += 1
+    if quote is not None:
+        raise _PlannerDatabaseError("planner_db_schema_invalid")
+    return "".join(normalized).strip()
+
+
+def _planner_table_sql_without_columns(
+    canonical_sql: str, missing_columns: set[str]
+) -> str:
+    if not missing_columns:
+        return canonical_sql
+    prefix, parts, suffix = _planner_table_sql_parts(canonical_sql)
+    kept: list[str] = []
+    removed: set[str] = set()
+    for part in parts:
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\b", part)
+        column = match.group(1) if match is not None else None
+        if column in missing_columns:
+            removed.add(column)
+        else:
+            kept.append(part)
+    if removed != missing_columns:
+        raise RuntimeError("canonical planner legacy columns are incomplete")
+    return prefix + ",".join(kept) + suffix
+
+
+def _planner_table_sql_parts(
+    canonical_sql: str,
+) -> tuple[str, list[str], str]:
+    opening = canonical_sql.find("(")
+    closing = canonical_sql.rfind(")")
+    if opening < 0 or closing <= opening:
+        raise RuntimeError("canonical planner table SQL is invalid")
+    body = canonical_sql[opening + 1 : closing]
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    cursor = 0
+    while cursor < len(body):
+        character = body[cursor]
+        if quote is not None:
+            if character == quote:
+                if cursor + 1 < len(body) and body[cursor + 1] == quote:
+                    cursor += 1
+                else:
+                    quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif character == "," and depth == 0:
+            parts.append(body[start:cursor])
+            start = cursor + 1
+        cursor += 1
+    if quote is not None or depth != 0:
+        raise RuntimeError("canonical planner table SQL is invalid")
+    parts.append(body[start:])
+    return canonical_sql[: opening + 1], parts, canonical_sql[closing:]
+
+
+def _planner_table_sql_with_appended_columns(
+    canonical_sql: str, columns: tuple[str, ...]
+) -> str:
+    if not columns:
+        return canonical_sql
+    prefix, parts, suffix = _planner_table_sql_parts(canonical_sql)
+    moved: dict[str, str] = {}
+    kept: list[str] = []
+    for part in parts:
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\b", part)
+        column = match.group(1) if match is not None else None
+        if column in columns:
+            moved[column] = part
+        else:
+            kept.append(part)
+    if set(moved) != set(columns):
+        raise RuntimeError("canonical planner appended columns are incomplete")
+    table_constraints = {"CHECK", "CONSTRAINT", "FOREIGN", "PRIMARY", "UNIQUE"}
+    insertion = next(
+        (
+            index
+            for index, part in enumerate(kept)
+            if part.split(None, 1)[0].upper() in table_constraints
+        ),
+        len(kept),
+    )
+    reordered = kept[:insertion] + [moved[column] for column in columns] + kept[insertion:]
+    return prefix + ",".join(reordered) + suffix
+
+
+def _planner_check_constraints(
+    connection: sqlite3.Connection, table: str
+) -> tuple[str, ...]:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if row is None or not isinstance(row[0], str):
+        raise _PlannerDatabaseError("planner_db_schema_invalid")
+    sql = row[0]
+    checks: list[str] = []
+    offset = 0
+    while match := re.search(r"\bCHECK\s*\(", sql[offset:], flags=re.IGNORECASE):
+        opening = offset + match.end() - 1
+        depth = 0
+        quote: str | None = None
+        cursor = opening
+        while cursor < len(sql):
+            character = sql[cursor]
+            if quote is not None:
+                if character == quote:
+                    if cursor + 1 < len(sql) and sql[cursor + 1] == quote:
+                        cursor += 1
+                    else:
+                        quote = None
+            elif character in {"'", '"'}:
+                quote = character
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    checks.append(" ".join(sql[opening + 1 : cursor].split()))
+                    offset = cursor + 1
+                    break
+            cursor += 1
+        else:
+            raise _PlannerDatabaseError("planner_db_schema_invalid")
+    return tuple(checks)
+
+
+def _planner_explicit_index_signature(
+    connection: sqlite3.Connection, table: str, index: str
+) -> tuple[int, str, int, tuple[str, ...], str] | None:
+    for row in connection.execute(f"PRAGMA index_list({table})"):
+        if str(row[1]) == index:
+            schema_row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+                (index,),
+            ).fetchone()
+            if schema_row is None or not isinstance(schema_row[0], str):
+                return None
+            return (
+                int(row[2]),
+                str(row[3]),
+                int(row[4]),
+                tuple(
+                    str(column[2])
+                    for column in connection.execute(f"PRAGMA index_info({index})")
+                ),
+                _planner_normalize_schema_sql(schema_row[0]),
+            )
+    return None
+
+
+@lru_cache(maxsize=1)
+def _current_planner_schema_signatures() -> tuple[
+    dict[
+        str,
+        tuple[
+            dict[str, tuple[str, int, str | None, int, int]],
+            tuple[tuple[object, ...], ...],
+            tuple[tuple[object, ...], ...],
+            tuple[str, ...],
+            tuple[int, int],
+            str,
+        ],
+    ],
+    dict[str, tuple[int, str, int, tuple[str, ...], str]],
+]:
+    with SQLiteStateStore() as template:
+        tables = {
+            table: _planner_table_signature(template._conn, table)
+            for table in _PLANNER_TABLE_COLUMNS
+        }
+        indexes = {}
+        for index, (table, _columns) in _PLANNER_INDEX_COLUMNS.items():
+            signature = _planner_explicit_index_signature(
+                template._conn, table, index
+            )
+            if signature is None:  # pragma: no cover - schema constant invariant
+                raise RuntimeError("current planner schema signature is incomplete")
+            indexes[index] = signature
+    return tables, indexes
+
+
+def _validate_planner_database_schema(
+    connection: sqlite3.Connection, *, require_current: bool = False
+) -> None:
+    try:
+        quick_check = connection.execute("PRAGMA quick_check").fetchone()
+        if quick_check is None or quick_check[0] != "ok":
+            raise _PlannerDatabaseError("planner_db_integrity_failed")
+        if connection.execute("PRAGMA foreign_key_check").fetchall():
+            raise _PlannerDatabaseError("planner_db_integrity_failed")
+        rows = connection.execute(
+            """
+            SELECT type, name, tbl_name FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+            """
+        ).fetchall()
+        if not rows:
+            if require_current:
+                raise _PlannerDatabaseError("planner_db_schema_invalid")
+            return
+        tables = {str(row[1]) for row in rows if row[0] == "table"}
+        indexes = {str(row[1]) for row in rows if row[0] == "index"}
+        if (
+            any(row[0] not in {"table", "index"} for row in rows)
+            or not tables <= set(_PLANNER_TABLE_COLUMNS)
+            or not indexes <= set(_PLANNER_INDEX_COLUMNS)
+            or "schema_migrations" not in tables
+        ):
+            raise _PlannerDatabaseError("planner_db_schema_invalid")
+        for row in rows:
+            if row[0] == "table" and row[1] != row[2]:
+                raise _PlannerDatabaseError("planner_db_schema_invalid")
+            if row[0] == "index":
+                expected = _PLANNER_INDEX_COLUMNS.get(str(row[1]))
+                if expected is None or str(row[2]) != expected[0]:
+                    raise _PlannerDatabaseError("planner_db_schema_invalid")
+
+        migration_info = connection.execute(
+            "PRAGMA table_info(schema_migrations)"
+        ).fetchall()
+        if (
+            {str(row[1]) for row in migration_info}
+            != _PLANNER_TABLE_COLUMNS["schema_migrations"]
+            or not any(
+                str(row[1]) == "version" and int(row[5]) == 1
+                for row in migration_info
+            )
+        ):
+            raise _PlannerDatabaseError("planner_db_schema_invalid")
+        versions = tuple(
+            int(row[0])
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        )
+        if versions and versions != tuple(range(1, versions[-1] + 1)):
+            raise _PlannerDatabaseError("planner_db_schema_invalid")
+        if versions and versions[-1] > 6:
+            raise _PlannerDatabaseError("planner_db_schema_invalid")
+        schema_version = versions[-1] if versions else 0
+
+        allowed_tables = set(_PLANNER_PRE_V4_TABLES)
+        allowed_indexes = set(_PLANNER_PRE_V4_INDEXES)
+        if schema_version >= 4:
+            allowed_tables.add("intraday_runs")
+            allowed_indexes.update(_PLANNER_V4_INDEXES)
+        if schema_version >= 6:
+            allowed_tables.add("intraday_plan_cohorts")
+        if not tables <= allowed_tables or not indexes <= allowed_indexes:
+            raise _PlannerDatabaseError("planner_db_schema_invalid")
+
+        canonical_tables, canonical_indexes = _current_planner_schema_signatures()
+        for table in tables:
+            actual_signature = _planner_table_signature(connection, table)
+            actual = set(actual_signature[0])
+            expected = _PLANNER_TABLE_COLUMNS[table]
+            if table in _PLANNER_V4_COLUMN_ADDITIONS and schema_version < 4:
+                base = expected - _PLANNER_V4_COLUMN_ADDITIONS[table]
+                if actual != base:
+                    raise _PlannerDatabaseError("planner_db_schema_invalid")
+            elif table in {"positions", "paper_positions"}:
+                if actual not in {expected, expected - {"direction"}}:
+                    raise _PlannerDatabaseError("planner_db_schema_invalid")
+            elif table == "watchlist_items":
+                if actual not in {expected, expected - {"reason"}}:
+                    raise _PlannerDatabaseError("planner_db_schema_invalid")
+            elif table == "intraday_runs" and schema_version == 4:
+                if actual != expected - {"approval_expires_at"}:
+                    raise _PlannerDatabaseError("planner_db_schema_invalid")
+            elif actual != expected:
+                raise _PlannerDatabaseError("planner_db_schema_invalid")
+            canonical_signature = canonical_tables[table]
+            canonical_sql = _planner_table_sql_without_columns(
+                canonical_signature[-1],
+                set(expected - actual),
+            )
+            allowed_sql = {canonical_sql}
+            appended_columns = tuple(
+                column
+                for column in _PLANNER_LEGACY_APPENDED_COLUMNS.get(table, ())
+                if column in actual
+            )
+            if appended_columns:
+                allowed_sql.add(
+                    _planner_table_sql_with_appended_columns(
+                        canonical_sql,
+                        appended_columns,
+                    )
+                )
+            if (
+                any(
+                    actual_signature[0][column] != canonical_signature[0][column]
+                    for column in actual
+                )
+                or actual_signature[1:-1] != canonical_signature[1:-1]
+                or actual_signature[-1] not in allowed_sql
+            ):
+                raise _PlannerDatabaseError("planner_db_schema_invalid")
+
+        for index in indexes:
+            expected_table, expected_columns = _PLANNER_INDEX_COLUMNS[index]
+            actual_index = _planner_explicit_index_signature(
+                connection, expected_table, index
+            )
+            if (
+                expected_table not in tables
+                or actual_index is None
+                or actual_index[3] != expected_columns
+                or actual_index != canonical_indexes[index]
+            ):
+                raise _PlannerDatabaseError("planner_db_schema_invalid")
+
+        if schema_version >= 4:
+            required_tables = set(_PLANNER_PRE_V4_TABLES) | {"intraday_runs"}
+            required_indexes = _PLANNER_V4_INDEXES | {
+                "idx_notification_outbox_pending"
+            }
+            if not required_tables <= tables or not required_indexes <= indexes:
+                raise _PlannerDatabaseError("planner_db_schema_invalid")
+            if any(
+                not additions
+                <= {
+                    str(row[1])
+                    for row in connection.execute(f"PRAGMA table_info({table})")
+                }
+                for table, additions in _PLANNER_V4_COLUMN_ADDITIONS.items()
+            ):
+                raise _PlannerDatabaseError("planner_db_schema_invalid")
+        if schema_version >= 5:
+            run_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(intraday_runs)")
+            }
+            if "approval_expires_at" not in run_columns:
+                raise _PlannerDatabaseError("planner_db_schema_invalid")
+        if schema_version >= 6 and "intraday_plan_cohorts" not in tables:
+            raise _PlannerDatabaseError("planner_db_schema_invalid")
+        if require_current and (
+            versions != (1, 2, 3, 4, 5, 6)
+            or tables != set(_PLANNER_TABLE_COLUMNS)
+            or indexes != set(_PLANNER_INDEX_COLUMNS)
+        ):
+            raise _PlannerDatabaseError("planner_db_schema_invalid")
+    except _PlannerDatabaseError:
+        raise
+    except (OverflowError, TypeError, ValueError, sqlite3.Error):
+        raise _PlannerDatabaseError("planner_db_schema_invalid") from None
 
 
 class SQLiteStateStore:
@@ -159,25 +828,64 @@ class SQLiteStateStore:
     def __init__(self, path: str | Path = ":memory:") -> None:
         self.path = self._normalize_path(path)
         self._is_memory = self.path == ":memory:"
-        if not self._is_memory:
-            Path(self.path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.execute("PRAGMA busy_timeout = 5000")
-        if not self._is_memory:
-            try:
-                self._conn.execute("PRAGMA journal_mode = WAL")
-            except sqlite3.OperationalError:
-                pass
-        self._conn.execute("PRAGMA synchronous = FULL")
-        self.initialize_schema()
+        self._database_identity: tuple[int, int] | None = None
+        connection: sqlite3.Connection | None = None
+        try:
+            if self._is_memory:
+                connection = sqlite3.connect(self.path)
+            else:
+                database = Path(os.path.abspath(Path(self.path).expanduser()))
+                self.path = str(database)
+                database.parent.mkdir(parents=True, exist_ok=True)
+                self._database_identity = _claim_planner_database_path(database)
+                readonly = sqlite3.connect(
+                    f"{database.as_uri()}?mode=ro", uri=True, timeout=5
+                )
+                try:
+                    readonly.row_factory = sqlite3.Row
+                    _validate_planner_database_schema(readonly)
+                finally:
+                    readonly.close()
+                self._assert_database_identity()
+                connection = sqlite3.connect(
+                    f"{database.as_uri()}?mode=rw", uri=True
+                )
+                self._assert_database_identity()
+                connection.row_factory = sqlite3.Row
+                _validate_planner_database_schema(connection)
+                self._assert_database_identity()
+            self._conn = connection
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute("PRAGMA busy_timeout = 5000")
+            if not self._is_memory:
+                try:
+                    self._conn.execute("PRAGMA journal_mode = WAL")
+                except sqlite3.OperationalError:
+                    pass
+            self._conn.execute("PRAGMA synchronous = FULL")
+            self.initialize_schema()
+            if not self._is_memory:
+                _validate_planner_database_schema(
+                    self._conn, require_current=True
+                )
+                self._assert_database_identity()
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
 
     @staticmethod
     def _normalize_path(path: str | Path) -> str:
         if isinstance(path, Path):
             return str(path)
         return path
+
+    def _assert_database_identity(self) -> None:
+        if self._is_memory:
+            return
+        if _planner_database_identity(Path(self.path)) != self._database_identity:
+            raise _PlannerDatabaseError("planner_db_path_invalid")
 
     def close(self) -> None:
         self._conn.close()
@@ -386,6 +1094,12 @@ class SQLiteStateStore:
             )
             self._conn.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_runtime_events_message_id
+                ON runtime_events(message, id)
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS intraday_plans (
                   plan_id TEXT PRIMARY KEY,
                   account_key TEXT NOT NULL,
@@ -439,6 +1153,7 @@ class SQLiteStateStore:
             )
         self._migrate_v4()
         self._migrate_v5()
+        self._migrate_v6()
 
     def _migrate_v4(self) -> None:
         if self._conn.execute(
@@ -647,6 +1362,86 @@ class SQLiteStateStore:
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?)",
                 (self._intraday_time(),),
             )
+        except Exception:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+
+    def _migrate_v6(self) -> None:
+        if self._conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 6"
+        ).fetchone():
+            self._verify_database_integrity()
+            return
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            migrated = self._conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = 6"
+            ).fetchone()
+            if migrated is None:
+                self._conn.execute(
+                    """
+                    CREATE TABLE intraday_plan_cohorts (
+                  cohort_id TEXT NOT NULL,
+                  session_date TEXT NOT NULL,
+                  lane_a_status TEXT NOT NULL CHECK (
+                    lane_a_status IN ('PLAN','NO_CANDIDATE','MARKET_CLOSED')
+                  ),
+                  lane_b_status TEXT NOT NULL CHECK (
+                    lane_b_status IN ('PLAN','NO_CANDIDATE','MARKET_CLOSED')
+                  ),
+                  lane_a_plan_id TEXT,
+                  lane_b_plan_id TEXT,
+                  lane_a_account_key TEXT NOT NULL,
+                  lane_b_account_key TEXT NOT NULL,
+                  lane_a_symbol TEXT,
+                  lane_b_symbol TEXT,
+                  manifest_hash TEXT NOT NULL CHECK (length(manifest_hash) = 64),
+                  manifest TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY (cohort_id, session_date),
+                  UNIQUE (lane_a_plan_id),
+                  UNIQUE (lane_b_plan_id),
+                  CHECK (lane_a_account_key <> lane_b_account_key),
+                  CHECK (
+                    lane_a_plan_id IS NULL OR lane_b_plan_id IS NULL
+                    OR lane_a_plan_id <> lane_b_plan_id
+                  ),
+                  CHECK (
+                    (lane_a_status = 'PLAN' AND lane_a_plan_id IS NOT NULL
+                      AND lane_a_symbol IS NOT NULL)
+                    OR
+                    (lane_a_status <> 'PLAN' AND lane_a_plan_id IS NULL
+                      AND lane_a_symbol IS NULL)
+                  ),
+                  CHECK (
+                    (lane_b_status = 'PLAN' AND lane_b_plan_id IS NOT NULL
+                      AND lane_b_symbol IS NOT NULL)
+                    OR
+                    (lane_b_status <> 'PLAN' AND lane_b_plan_id IS NULL
+                      AND lane_b_symbol IS NULL)
+                  ),
+                  CHECK (
+                    lane_a_status <> 'PLAN' OR lane_b_status <> 'PLAN'
+                    OR lane_a_symbol <> lane_b_symbol
+                  ),
+                  CHECK (
+                    (lane_a_status = 'MARKET_CLOSED') =
+                    (lane_b_status = 'MARKET_CLOSED')
+                  ),
+                  FOREIGN KEY (lane_a_plan_id) REFERENCES intraday_plans(plan_id)
+                    ON UPDATE RESTRICT ON DELETE RESTRICT,
+                  FOREIGN KEY (lane_b_plan_id) REFERENCES intraday_plans(plan_id)
+                    ON UPDATE RESTRICT ON DELETE RESTRICT
+                    )
+                    """
+                )
+                self._conn.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (6, ?)",
+                    (self._intraday_time(),),
+                )
+            self._verify_database_integrity()
         except Exception:
             self._conn.rollback()
             raise
@@ -1579,18 +2374,44 @@ class SQLiteStateStore:
             for row in rows
         ]
 
-    def save_intraday_plan_once(
+    def list_runtime_events_for_messages(
+        self, messages: Sequence[str]
+    ) -> list[dict[str, Any]]:
+        """Read the complete durable history for a small exact message set."""
+
+        values = tuple(dict.fromkeys(str(message) for message in messages))
+        if not values or any(not value for value in values):
+            raise ValueError("messages must contain non-empty strings")
+        placeholders = ",".join("?" for _ in values)
+        rows = self._conn.execute(
+            f"""
+            SELECT id, level, message, payload, created_at
+            FROM runtime_events
+            WHERE message IN ({placeholders})
+            ORDER BY created_at DESC, id DESC
+            """,
+            values,
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "level": row["level"],
+                "message": row["message"],
+                "payload": self._json_load(row["payload"]),
+                "created_at": datetime.fromisoformat(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def _prepare_intraday_plan(
         self,
         *,
         account_key: str,
         session_date: date | str,
         symbol: str,
         payload: dict[str, Any],
-        created_at: datetime | None = None,
-        notification: Mapping[str, Any] | None = None,
-    ) -> tuple[dict[str, Any], bool]:
-        """Atomically insert an immutable shadow plan and optional notification."""
-
+        created_at: datetime | None,
+    ) -> dict[str, str]:
         clean_account_key = str(account_key or "").strip()
         clean_symbol = str(symbol or "").strip().upper()
         clean_session_date = (
@@ -1617,49 +2438,71 @@ class SQLiteStateStore:
             raise ValueError("intraday plan symbol does not match payload")
         if payload.get("mode") != "shadow":
             raise ValueError("intraday plan mode must be shadow")
-
         encoded = self._canonical_json(payload)
-        plan_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-        timestamp = self._now_iso(created_at)
+        return {
+            "plan_id": plan_id,
+            "account_key": clean_account_key,
+            "session_date": clean_session_date,
+            "symbol": clean_symbol,
+            "plan_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+            "payload": encoded,
+            "created_at": self._now_iso(created_at),
+        }
+
+    def _insert_intraday_plan(self, plan: Mapping[str, str]) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO intraday_plans (
+                plan_id, account_key, session_date, symbol, mode,
+                plan_hash, payload, created_at
+            ) VALUES (?, ?, ?, ?, 'shadow', ?, ?, ?)
+            """,
+            (
+                plan["plan_id"],
+                plan["account_key"],
+                plan["session_date"],
+                plan["symbol"],
+                plan["plan_hash"],
+                plan["payload"],
+                plan["created_at"],
+            ),
+        )
+
+    def save_intraday_plan_once(
+        self,
+        *,
+        account_key: str,
+        session_date: date | str,
+        symbol: str,
+        payload: dict[str, Any],
+        created_at: datetime | None = None,
+        notification: Mapping[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically insert an immutable shadow plan and optional notification."""
+
+        plan = self._prepare_intraday_plan(
+            account_key=account_key,
+            session_date=session_date,
+            symbol=symbol,
+            payload=payload,
+            created_at=created_at,
+        )
         notification_values = (
-            self._notification_values(notification, created_at=timestamp)
+            self._notification_values(notification, created_at=plan["created_at"])
             if notification is not None
             else None
         )
         try:
             with self._conn:
-                self._conn.execute(
-                    """
-                    INSERT INTO intraday_plans (
-                        plan_id,
-                        account_key,
-                        session_date,
-                        symbol,
-                        mode,
-                        plan_hash,
-                        payload,
-                        created_at
-                    )
-                    VALUES (?, ?, ?, ?, 'shadow', ?, ?, ?)
-                    """,
-                    (
-                        plan_id,
-                        clean_account_key,
-                        clean_session_date,
-                        clean_symbol,
-                        plan_hash,
-                        encoded,
-                        timestamp,
-                    ),
-                )
+                self._insert_intraday_plan(plan)
                 if notification_values is not None:
                     self._insert_notification_once(notification_values)
         except sqlite3.IntegrityError as exc:
             existing = self.load_intraday_plan(
-                account_key=clean_account_key,
-                session_date=clean_session_date,
+                account_key=plan["account_key"],
+                session_date=plan["session_date"],
             )
-            if existing is not None and existing["plan_hash"] == plan_hash:
+            if existing is not None and existing["plan_hash"] == plan["plan_hash"]:
                 return existing, False
             if existing is None:
                 raise ValueError(
@@ -1670,12 +2513,377 @@ class SQLiteStateStore:
             ) from exc
 
         inserted = self.load_intraday_plan(
-            account_key=clean_account_key,
-            session_date=clean_session_date,
+            account_key=plan["account_key"],
+            session_date=plan["session_date"],
         )
         if inserted is None:  # pragma: no cover - SQLite insert/read invariant
             raise RuntimeError("inserted intraday plan could not be read back")
         return inserted, True
+
+    def save_intraday_cohort_once(
+        self,
+        *,
+        cohort_id: str,
+        session_date: date | str,
+        lane_a_status: str,
+        lane_a_account_key: str,
+        lane_b_status: str,
+        lane_b_account_key: str,
+        lane_a_symbol: str | None = None,
+        lane_a_payload: dict[str, Any] | None = None,
+        lane_a_notification: Mapping[str, Any] | None = None,
+        lane_b_symbol: str | None = None,
+        lane_b_payload: dict[str, Any] | None = None,
+        lane_b_notification: Mapping[str, Any] | None = None,
+        created_at: datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically lock fixed A/B outcomes and any associated plans."""
+
+        clean_cohort_id = str(cohort_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", clean_cohort_id):
+            raise ValueError("cohort_id must be a short safe identifier")
+        clean_session_date = (
+            session_date.isoformat() if isinstance(session_date, date) else str(session_date)
+        )
+        try:
+            date.fromisoformat(clean_session_date)
+        except ValueError as exc:
+            raise ValueError("session_date must be an ISO date") from exc
+        cohort_at = created_at or datetime.now(timezone.utc)
+
+        def prepare_lane(
+            label: str,
+            status: str,
+            account_key: str,
+            symbol: str | None,
+            payload: dict[str, Any] | None,
+            notification: Mapping[str, Any] | None,
+        ) -> dict[str, Any]:
+            clean_status = str(status or "").strip().upper()
+            clean_account_key = str(account_key or "").strip()
+            if clean_status not in {"PLAN", "NO_CANDIDATE", "MARKET_CLOSED"}:
+                raise ValueError(f"lane {label} status is invalid")
+            if not clean_account_key or any(
+                char.isspace() for char in clean_account_key
+            ):
+                raise ValueError(
+                    f"lane {label} account_key is required and may not contain whitespace"
+                )
+            if clean_status != "PLAN":
+                if symbol is not None or payload is not None or notification is not None:
+                    raise ValueError(
+                        f"lane {label} non-PLAN outcome cannot contain plan data"
+                    )
+                return {
+                    "status": clean_status,
+                    "account_key": clean_account_key,
+                    "plan": None,
+                    "notification": None,
+                }
+            if symbol is None or payload is None or notification is None:
+                raise ValueError(
+                    f"lane {label} PLAN requires symbol, payload, and notification"
+                )
+            plan = self._prepare_intraday_plan(
+                account_key=clean_account_key,
+                session_date=clean_session_date,
+                symbol=symbol,
+                payload=payload,
+                created_at=cohort_at,
+            )
+            return {
+                "status": clean_status,
+                "account_key": clean_account_key,
+                "plan": plan,
+                "notification": self._notification_values(
+                    notification, created_at=plan["created_at"]
+                ),
+            }
+
+        lane_a = prepare_lane(
+            "A",
+            lane_a_status,
+            lane_a_account_key,
+            lane_a_symbol,
+            lane_a_payload,
+            lane_a_notification,
+        )
+        lane_b = prepare_lane(
+            "B",
+            lane_b_status,
+            lane_b_account_key,
+            lane_b_symbol,
+            lane_b_payload,
+            lane_b_notification,
+        )
+        if lane_a["account_key"] == lane_b["account_key"]:
+            raise ValueError("cohort lanes require different account_key values")
+        if (lane_a["status"] == "MARKET_CLOSED") != (
+            lane_b["status"] == "MARKET_CLOSED"
+        ):
+            raise ValueError("MARKET_CLOSED must apply to both cohort lanes")
+        plan_a = lane_a["plan"]
+        plan_b = lane_b["plan"]
+        if plan_a is not None and plan_b is not None and (
+            plan_a["plan_id"] == plan_b["plan_id"]
+        ):
+            raise ValueError("cohort lanes require different plan_id values")
+        if plan_a is not None and plan_b is not None and (
+            plan_a["symbol"] == plan_b["symbol"]
+        ):
+            raise ValueError("cohort lanes require different symbols")
+        manifest = self._intraday_cohort_manifest(
+            clean_cohort_id, clean_session_date, lane_a, lane_b
+        )
+        manifest_json = self._canonical_json(manifest)
+        manifest_hash = hashlib.sha256(manifest_json.encode("utf-8")).hexdigest()
+        try:
+            with self._conn:
+                for lane in (lane_a, lane_b):
+                    if lane["plan"] is not None:
+                        self._insert_intraday_plan(lane["plan"])
+                self._conn.execute(
+                    """
+                    INSERT INTO intraday_plan_cohorts (
+                        cohort_id, session_date, lane_a_status, lane_b_status,
+                        lane_a_plan_id, lane_b_plan_id,
+                        lane_a_account_key, lane_b_account_key,
+                        lane_a_symbol, lane_b_symbol,
+                        manifest_hash, manifest, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        clean_cohort_id,
+                        clean_session_date,
+                        lane_a["status"],
+                        lane_b["status"],
+                        plan_a["plan_id"] if plan_a is not None else None,
+                        plan_b["plan_id"] if plan_b is not None else None,
+                        lane_a["account_key"],
+                        lane_b["account_key"],
+                        plan_a["symbol"] if plan_a is not None else None,
+                        plan_b["symbol"] if plan_b is not None else None,
+                        manifest_hash,
+                        manifest_json,
+                        self._now_iso(cohort_at),
+                    ),
+                )
+                for lane in (lane_a, lane_b):
+                    if lane["notification"] is not None:
+                        inserted = self._insert_notification_once(lane["notification"])
+                        if not inserted:
+                            stored = self._conn.execute(
+                                """
+                                SELECT message, level, payload FROM notification_outbox
+                                WHERE notification_key = ?
+                                """,
+                                (lane["notification"][0],),
+                            ).fetchone()
+                            if stored is None or tuple(stored) != lane["notification"][1:4]:
+                                raise ValueError(
+                                    "cohort notification key already has different data"
+                                )
+        except sqlite3.IntegrityError as exc:
+            existing = self.load_intraday_cohort(
+                cohort_id=clean_cohort_id,
+                session_date=clean_session_date,
+            )
+            if existing is not None and existing["manifest_hash"] == manifest_hash:
+                return existing, False
+            raise ValueError(
+                "intraday cohort is already locked with different data"
+                if existing is not None
+                else "intraday cohort transaction failed"
+            ) from exc
+        inserted = self.load_intraday_cohort(
+            cohort_id=clean_cohort_id,
+            session_date=clean_session_date,
+        )
+        if inserted is None:  # pragma: no cover - SQLite insert/read invariant
+            raise RuntimeError("inserted intraday cohort could not be read back")
+        return inserted, True
+
+    def load_intraday_cohort(
+        self,
+        *,
+        cohort_id: str,
+        session_date: date | str,
+    ) -> dict[str, Any] | None:
+        clean_cohort_id = str(cohort_id or "").strip()
+        clean_session_date = (
+            session_date.isoformat() if isinstance(session_date, date) else str(session_date)
+        )
+        row = self._conn.execute(
+            """
+            SELECT * FROM intraday_plan_cohorts
+            WHERE cohort_id = ? AND session_date = ?
+            """,
+            (clean_cohort_id, clean_session_date),
+        ).fetchone()
+        if row is None:
+            return None
+        stored_manifest = self._json_load(row["manifest"])
+        if not isinstance(stored_manifest, dict):
+            raise RuntimeError("stored intraday cohort manifest is invalid")
+        plan_ids = {
+            value
+            for value in (row["lane_a_plan_id"], row["lane_b_plan_id"])
+            if value is not None
+        }
+        plan_rows = {
+            plan_row["plan_id"]: self._intraday_plan_row(plan_row)
+            for plan_row in self._conn.execute(
+                """
+                SELECT plan_id, account_key, session_date, symbol, mode,
+                       plan_hash, payload, created_at
+                FROM intraday_plans WHERE plan_id IN (?, ?)
+                """,
+                (row["lane_a_plan_id"], row["lane_b_plan_id"]),
+            )
+        }
+        if set(plan_rows) != plan_ids:
+            raise RuntimeError("stored intraday cohort has a missing plan")
+
+        def notification_values(label: str) -> tuple[str, str, str, str, str] | None:
+            try:
+                value = stored_manifest["lanes"][label]["notification"]
+            except (KeyError, TypeError) as exc:
+                raise RuntimeError("stored intraday cohort manifest is invalid") from exc
+            if value is None:
+                return None
+            if not isinstance(value, Mapping) or not isinstance(value.get("payload"), Mapping):
+                raise RuntimeError("stored intraday cohort notification is invalid")
+            key = str(value.get("notification_key") or "")
+            notification_row = self._conn.execute(
+                """
+                SELECT message, level, payload, created_at
+                FROM notification_outbox WHERE notification_key = ?
+                """,
+                (key,),
+            ).fetchone()
+            expected = (
+                str(value.get("message") or ""),
+                str(value.get("level") or ""),
+                self._canonical_json(dict(value["payload"])),
+            )
+            if notification_row is None or tuple(notification_row)[:3] != expected:
+                raise RuntimeError("stored intraday cohort has a missing notification")
+            return (key, *expected, str(notification_row["created_at"]))
+
+        lane_a = {
+            "status": row["lane_a_status"],
+            "account_key": row["lane_a_account_key"],
+            "plan": (
+                plan_rows[row["lane_a_plan_id"]]
+                if row["lane_a_plan_id"] is not None
+                else None
+            ),
+            "notification": notification_values("A"),
+        }
+        lane_b = {
+            "status": row["lane_b_status"],
+            "account_key": row["lane_b_account_key"],
+            "plan": (
+                plan_rows[row["lane_b_plan_id"]]
+                if row["lane_b_plan_id"] is not None
+                else None
+            ),
+            "notification": notification_values("B"),
+        }
+        manifest = self._intraday_cohort_manifest(
+            clean_cohort_id, clean_session_date, lane_a, lane_b
+        )
+        manifest_json = self._canonical_json(manifest)
+        manifest_hash = hashlib.sha256(manifest_json.encode("utf-8")).hexdigest()
+        if (
+            row["manifest"] != manifest_json
+            or row["manifest_hash"] != manifest_hash
+            or row["lane_a_symbol"]
+            != (lane_a["plan"]["symbol"] if lane_a["plan"] is not None else None)
+            or row["lane_b_symbol"]
+            != (lane_b["plan"]["symbol"] if lane_b["plan"] is not None else None)
+        ):
+            raise RuntimeError("stored intraday cohort failed integrity verification")
+        return {
+            "cohort_id": clean_cohort_id,
+            "session_date": date.fromisoformat(clean_session_date),
+            "manifest_hash": manifest_hash,
+            "manifest": manifest,
+            "lanes": {
+                "A": {"status": lane_a["status"], "plan": lane_a["plan"]},
+                "B": {"status": lane_b["status"], "plan": lane_b["plan"]},
+            },
+            "created_at": datetime.fromisoformat(row["created_at"]),
+        }
+
+    def list_intraday_cohorts(
+        self, *, cohort_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return every integrity-checked immutable cohort in date order."""
+
+        params: tuple[object, ...] = ()
+        where = ""
+        if cohort_id is not None:
+            clean_cohort_id = str(cohort_id or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", clean_cohort_id):
+                raise ValueError("cohort_id must be a short safe identifier")
+            where = "WHERE cohort_id = ?"
+            params = (clean_cohort_id,)
+        rows = self._conn.execute(
+            f"""
+            SELECT cohort_id, session_date
+            FROM intraday_plan_cohorts
+            {where}
+            ORDER BY session_date, cohort_id
+            """,
+            params,
+        ).fetchall()
+        cohorts = []
+        for row in rows:
+            cohort = self.load_intraday_cohort(
+                cohort_id=str(row["cohort_id"]),
+                session_date=str(row["session_date"]),
+            )
+            if cohort is None:  # pragma: no cover - same-connection invariant
+                raise RuntimeError("stored intraday cohort disappeared")
+            cohorts.append(cohort)
+        return cohorts
+
+    @staticmethod
+    def _intraday_cohort_manifest(
+        cohort_id: str,
+        session_date: str,
+        lane_a: Mapping[str, Any],
+        lane_b: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        def lane(label: str, value: Mapping[str, Any]) -> dict[str, Any]:
+            plan = value.get("plan")
+            notification = value.get("notification")
+            return {
+                "lane": label,
+                "status": str(value["status"]),
+                "account_key": str(value["account_key"]),
+                "plan_id": str(plan["plan_id"]) if plan is not None else None,
+                "plan_hash": str(plan["plan_hash"]) if plan is not None else None,
+                "symbol": str(plan["symbol"]) if plan is not None else None,
+                "notification": (
+                    {
+                        "notification_key": str(notification[0]),
+                        "message": str(notification[1]),
+                        "level": str(notification[2]),
+                        "payload": json.loads(str(notification[3])),
+                    }
+                    if notification is not None
+                    else None
+                ),
+            }
+
+        return {
+            "schema_version": 1,
+            "cohort_id": cohort_id,
+            "session_date": session_date,
+            "lanes": {"A": lane("A", lane_a), "B": lane("B", lane_b)},
+        }
 
     def enqueue_notification_once(
         self,

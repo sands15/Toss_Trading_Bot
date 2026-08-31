@@ -226,6 +226,7 @@ def test_load_config_parses_intraday_simulation_window_and_ledger(tmp_path):
       initial_cash: 10000
       slippage_fraction: 0.0005
       db_path: state/intraday-paper.sqlite3
+      lanes: 2
 """,
         encoding="utf-8",
     )
@@ -238,9 +239,23 @@ def test_load_config_parses_intraday_simulation_window_and_ledger(tmp_path):
     assert config.intraday.simulation_end_date == date(2026, 9, 30)
     assert config.intraday.simulation_initial_cash == Decimal("10000")
     assert config.intraday.simulation_slippage_fraction == Decimal("0.0005")
+    assert config.intraday.simulation_lanes == 2
     assert config.intraday.simulation_db_path == str(
         (tmp_path / "state" / "intraday-paper.sqlite3").resolve()
     )
+
+
+@pytest.mark.parametrize("value", ["1.9", "2.0", '"2"', "true"])
+def test_intraday_simulation_lanes_requires_an_exact_integer(tmp_path, value):
+    config_path = tmp_path / "invalid-lanes.yaml"
+    config_path.write_text(
+        "strategy:\n  kind: intraday\n  intraday:\n    simulation:\n"
+        f"      lanes: {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exact integer"):
+        load_config(config_path)
 
 
 @pytest.mark.parametrize("value", ["true", "2026-02-30", "20260831"])
@@ -349,6 +364,7 @@ def test_intraday_simulation_experiment_hash_is_stable_and_covers_strategy(tmp_p
     first_path = tmp_path / "first.yaml"
     changed_path = tmp_path / "changed.yaml"
     context_changed_path = tmp_path / "context-changed.yaml"
+    cohort_path = tmp_path / "cohort.yaml"
     text = source.read_text(encoding="utf-8")
     first_path.write_text(text, encoding="utf-8")
     changed_path.write_text(
@@ -362,14 +378,22 @@ def test_intraday_simulation_experiment_hash_is_stable_and_covers_strategy(tmp_p
         ),
         encoding="utf-8",
     )
+    cohort_path.write_text(
+        text.replace("      lanes: 1", "      lanes: 2"),
+        encoding="utf-8",
+    )
 
     first = load_config(first_path)
     same = load_config(first_path)
     changed = load_config(changed_path)
     context_changed = load_config(context_changed_path)
+    cohort = load_config(cohort_path)
 
     assert intraday_simulation_experiment_hash(first) == intraday_simulation_experiment_hash(same)
     assert intraday_simulation_experiment_hash(first) != intraday_simulation_experiment_hash(changed)
     assert intraday_simulation_experiment_hash(first) != intraday_simulation_experiment_hash(
         context_changed
+    )
+    assert intraday_simulation_experiment_hash(first) != intraday_simulation_experiment_hash(
+        cohort
     )
