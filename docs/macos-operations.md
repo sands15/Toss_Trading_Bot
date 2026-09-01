@@ -162,7 +162,8 @@ the bot may have `VIEW_CHANNEL | SEND_MESSAGES` (`3072`) through a channel
 overwrite. Install the bot with server-level permissions `0`; do not grant
 administrator, history, message-management, webhook-management, or privileged-intent
 permissions. The worker registers only the guild-scoped `/현황` command and checks the
-exact user, guild, and channel before reading status or responding. The worker uses an outbound Gateway
+exact guild and channel and rejects bot users before reading status or responding. Approval
+buttons and modals still require the exact configured user. The worker uses an outbound Gateway
 connection with intents `0`, so it needs no public inbound port or interaction
 HTTP endpoint.
 
@@ -520,8 +521,8 @@ summary, latest-day summary, and planner readiness. The approval process reads o
 that owner-private file for `/현황`; it receives no trading database path and imports
 no trading package. The reader rejects a stale file (over 130 seconds), wrong release
 SHA or boot hash, symlinks, non-`0600` mode, schema drift, and any value claiming live
-submission. Calls outside the exact allowlisted user, guild, and channel are silent;
-the allowed response is ephemeral with mentions disabled.
+submission. Bot users and calls outside the exact allowlisted guild and channel are silent;
+responses to human members in that channel are ephemeral with mentions disabled.
 
 Use two separate private manifests with the same basename: a planner manifest
 under a planner-only directory and an account-free stream manifest under a

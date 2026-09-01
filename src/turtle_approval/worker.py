@@ -2029,6 +2029,24 @@ def _is_allowed_context(service: ApprovalService, interaction: object) -> bool:
     return True
 
 
+def _is_allowed_status_context(
+    service: ApprovalService, interaction: object
+) -> bool:
+    user = getattr(interaction, "user", None)
+    user_id, guild_id, channel_id = _interaction_ids(interaction)
+    try:
+        _snowflake(user_id, "approval_context_denied")
+        guild = _snowflake(guild_id, "approval_context_denied")
+        channel = _snowflake(channel_id, "approval_context_denied")
+    except ApprovalError:
+        return False
+    return (
+        getattr(user, "bot", True) is False
+        and guild == service.config.guild_id
+        and channel == service.config.channel_id
+    )
+
+
 def _safe_error_message(code: str) -> str:
     return {
         "approval_expired": "이 승인 요청은 만료되었습니다.",
@@ -2322,7 +2340,7 @@ def create_discord_client(
                 await asyncio.sleep(config.poll_interval_seconds)
 
         async def _handle_paper_status(self, interaction: object) -> None:
-            if not _is_allowed_context(approval_service, interaction):
+            if not _is_allowed_status_context(approval_service, interaction):
                 return
             try:
                 if expected_release_sha is None:

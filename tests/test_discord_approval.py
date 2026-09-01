@@ -785,10 +785,11 @@ def _status_interaction(
     user_id: str = USER_ID,
     guild_id: str = GUILD_ID,
     channel_id: str = CHANNEL_ID,
+    bot: bool = False,
 ) -> object:
     events: list[str] = []
     return SimpleNamespace(
-        user=SimpleNamespace(id=int(user_id)),
+        user=SimpleNamespace(id=int(user_id), bot=bot),
         guild_id=int(guild_id),
         channel_id=int(channel_id),
         response=_FakeResponse(events),
@@ -825,7 +826,7 @@ def test_status_command_is_guild_scoped_synced_and_uses_no_gateway_intents(
     asyncio.run(scenario())
 
 
-def test_status_command_responds_ephemerally_only_in_exact_context(
+def test_status_command_allows_humans_only_in_exact_guild_and_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service, _ = _service(tmp_path)
@@ -846,17 +847,16 @@ def test_status_command_responds_ephemerally_only_in_exact_context(
 
     async def scenario() -> None:
         for denied in (
-            _status_interaction(user_id=OTHER_ID),
             _status_interaction(guild_id=OTHER_ID),
             _status_interaction(channel_id=OTHER_ID),
+            _status_interaction(bot=True),
         ):
             await client._handle_paper_status(denied)
             assert denied.response.messages == []
         assert reads == []
 
-        allowed = _status_interaction()
+        allowed = _status_interaction(user_id=OTHER_ID)
         await client._handle_paper_status(allowed)
-        assert reads == [(service.config.paper_status_path, "a" * 40)]
         assert len(allowed.response.messages) == 1
         args, kwargs = allowed.response.messages[0]
         message = str(args[0])
@@ -867,6 +867,7 @@ def test_status_command_responds_ephemerally_only_in_exact_context(
         assert "실주문: 꺼짐" in message
         assert kwargs["ephemeral"] is True
         assert kwargs["allowed_mentions"] is client.client_kwargs["allowed_mentions"]
+        assert reads == [(service.config.paper_status_path, "a" * 40)]
 
     asyncio.run(scenario())
 

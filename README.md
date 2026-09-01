@@ -92,7 +92,7 @@ kill switch, 주문 한도, shadow 검증이 끝나기 전까지
 - Discord 직접 승인 worker: 독립 `turtle_approval` package가 intents `0`의 outbound Gateway로
   단일 사용자·서버·채널과 화면에 표시된 전체 계획값을 묶어 검증하고, 계획 hash 확인 modal 뒤
   완성된 파일만 no-clobber publish하는 one-shot 영수증을 기록. 같은 worker의 guild 전용 `/현황`은
-  정확히 허용된 사용자·서버·채널에서만 모의투자 상태를 ephemeral 응답하고 다른 context에는 무응답
+  허용 서버·채널의 비봇 사용자 모두에게 모의투자 상태를 ephemeral 응답하고 다른 context에는 무응답
 - 승인 격리: bot token·원 nonce·계좌번호·주문 정보는 영수증에 없고, 현재 shadow recorder는
   영수증을 거래 DB나 주문 runtime으로 소비하지 않음. 별도 offline v2 consumer는 plan
   economics/hash/Discord identity/boot·writer fence/generation/만료/latch를 다시 검증하고 SQLite에서
@@ -268,7 +268,7 @@ planner는 매 반복 뒤 공개용 월간 요약과 최신 covered day만 allow
 envelope 옆에 owner-only `0600`으로 원자 교체한다. approval worker는 거래 SQLite나 `turtle_bot`을
 읽지 않고 이 파일만 strict 검증해 `/현황`에 사용한다. release SHA·현재 boot hash·130초 freshness,
 `mode=shadow`, `live_order_submission=false` 중 하나라도 맞지 않으면 상세 원인 없이 현황 unavailable로
-응답한다. 허용되지 않은 사용자·서버·채널에서는 파일도 읽지 않고 아무 응답도 보내지 않는다.
+응답한다. 봇 계정이나 허용되지 않은 서버·채널에서는 파일도 읽지 않고 아무 응답도 보내지 않는다.
 
 월 요약은 모든 예상 평일이 plan, `MARKET_CLOSED`, 또는 `NO_CANDIDATE`로 덮여야만 coverage가
 완성된다. `NO_CANDIDATE` count와 최신 관망/휴장일은 `/현황`에 표시되지만 별도 관망 알림은 아직
