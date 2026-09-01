@@ -984,6 +984,8 @@ Windows 전체 회귀 `1017 passed, 6 skipped`, scrubbed non-live gate `725 pass
 compileall과 `git diff --check`를 통과했다. exact commit
 `0e363a14f8f8cf21b2a3dc160b537c641c7e26be`를 Mac에 side-by-side 후보로 복원했고, clean Git/fsck,
 network-denied non-live gate `730 passed`, exact import, `pip check`, compileall, wrapper syntax와 candidate
-plist lint를 통과했다. 설치 plist와 기존 approval process는 아직 전환하지 않았다. 프로젝트 운영 규칙상
-bootstrap은 로그인된 Mac Aqua Terminal에서 수행해야 하므로 live UI smoke와 활성 release 전환은 남아 있다.
-planner는 기존 Toss OAuth `invalid_client` 차단으로 계속 unload 상태이고 실주문 경로는 활성화하지 않았다.
+plist lint를 통과했다. 로그인된 Mac Aqua Terminal에서 approval job만 전환했으며 설치 plist는 mode `0600`,
+`ProgramArguments` 길이 1, 새 release와 일치하는 working directory를 유지했다. 전환 뒤 새 SHA의 approval
+heartbeat `IDLE`, 실행 중인 LaunchAgent와 Discord TLS 연결을 확인했고 stderr에는 새 기록이 없었다.
+planner는 기존 Toss OAuth `invalid_client` 차단으로 계속 unload 상태이고 DB·실주문 경로는 건드리지 않았다.
+다른 사람 계정의 실제 `/현황` UI smoke와 bot 계정의 silent 거부는 사용자 측 확인으로 남아 있다.
