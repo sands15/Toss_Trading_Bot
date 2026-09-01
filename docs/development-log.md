@@ -971,3 +971,19 @@ cutover/stage/publish journal을 사용하고, 압축한 원본 inode를 즉시 
 복구 동반 파일로 보존한다. 이미 열린 writer의 늦은 append는 다음 pass가 crash-resumable temp를 통해 gzip에
 재반영하므로 check와 unlink 사이 바이트 유실이 없다. watchdog state rename은 parent directory fsync까지
 성공해야 alert sender를 호출한다.
+
+## 2026-09-01 — Discord `/현황` 조회 권한과 승인 권한 분리
+
+허용 채널의 다른 사용자에게 `/현황`이 의도적으로 무응답하던 exact-user 검사를 조회 경로에서 분리했다.
+이제 guild와 channel이 정확히 일치하고 Discord `user.bot`이 false인 모든 사용자가 조회할 수 있다. bot,
+다른 guild, 다른 channel은 상태 파일을 읽기 전에 계속 무응답한다. 승인 버튼과 modal은 기존
+`DISCORD_ALLOWED_USER_ID`를 포함한 exact user/guild/channel 검사를 그대로 사용하므로 승인 권한은 넓히지
+않았다. intents `0`, ephemeral 응답, mention 차단과 owner-private 상태 파일 경계도 유지했다.
+
+Windows 전체 회귀 `1017 passed, 6 skipped`, scrubbed non-live gate `725 passed, 5 skipped`, `pip check`,
+compileall과 `git diff --check`를 통과했다. exact commit
+`0e363a14f8f8cf21b2a3dc160b537c641c7e26be`를 Mac에 side-by-side 후보로 복원했고, clean Git/fsck,
+network-denied non-live gate `730 passed`, exact import, `pip check`, compileall, wrapper syntax와 candidate
+plist lint를 통과했다. 설치 plist와 기존 approval process는 아직 전환하지 않았다. 프로젝트 운영 규칙상
+bootstrap은 로그인된 Mac Aqua Terminal에서 수행해야 하므로 live UI smoke와 활성 release 전환은 남아 있다.
+planner는 기존 Toss OAuth `invalid_client` 차단으로 계속 unload 상태이고 실주문 경로는 활성화하지 않았다.
