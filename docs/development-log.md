@@ -1009,4 +1009,18 @@ planner heartbeat는 DB 이상 또는 read/simulation 무결성 blocker일 때�
 계획 시각 전·휴장·무후보 같은 정상 fail-closed 결과는 heartbeat 장애로 오인하지 않는다.
 실제 다른 stream OAuth client가 준비되기 전에는 stream job을 비활성으로 유지한다. 이 단계는
 shadow 복구 작업이며 live 주문 권한을 열지 않는다.
+
+후보 커밋 `6e0627ab9de27b5d71abb14938cd11fdeec1d022`는 Windows 전체 회귀
+`1017 passed, 6 skipped`, scrubbed non-live gate `725 passed, 5 skipped`, 관련 wrapper/stream
+회귀 `77 passed, 2 skipped`, compileall, `pip check`, `git diff --check`를 통과했다. Mac에는
+side-by-side exact-SHA release와 전용 venv로 복원했고, network-denied non-live gate
+`730 passed`, exact import, `pip check`, wrapper syntax, clean Git/fsck를 통과했다.
+
+기존 stream을 unload·launchd disable한 뒤 planner와 approval만 같은 exact SHA로 공동
+전환했다. 두 job은 재시작 없이 한 heartbeat 주기 이상 같은 PID로 실행됐고 planner heartbeat는
+의도한 `DEGRADED`, DB check `ok`, approval은 `IDLE`과 Discord TLS 연결 1개를 유지했다.
+fresh `paper-status.json`은 동일 release/boot/freshness strict read와 renderer를 통과했으며 blocker는
+`intraday_read_or_integrity_failure`, planner·paper plan은 계속 0건이다. 따라서 Discord status
+조회 경로와 원인 표시는 복구됐지만 Toss WTS에서 client를 다시 활성화하거나 유효 pair를 발급해
+Keychain을 교체하기 전까지 planner 데이터 조회는 인증 차단 상태다.
 다른 사람 계정의 실제 `/현황` UI smoke와 bot 계정의 silent 거부는 사용자 측 확인으로 남아 있다.
