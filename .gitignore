@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .tmp/
+.codex-tmp/
 
 .env
 config/local.yaml
