@@ -113,6 +113,17 @@ client_id=...
 client_secret=...
 ```
 
+The success body is the top-level `access_token`, `token_type`, and `expires_in`
+object. There is no refresh token; use the returned `expires_in` and issue a new
+token at expiry. Toss permits only one valid token per OAuth client, so a new
+issuance invalidates the previous token. Independent planner and stream processes
+must therefore use different OAuth clients unless a single shared token issuer is
+introduced.
+
+Authentication failures are operationally distinct: `401 invalid_client` means
+the client ID/secret pair is wrong or the client is inactive, while an unapproved
+egress IP is `403 access_denied`. Neither is a transient retry condition.
+
 All API calls use:
 
 ```text

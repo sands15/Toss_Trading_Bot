@@ -258,6 +258,17 @@ status_writer = PaperStatusWriter(
     derive_paper_status_path(config.intraday.approval_envelope_path),
     release_sha=sys.argv[5],
 )
+degraded_blockers = {
+    "intraday_read_or_integrity_failure",
+    "intraday_simulation_blocked",
+    "intraday_simulation_integrity_failure",
+}
+planner_status = {"degraded": False}
+def write_paper_status(*args, **kwargs):
+    status_writer.write(*args, **kwargs)
+    planner_status["degraded"] = bool(
+        set(kwargs.get("blocker_codes") or ()) & degraded_blockers
+    )
 databases = (Path(sys.argv[2]).resolve(), Path(sys.argv[9]).resolve())
 def db_quick_check():
     try:
@@ -272,7 +283,7 @@ writer.write("STARTING", db_quick_check=db_quick_check())
 def heartbeat_sleep(seconds):
     checked = db_quick_check()
     writer.write(
-        "OK" if checked == "ok" else "DEGRADED",
+        "OK" if checked == "ok" and not planner_status["degraded"] else "DEGRADED",
         baseline_fresh=True,
         db_quick_check=checked,
     )
@@ -293,7 +304,7 @@ try:
             "experiment_hash": sys.argv[10],
         },
         expected_account_fingerprint=sys.argv[11],
-        paper_status_sink=status_writer.write,
+        paper_status_sink=write_paper_status,
         sleep=heartbeat_sleep,
     )
 except BaseException:

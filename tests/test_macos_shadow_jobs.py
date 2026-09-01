@@ -216,6 +216,14 @@ def test_secret_handoff_is_keychain_only_and_python_pops_environment() -> None:
     stream = (ROOT / "ops" / "run-toss-stream.command").read_text(
         encoding="utf-8"
     )
+    assert '${keychain_slug}:toss_client_id' in planner
+    assert '${keychain_slug}:toss_client_secret' in planner
+    assert '${keychain_slug}:toss_stream_client_id' not in planner
+    assert '${keychain_slug}:toss_stream_client_secret' not in planner
+    assert '${keychain_slug}:toss_stream_client_id' in stream
+    assert '${keychain_slug}:toss_stream_client_secret' in stream
+    assert '${keychain_slug}:toss_client_id' not in stream
+    assert '${keychain_slug}:toss_client_secret' not in stream
     for source in (planner, stream):
         assert source.rindex("exec /usr/bin/env -i") < source.index(
             "security find-generic-password"
@@ -461,6 +469,22 @@ def test_redacted_heartbeat_producers_are_bound_to_release_and_component() -> No
 
     assert "PRAGMA quick_check" in wrappers["planner"]
     assert "db_quick_check=checked" in wrappers["planner"]
+    assert 'planner_status = {"degraded": False}' in wrappers["planner"]
+    for blocker in (
+        "intraday_read_or_integrity_failure",
+        "intraday_simulation_blocked",
+        "intraday_simulation_integrity_failure",
+    ):
+        assert f'"{blocker}"' in wrappers["planner"]
+    assert 'set(kwargs.get("blocker_codes") or ()) & degraded_blockers' in wrappers[
+        "planner"
+    ]
+    assert '"intraday_plan_window_not_started"' not in wrappers["planner"]
+    assert (
+        '"OK" if checked == "ok" and not planner_status["degraded"] else "DEGRADED"'
+        in wrappers["planner"]
+    )
+    assert "paper_status_sink=write_paper_status" in wrappers["planner"]
     for component in ("stream", "approval", "news"):
         assert "PRAGMA quick_check" not in wrappers[component]
         assert "db_quick_check=" not in wrappers[component]

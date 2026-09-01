@@ -1745,8 +1745,10 @@ def test_macos_wrapper_uses_clean_keychain_market_data_boundary() -> None:
     assert "/usr/bin/env -i" in source
     assert "turtle_bot.toss_stream" in source
     assert "toss-trading-bot" in source
-    assert "toss_client_id" in source
-    assert "toss_client_secret" in source
+    assert '${keychain_slug}:toss_stream_client_id' in source
+    assert '${keychain_slug}:toss_stream_client_secret' in source
+    assert '${keychain_slug}:toss_client_id' not in source
+    assert '${keychain_slug}:toss_client_secret' not in source
     assert "TOSS_ACCOUNT" not in source
     assert "DISCORD_" not in source
     assert "--simulation-config" in source

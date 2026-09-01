@@ -988,4 +988,25 @@ plist lint를 통과했다. 로그인된 Mac Aqua Terminal에서 approval job만
 `ProgramArguments` 길이 1, 새 release와 일치하는 working directory를 유지했다. 전환 뒤 새 SHA의 approval
 heartbeat `IDLE`, 실행 중인 LaunchAgent와 Discord TLS 연결을 확인했고 stderr에는 새 기록이 없었다.
 planner는 기존 Toss OAuth `invalid_client` 차단으로 계속 unload 상태이고 DB·실주문 경로는 건드리지 않았다.
+
+## 2026-09-01 — Discord `/현황` 장애 원인 분리와 OAuth 단일 발급 경계
+
+운영 실사에서 `/현황`의 즉시 실패는 실행 중 approval release와 마지막
+`paper-status.json` writer release가 달라 발생한 `paper_status_release_mismatch`였고,
+planner가 안전 정지된 뒤 status가 오래된 문제도 함께 확인됐다. planner의 마지막 종료는
+crash가 아니라 OAuth 장애 조사 뒤 명시적으로 수행한 `launchctl bootout`이었다. planner·paper
+DB는 다시 `PRAGMA quick_check=ok`, plan/order는 0건, `live_order_submission=false`였다.
+
+본문·credential·token을 남기지 않는 로그인 Aqua 1회 probe로 현재 Keychain pair도 Toss token
+endpoint에서 `HTTP 401 / invalid_client`임을 재확인했다. 공식 계약상 이는 client ID/secret
+불일치 또는 client 비활성 범위이며, 허용 IP 불일치는 별도 `403 / access_denied`다. 또한 한
+client의 새 token 발급이 이전 token을 즉시 무효화하므로 planner와 stream이 같은 client를
+각자 발급하던 구조는 이후 인증 충돌 위험이었다.
+
+재발 방지 후보는 두 군데만 바꿨다. stream wrapper는 별도
+`toss_stream_client_id`/`toss_stream_client_secret` Keychain pair가 없으면 시작하지 않으며,
+planner heartbeat는 DB 이상 또는 read/simulation 무결성 blocker일 때만 `DEGRADED`로 기록한다.
+계획 시각 전·휴장·무후보 같은 정상 fail-closed 결과는 heartbeat 장애로 오인하지 않는다.
+실제 다른 stream OAuth client가 준비되기 전에는 stream job을 비활성으로 유지한다. 이 단계는
+shadow 복구 작업이며 live 주문 권한을 열지 않는다.
 다른 사람 계정의 실제 `/현황` UI smoke와 bot 계정의 silent 거부는 사용자 측 확인으로 남아 있다.

@@ -384,8 +384,11 @@ replace every placeholder locally, and keep the real installed plist mode 0600.
 Each `ProgramArguments` array remains length one. `WorkingDirectory` and the
 wrapper path point directly to the same root-owned release directory whose final
 component is the exact 40- or 64-hex commit SHA; no `/current` symlink is allowed.
-Planner and stream read only the existing `toss-trading-bot` Keychain client
-items for their non-secret slug. News reads service/account pairs
+Planner reads the existing `toss-trading-bot` Keychain client items for its
+non-secret slug. Stream uses separate `toss_stream_client_id` and
+`toss_stream_client_secret` items containing a different Toss OAuth client;
+one client cannot be shared because issuing a new token invalidates its previous
+token. News reads service/account pairs
 `TossTradingBot.FinnhubApiKey`/`news-finnhub` and
 `TossTradingBot.DiscordNewsWebhook`/`discord-news-webhook`; when its configured
 loopback LLM needs a key, add `TOSS_NEWS_LLM_API_KEY_ENV` only to the installed
@@ -696,23 +699,24 @@ experiment hash only after validating both parsed manifests. Keep the planner
 copy mode 0600 and set its private account fingerprint in the installed planner
 plist; the stream copy must not contain either value.
 
-The argument-free wrapper reuses credentials previously stored by the local
-gateway in the login Keychain. For a non-secret gateway user slug `USER_SLUG`,
-the metadata is:
+The argument-free wrapper uses a dedicated market-stream OAuth client in the
+login Keychain. It must not reuse the planner or gateway client because Toss
+allows only one valid access token per client. For a non-secret stream slug
+`STREAM_SLUG`, the metadata is:
 
 ```text
 service: toss-trading-bot
-account: USER_SLUG:toss_client_id
-account: USER_SLUG:toss_client_secret
+account: STREAM_SLUG:toss_stream_client_id
+account: STREAM_SLUG:toss_stream_client_secret
 ```
 
 Confirm that both items exist without printing their values:
 
 ```zsh
 security find-generic-password \
-  -s toss-trading-bot -a 'USER_SLUG:toss_client_id' >/dev/null
+  -s toss-trading-bot -a 'STREAM_SLUG:toss_stream_client_id' >/dev/null
 security find-generic-password \
-  -s toss-trading-bot -a 'USER_SLUG:toss_client_secret' >/dev/null
+  -s toss-trading-bot -a 'STREAM_SLUG:toss_stream_client_secret' >/dev/null
 ```
 
 Do not use `security ... -w` interactively and do not copy either value into a
@@ -728,7 +732,7 @@ job. Replace `release_root` and `slug` with reviewed non-secret values:
 
 ```zsh
 release_root=/ABSOLUTE/PATH/TO/CLEAN/EXACT-SHA/RELEASE
-slug=USER_SLUG
+slug=STREAM_SLUG
 runtime_dir="$HOME/.local/share/toss-trading-bot/intraday-shadow"
 installed="$HOME/Library/LaunchAgents/com.sands15.toss-market-stream-shadow.plist"
 
