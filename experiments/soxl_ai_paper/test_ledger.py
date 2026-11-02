@@ -5,62 +5,123 @@ import pytest
 
 import ledger as L
 
-P = {"SOXL": Decimal("40"), "SOXS": Decimal("10"), "SOXX": Decimal("250")}
+BASE = {"SOXL": Decimal("40"), "SOXS": Decimal("10"), "SOXX": Decimal("250")}
 
 
-def prices(**kw):
-    out = dict(P)
+def px(**kw):
+    out = dict(BASE)
     out.update({k: Decimal(str(v)) for k, v in kw.items()})
     return out
 
 
-def test_buy_hold_switch_and_costs(tmp_path: Path):
+def settle(tmp, date, o=None, h=None, l=None, c=None):
+    o, c = o or px(), c or px()
+    h = h or {s: max(o[s], c[s]) for s in L.SYMBOLS}
+    l = l or {s: min(o[s], c[s]) for s in L.SYMBOLS}
+    return L.cmd_settle(tmp, date, o, h, l, c, None)
+
+
+@pytest.fixture
+def tmp(tmp_path: Path) -> Path:
     L.cmd_init(tmp_path, "2026-11-02", Decimal("10000000"), Decimal("1400"))
-    L.cmd_decide(tmp_path, "2026-11-02", "SOXL", Decimal("0.5"), "test")
-    s = L.cmd_settle(tmp_path, "2026-11-02", prices(), prices(SOXL=42), None)
+    return tmp_path
+
+
+def trades(tmp):
+    return (tmp / "trades.csv").read_text(encoding="utf-8").splitlines()[1:]
+
+
+def test_buy_hold_switch(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "t")
+    s = settle(tmp, "2026-11-02", c=px(SOXL=42))
     assert s["position"]["symbol"] == "SOXL"
-    assert Decimal(s["cash_usd"]) == pytest.approx(Decimal("7142.86") / 2, abs=Decimal("0.05"))
-    # 판단 없으면 그대로 보유
-    s = L.cmd_settle(tmp_path, "2026-11-03", prices(SOXL=42), prices(SOXL=43), None)
+    assert Decimal(s["position"]["stop_price"]) == pytest.approx(Decimal("40.02") * Decimal("0.9"), abs=Decimal("0.001"))
+    s = settle(tmp, "2026-11-03", o=px(SOXL=42), c=px(SOXL=43))
     assert s["position"]["days_held"] == 2
-    L.cmd_decide(tmp_path, "2026-11-04", "SOXS", Decimal("0.3"), "flip")
-    s = L.cmd_settle(tmp_path, "2026-11-04", prices(SOXL=43), prices(), None)
+    L.cmd_decide(tmp, "2026-11-04", "SOXS", Decimal("0.3"), "flip")
+    s = settle(tmp, "2026-11-04", o=px(SOXL=43))
     assert s["position"]["symbol"] == "SOXS"
-    trades = (tmp_path / "trades.csv").read_text().splitlines()
-    assert len(trades) == 4  # header + buy + sell + buy
+    assert len(trades(tmp)) == 3
 
 
-def test_rules_enforced(tmp_path: Path):
-    L.cmd_init(tmp_path, "2026-11-02", Decimal("10000000"), Decimal("1400"))
+def test_rules_enforced(tmp):
+    for args in [("SOXL", "0.8", "0.1", "x"), ("TQQQ", "0.2", "0.1", "x"),
+                 ("SOXL", "0.2", "0.1", " "), ("SOXL", "0.2", "0.2", "x"),
+                 ("SOXL", "0.2", "0.01", "x")]:
+        with pytest.raises(L.LedgerError):
+            L.cmd_decide(tmp, "2026-11-02", args[0], Decimal(args[1]), args[3], Decimal(args[2]))
+
+
+def test_stop_order_hits_intraday(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "x")
+    settle(tmp, "2026-11-02")
+    # 다음 날 장중 저가 34 → 손절가(약 36.02)에서 체결, 종가 회복은 무관
+    s = settle(tmp, "2026-11-03", o=px(SOXL=39), l={"SOXL": Decimal("34"), "SOXS": Decimal("10")},
+               c=px(SOXL=41))
+    assert s["position"] is None and s["cooldown"]
+    sell = trades(tmp)[-1].split(",")
+    assert sell[1] == "SELL" and Decimal(sell[4]) < Decimal("36.02") and Decimal(sell[4]) > Decimal("35.8")
     with pytest.raises(L.LedgerError):
-        L.cmd_decide(tmp_path, "2026-11-02", "SOXL", Decimal("0.8"), "too big")
+        L.cmd_decide(tmp, "2026-11-04", "SOXL", Decimal("0.5"), "again")
+    L.cmd_decide(tmp, "2026-11-04", "CASH", Decimal("0"), "rest")
+    s = settle(tmp, "2026-11-04")
+    assert s["cooldown"] is None
+    L.cmd_decide(tmp, "2026-11-05", "SOXL", Decimal("0.5"), "back")
+
+
+def test_stop_gap_down_fills_at_open(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "x")
+    settle(tmp, "2026-11-02")
+    settle(tmp, "2026-11-03", o=px(SOXL=30), c=px(SOXL=31))
+    sell = trades(tmp)[-1].split(",")
+    assert Decimal(sell[4]) < Decimal("30")
+
+
+def test_entry_day_stop(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "x")
+    s = settle(tmp, "2026-11-02", l={"SOXL": Decimal("35"), "SOXS": Decimal("10")}, c=px(SOXL=38))
+    assert s["position"] is None
+
+
+def test_intraday_exit(tmp):
     with pytest.raises(L.LedgerError):
-        L.cmd_decide(tmp_path, "2026-11-02", "TQQQ", Decimal("0.2"), "bad symbol")
+        L.cmd_intraday(tmp, "2026-11-02", Decimal("39"), "01:07 KST", "src", "nothing held")
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "x")
+    L.cmd_intraday(tmp, "2026-11-02", Decimal("38"), "01:07 KST", "https://x", "악재")
+    s = settle(tmp, "2026-11-02", l={"SOXL": Decimal("37.5"), "SOXS": Decimal("10")}, c=px(SOXL=37.8))
+    assert s["position"] is None and s["intraday"] is None
+    assert "장중 점검" in trades(tmp)[-1]
+
+
+def test_intraday_but_stop_hit_is_conservative(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "x")
+    L.cmd_intraday(tmp, "2026-11-02", Decimal("39"), "01:07 KST", "https://x", "악재")
+    settle(tmp, "2026-11-02", l={"SOXL": Decimal("35"), "SOXS": Decimal("10")})
+    assert "손절 조건" in trades(tmp)[-1]
+
+
+def test_stop_can_only_tighten(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "x", Decimal("0.05"))
+    settle(tmp, "2026-11-02")
     with pytest.raises(L.LedgerError):
-        L.cmd_decide(tmp_path, "2026-11-02", "SOXL", Decimal("0.2"), " ")
+        L.cmd_decide(tmp, "2026-11-03", "SOXL", Decimal("0.5"), "loosen", Decimal("0.10"))
+    L.cmd_decide(tmp, "2026-11-03", "SOXL", Decimal("0.5"), "tighten", Decimal("0.03"))
+    s = settle(tmp, "2026-11-03")
+    assert Decimal(s["position"]["stop_pct"]) == Decimal("0.03")
 
 
-def test_stop_loss_forces_cash(tmp_path: Path):
-    L.cmd_init(tmp_path, "2026-11-02", Decimal("10000000"), Decimal("1400"))
-    L.cmd_decide(tmp_path, "2026-11-02", "SOXL", Decimal("0.5"), "x")
-    s = L.cmd_settle(tmp_path, "2026-11-02", prices(), prices(SOXL=35), None)
-    assert s["forced_exit"].startswith("stop_loss")
-    with pytest.raises(L.LedgerError):
-        L.cmd_decide(tmp_path, "2026-11-03", "SOXL", Decimal("0.5"), "again")
-    s = L.cmd_settle(tmp_path, "2026-11-03", prices(SOXL=35), prices(SOXL=36), None)
-    assert s["position"] is None and s["forced_exit"] is None
-
-
-def test_max_hold_days(tmp_path: Path):
-    L.cmd_init(tmp_path, "2026-11-02", Decimal("10000000"), Decimal("1400"))
-    L.cmd_decide(tmp_path, "2026-11-02", "SOXL", Decimal("0.5"), "x")
+def test_max_hold_days(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "x")
     for d in ("02", "03", "04", "05", "06"):
-        s = L.cmd_settle(tmp_path, f"2026-11-{d}", prices(), prices(), None)
+        s = settle(tmp, f"2026-11-{d}")
     assert s["forced_exit"].startswith("max_hold")
+    s = settle(tmp, "2026-11-09")
+    assert s["position"] is None
 
 
-def test_no_double_settle(tmp_path: Path):
-    L.cmd_init(tmp_path, "2026-11-02", Decimal("10000000"), Decimal("1400"))
-    L.cmd_settle(tmp_path, "2026-11-02", prices(), prices(), None)
+def test_bad_ohlc_and_double_settle(tmp):
     with pytest.raises(L.LedgerError):
-        L.cmd_settle(tmp_path, "2026-11-02", prices(), prices(), None)
+        settle(tmp, "2026-11-02", l={"SOXL": Decimal("41"), "SOXS": Decimal("10")})
+    settle(tmp, "2026-11-02")
+    with pytest.raises(L.LedgerError):
+        settle(tmp, "2026-11-02")
