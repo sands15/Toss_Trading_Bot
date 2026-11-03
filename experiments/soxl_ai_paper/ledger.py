@@ -7,6 +7,7 @@ AI(예약 세션)가 판단을 기록하면 이 장부가 규칙을 강제하고
   init      --date D --krw 10000000 --fx 1390.5
   decide    --date D --action SOXL|SOXS|CASH [--weight 0.5] [--stop-pct 0.10] --reason "..."
   intraday  --date D --price 41.2 --time "01:07 KST" --source URL --reason "..."
+  gate      [--action SOXL --weight 0.3]   # 신규 진입 전 규율 점검
   settle    --date D --open SOXL=..,SOXS=..,SOXX=.. --high SOXL=..,SOXS=..
             --low SOXL=..,SOXS=.. --close SOXL=..,SOXS=..,SOXX=.. [--fx 1390.5]
   status
@@ -46,6 +47,12 @@ COMMISSION = Decimal("0.001")  # 매수/매도 각각 0.1%
 SLIPPAGE = Decimal("0.0005")  # 시장가 체결 시 0.05% 불리하게
 STOP_SLIPPAGE = Decimal("0.003")  # 손절 조건 주문 체결 시 0.3% 불리하게
 
+# 규율 게이트 (손실 뒤 감정 매매 방지)
+GATE_DAY_LOSS = Decimal("-0.03")     # 직전 거래일 계좌 -3% 이하 → 다음 판단은 현금만
+GATE_LOSS_STREAK = 2                 # 연속 손실 청산 2번 → 다음 판단은 현금만
+GATE_DRAWDOWN = Decimal("-0.10")     # 고점 대비 -10% 이하 → 비중 상한 25%
+GATE_DRAWDOWN_MAX_WEIGHT = Decimal("0.25")
+
 DAILY_FIELDS = [
     "date", "position", "shares", "close", "stop_price", "cash_usd", "equity_usd", "fx",
     "equity_krw", "return_pct", "soxx_hold_usd", "soxl_hold_usd", "event",
@@ -80,6 +87,7 @@ def load_state(data_dir: Path) -> dict:
     state = json.loads(path.read_text(encoding="utf-8"))
     state.setdefault("cooldown", None)
     state.setdefault("intraday", None)
+    state.setdefault("closed", [])
     return state
 
 
@@ -121,6 +129,84 @@ def held_after_open(state: dict) -> str:
     if state["pending"]:
         return state["pending"]["action"]
     return state["position"]["symbol"] if state["position"] else "CASH"
+
+
+def _equity_rows(data_dir: Path) -> list[dict]:
+    daily = data_dir / "daily.csv"
+    if not daily.exists():
+        return []
+    return list(csv.DictReader(daily.open(encoding="utf-8")))
+
+
+def discipline_gate(data_dir: Path, state: dict, action: str | None = None,
+                    weight: Decimal | None = None) -> dict:
+    """신규 진입 전 규율 점검. level: PASS / WARN / FAIL."""
+    checks: list[tuple[str, str]] = []  # (level, message)
+    max_weight = MAX_WEIGHT
+    rows = _equity_rows(data_dir)
+    last_date = rows[-1]["date"] if rows else None
+
+    # 1) 직전 거래일 손실
+    if rows:
+        prev = D(rows[-2]["equity_usd"]) if len(rows) > 1 else D(state["start_usd"])
+        day = D(rows[-1]["equity_usd"]) / prev - 1
+        if day <= GATE_DAY_LOSS:
+            checks.append(("FAIL", f"직전 거래일({last_date}) 계좌 {day:.2%} → 오늘은 신규 진입 금지(현금만)"))
+        else:
+            checks.append(("PASS", f"직전 거래일 계좌 {day:+.2%}"))
+
+    # 2) 연속 손실 (마지막 손실 청산일 이후 하루 이상 쉬었으면 해제)
+    streak = 0
+    for c in reversed(state.get("closed", [])):
+        if D(c["pnl_usd"]) < 0:
+            streak += 1
+        else:
+            break
+    if streak >= GATE_LOSS_STREAK:
+        last_loss = state["closed"][-1]["date"]
+        rested = any(r["date"] > last_loss for r in rows)
+        if rested:
+            checks.append(("PASS", f"{streak}연패 뒤 하루 이상 쉼"))
+        else:
+            checks.append(("FAIL", f"{streak}연패 → 하루 쉬기(현금만)"))
+    else:
+        checks.append(("PASS", f"연속 손실 {streak}회"))
+
+    # 3) 고점 대비 낙폭
+    if rows:
+        peak = max([D(state["start_usd"])] + [D(r["equity_usd"]) for r in rows])
+        dd = D(rows[-1]["equity_usd"]) / peak - 1
+        if dd <= GATE_DRAWDOWN:
+            max_weight = min(max_weight, GATE_DRAWDOWN_MAX_WEIGHT)
+            checks.append(("WARN", f"고점 대비 {dd:.2%} → 비중 상한 {GATE_DRAWDOWN_MAX_WEIGHT}"))
+        else:
+            checks.append(("PASS", f"고점 대비 {dd:+.2%}"))
+
+    # 4) 손실 직후 비중 확대 금지
+    closed = state.get("closed", [])
+    if closed and D(closed[-1]["pnl_usd"]) < 0:
+        last_w = D(closed[-1].get("weight", "0"))
+        if last_w > 0:
+            max_weight = min(max_weight, last_w)
+            msg = f"직전 매매 손실 → 비중은 직전({last_w}) 이하만"
+            if weight is not None and action in SYMBOLS and weight > last_w:
+                checks.append(("FAIL", msg + f", 요청 {weight}"))
+            else:
+                checks.append(("WARN", msg))
+
+    if weight is not None and action in SYMBOLS and weight > max_weight:
+        if not any(l == "FAIL" for l, _ in checks):
+            checks.append(("FAIL", f"요청 비중 {weight} > 허용 상한 {max_weight}"))
+
+    level = "FAIL" if any(l == "FAIL" for l, _ in checks) else (
+        "WARN" if any(l == "WARN" for l, _ in checks) else "PASS")
+    return {"level": level, "max_weight": max_weight, "checks": checks}
+
+
+def format_gate(g: dict) -> str:
+    lines = [f"규율 점검: {g['level']} (허용 비중 상한 {g['max_weight']})"]
+    lines += [f"  [{l}] {m}" for l, m in g["checks"]]
+    return "\n".join(lines)
 
 
 def cmd_init(data_dir: Path, date: str, krw: Decimal, fx: Decimal) -> dict:
@@ -165,6 +251,10 @@ def cmd_decide(data_dir: Path, date: str, action: str, weight: Decimal, reason: 
     blocked = state["forced_exit"] or state["cooldown"]
     if blocked and action != "CASH":
         raise LedgerError(f"직전 강제 청산/손절({blocked}) 다음 거래일은 현금만 허용됩니다.")
+    if action in SYMBOLS:
+        gate = discipline_gate(data_dir, state, action, weight)
+        if gate["level"] == "FAIL":
+            raise LedgerError("규율 점검 실패 → 현금만 가능\n" + format_gate(gate))
     pos = state["position"]
     if pos and action == pos["symbol"] and stop_pct != D(pos.get("stop_pct", STOP_PCT_DEFAULT)):
         # 보유 유지 시 손절가는 위로만 올릴 수 있다 (손절 완화 금지)
@@ -203,11 +293,14 @@ def _sell(state: dict, fill: Decimal, date: str, reason: str, trades: list) -> N
     state["cash_usd"] = str(money(D(state["cash_usd"]) + gross - fee))
     trades.append({"date": date, "side": "SELL", "symbol": pos["symbol"], "shares": str(shares),
                    "price": str(qty(fill)), "fee_usd": str(fee), "reason": reason})
+    pnl = money((fill - D(pos["entry_price"])) * shares - fee - D(pos.get("buy_fee", "0")))
+    state.setdefault("closed", []).append({"date": date, "symbol": pos["symbol"], "pnl_usd": str(pnl),
+                                           "weight": pos.get("weight", "0")})
     state["position"] = None
 
 
 def _buy(state: dict, symbol: str, price_open: Decimal, budget: Decimal, stop_pct: Decimal,
-         date: str, reason: str, trades: list) -> None:
+         date: str, reason: str, trades: list, weight: Decimal = Decimal("0")) -> None:
     fill = price_open * (1 + SLIPPAGE)
     shares = qty(budget / (fill * (1 + COMMISSION)))
     if shares <= 0:
@@ -217,7 +310,8 @@ def _buy(state: dict, symbol: str, price_open: Decimal, budget: Decimal, stop_pc
     state["cash_usd"] = str(money(D(state["cash_usd"]) - gross - fee))
     state["position"] = {"symbol": symbol, "shares": str(shares), "entry_price": str(qty(fill)),
                          "entry_date": date, "days_held": 0, "stop_pct": str(stop_pct),
-                         "stop_price": str(qty(fill * (1 - stop_pct)))}
+                         "stop_price": str(qty(fill * (1 - stop_pct))),
+                         "weight": str(weight), "buy_fee": str(fee)}
     trades.append({"date": date, "side": "BUY", "symbol": symbol, "shares": str(shares),
                    "price": str(qty(fill)), "fee_usd": str(fee), "reason": reason})
 
@@ -258,7 +352,8 @@ def cmd_settle(data_dir: Path, date: str, opens: dict, highs: dict, lows: dict, 
             if action in SYMBOLS:
                 budget = D(state["cash_usd"]) * D(pending["weight"])
                 _buy(state, action, opens[action], budget,
-                     D(pending.get("stop_pct", STOP_PCT_DEFAULT)), date, pending["reason"], trades)
+                     D(pending.get("stop_pct", STOP_PCT_DEFAULT)), date, pending["reason"], trades,
+                     D(pending["weight"]))
         elif pos:
             events.append(f"hold:{held}")
             new_pct = D(pending.get("stop_pct", pos.get("stop_pct", STOP_PCT_DEFAULT)))
@@ -389,6 +484,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--close", required=True)
     p.add_argument("--fx")
     sub.add_parser("status")
+    p = sub.add_parser("gate")
+    p.add_argument("--action")
+    p.add_argument("--weight")
     args = parser.parse_args(argv)
     data_dir = Path(args.data_dir)
     try:
@@ -403,6 +501,12 @@ def main(argv: list[str] | None = None) -> int:
             cmd_settle(data_dir, args.date, parse_prices(args.open, need),
                        parse_prices(args.high, SYMBOLS), parse_prices(args.low, SYMBOLS),
                        parse_prices(args.close, need), D(args.fx) if args.fx else None)
+        elif args.cmd == "gate":
+            state = load_state(data_dir)
+            g = discipline_gate(data_dir, state, (args.action or "").upper() or None,
+                                D(args.weight) if args.weight else None)
+            print(format_gate(g))
+            return 1 if g["level"] == "FAIL" else 0
         print(cmd_status(data_dir))
     except LedgerError as exc:
         print(f"오류: {exc}", file=sys.stderr)

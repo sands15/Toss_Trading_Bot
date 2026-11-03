@@ -10,10 +10,12 @@
 2. `records/state.json`이 없으면 오늘 USD/KRW 환율을 확인해
    `python3 ledger.py init --date <미국날짜> --krw 10000000 --fx <환율>` 실행.
 3. `python3 ledger.py status`로 현재 상태 확인. 강제 청산 예정이면 CASH만 가능.
+   이어서 `python3 ledger.py gate`로 규율 점검. FAIL이면 오늘은 CASH만 가능하고,
+   WARN이면 표시된 비중 상한 안에서만 판단한다.
 4. `SOURCES.md` 매체 위주로 지난 24시간 뉴스를 찾아 핵심 이슈 10개 이내로 요약.
    이슈마다 호재/악재/중립과 영향 종목을 표시.
-5. 시장 점검: 나스닥 선물, VIX, 미 10년물 금리, 지수 상위 종목 장전 거래 가격,
-   오늘·내일 실적/경제지표 일정.
+5. 시장 점검: `python3 prices.py`로 직전 정규장 SOXL·SOXS·SOXX·VIX 시세 확인(CBOE, 키 불필요).
+   그 외 나스닥 선물, 미 10년물 금리, 지수 상위 종목 장전 거래 가격, 오늘·내일 실적/경제지표 일정은 웹에서 확인.
 6. 판단 후 기록:
    `python3 ledger.py decide --date <미국날짜> --action SOXL|SOXS|CASH --weight 0.1~0.5 --stop-pct 0.03~0.10 --reason "<한 줄 이유>"`
    손절 폭(`--stop-pct`)은 매수와 동시에 거는 손절 조건 주문이다. 보유 유지 시에는 손절가를 올리는 것만 가능.
@@ -24,18 +26,22 @@
 
 1. 미국 휴장일이면 종료. 날짜는 미국 동부 기준 오늘.
 2. `python3 ledger.py status`의 "오늘 시가 이후 보유 예정"이 CASH면 저널에 "보유 없음"만 적고 종료.
-3. 보유 종목의 현재가, 장 시작 이후 나온 주요 뉴스, 나스닥·지수 상위 종목 흐름을 확인.
+3. 보유 종목의 현재가는 `python3 prices.py`의 `current_price`(15분 지연, 출처 "CBOE delayed quotes")로 확인.
+   장 시작 이후 나온 주요 뉴스, 나스닥·지수 상위 종목 흐름은 웹에서 확인.
 4. 현금화가 필요하다고 판단될 때만 기록 (신규 매수·갈아타기는 불가):
    `python3 ledger.py intraday --date <미국날짜> --price <현재가> --time "<확인 시각 KST>" --source <출처 URL> --reason "<이유>"`
    현재가를 믿을 만한 출처에서 확인하지 못하면 기록하지 않는다.
 5. 계속 보유하더라도 저널에 "장중 점검" 섹션을 추가: 현재가, 손절가까지 남은 폭, 판단.
 
-## C. 장 마감 후 정산 (한국 시간 06:06)
+## C. 장 마감 후 정산 (한국 시간 06:40)
 
 1. 방금 끝난 미국 거래일이 휴장이었으면 종료.
-2. SOXL·SOXS·SOXX의 그날 정규장 **시가·종가**, SOXL·SOXS의 **고가·저가**,
-   USD/KRW 환율을 두 곳 이상에서 확인.
-3. `python3 ledger.py settle --date <미국날짜> --open SOXL=..,SOXS=..,SOXX=.. --high SOXL=..,SOXS=.. --low SOXL=..,SOXS=.. --close SOXL=..,SOXS=..,SOXX=.. --fx <환율>`
+2. 가격: `python3 prices.py --expect-date <미국날짜> --settle-args` 실행.
+   - 성공하면 출력된 인자를 그대로 settle에 사용한다.
+   - 종료코드 2(날짜 불일치)·3(종가 미확정)·1(접속 실패)이면 20분 뒤 한 번 더 시도하고,
+     그래도 안 되면 웹에서 두 곳 이상 확인해 직접 입력한다. 못 하면 건너뛴다.
+   USD/KRW 환율은 웹에서 확인.
+3. `python3 ledger.py settle <prices.py가 출력한 인자> --fx <환율>`
    손절 조건 주문 체결 여부는 장부가 저가로 자동 판단한다.
 4. 해당 날짜 저널 아래에 "정산" 섹션 추가: 가격과 출처, 손절 체결 여부, 평가액,
    판단이 맞았는지, 다음에 참고할 점 한두 줄.

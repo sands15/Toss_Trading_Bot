@@ -125,3 +125,43 @@ def test_bad_ohlc_and_double_settle(tmp):
     settle(tmp, "2026-11-02")
     with pytest.raises(L.LedgerError):
         settle(tmp, "2026-11-02")
+
+
+def test_gate_blocks_after_big_day_loss(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.5"), "x")
+    # SOXL -9% close, stop not hit (stop ~36.02): account ~ -4.5%
+    settle(tmp, "2026-11-02", c=px(SOXL=36.5))
+    g = L.discipline_gate(tmp, L.load_state(tmp))
+    assert g["level"] == "FAIL"
+    with pytest.raises(L.LedgerError):
+        L.cmd_decide(tmp, "2026-11-03", "SOXS", Decimal("0.2"), "revenge")
+    L.cmd_decide(tmp, "2026-11-03", "CASH", Decimal("0"), "rest")
+
+
+def test_gate_no_size_up_after_loss(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "SOXL", Decimal("0.2"), "x")
+    settle(tmp, "2026-11-02")
+    L.cmd_decide(tmp, "2026-11-03", "CASH", Decimal("0"), "exit")
+    settle(tmp, "2026-11-03", o=px(SOXL=39.5))  # small losing exit
+    st = L.load_state(tmp)
+    assert Decimal(st["closed"][-1]["pnl_usd"]) < 0
+    with pytest.raises(L.LedgerError):
+        L.cmd_decide(tmp, "2026-11-04", "SOXL", Decimal("0.4"), "double down")
+    L.cmd_decide(tmp, "2026-11-04", "SOXL", Decimal("0.2"), "same size ok")
+
+
+def test_gate_loss_streak_then_rest(tmp):
+    for d1, d2 in (("02", "03"), ("04", "05")):
+        L.cmd_decide(tmp, f"2026-11-{d1}", "SOXL", Decimal("0.1"), "x")
+        settle(tmp, f"2026-11-{d1}")
+        L.cmd_decide(tmp, f"2026-11-{d2}", "CASH", Decimal("0"), "exit")
+        settle(tmp, f"2026-11-{d2}", o=px(SOXL=39.8))
+    assert L.discipline_gate(tmp, L.load_state(tmp))["level"] == "FAIL"
+    L.cmd_decide(tmp, "2026-11-06", "CASH", Decimal("0"), "rest")
+    settle(tmp, "2026-11-06")
+    assert L.discipline_gate(tmp, L.load_state(tmp), "SOXL", Decimal("0.1"))["level"] != "FAIL"
+
+
+def test_gate_pass_fresh(tmp):
+    g = L.discipline_gate(tmp, L.load_state(tmp), "SOXL", Decimal("0.5"))
+    assert g["level"] == "PASS"
