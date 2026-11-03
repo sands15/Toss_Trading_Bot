@@ -15,6 +15,9 @@
 4. `SOURCES.md` 매체 위주로 지난 24시간 뉴스를 찾아 핵심 이슈 10개 이내로 요약.
    이슈마다 호재/악재/중립과 영향 종목을 표시.
 5. 시장 점검: `python3 prices.py`로 직전 정규장 SOXL·SOXS·SOXX·VIX 시세 확인(CBOE, 키 불필요).
+   이어서 `python3 regime.py`로 시장 국면 점검(반등 확인 신호, 고점 위험 점수). 결과를 저널에 그대로 붙인다.
+   - "No FTD"(반등 미확인)이고 고점 위험 Red면 SOXL은 비중을 낮게 잡거나 현금을 우선 검토한다.
+   - FTD 확인 신호가 나오면 SOXS(하락 베팅)는 신중히 본다.
    그 외 나스닥 선물, 미 10년물 금리, 지수 상위 종목 장전 거래 가격, 오늘·내일 실적/경제지표 일정은 웹에서 확인.
 6. 판단 후 기록:
    `python3 ledger.py decide --date <미국날짜> --action SOXL|SOXS|CASH --weight 0.1~0.5 --stop-pct 0.03~0.10 --reason "<한 줄 이유>"`

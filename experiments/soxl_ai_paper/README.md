@@ -81,6 +81,7 @@
 
 - `ledger.py` 장부 계산 / `prices.py` CBOE 지연 시세 수집(키 불필요) / `test_*.py` 테스트
 - `REAL_TRADE_CHECKLIST.md` 실제 매매 전에 사람이 쓰는 점검표
+- `regime.py` 시장 국면 점검(팔로스루 데이·고점 위험). `vendor/tradermonty/`의 MIT 감지기를 CBOE 데이터로 실행
 - `records/state.json` 현재 상태, `records/daily.csv` 일별 평가액, `records/trades.csv` 매매 기록
 - `journal/YYYY-MM-DD.md` 일별 뉴스 요약, 판단, 복기
 - `SOURCES.md` 뉴스 매체 목록
