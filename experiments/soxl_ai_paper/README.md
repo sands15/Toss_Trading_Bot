@@ -95,6 +95,7 @@
 
 - `ledger.py` 장부 계산 / `prices.py` CBOE 지연 시세 수집(키 불필요) / `test_*.py` 테스트
 - `REAL_TRADE_CHECKLIST.md` 실제 매매 전에 사람이 쓰는 점검표
+- `sp500_pit.py` 본체 모멘텀 엔진용 과거 S&P 500 구성 종목 + CBOE 일봉 생성 → 결과 `momentum_engine_results.md`
 - `stocks_backtest.py` 개별 주식(+ETF) 모멘텀 순환 백테스트 → `stocks_backtest_results.md`
 - `backtest.py` 규칙 전략 백테스트(CBOE 일봉, 미래 데이터 사용 금지) → `backtest_results.md`
 - `regime.py` 시장 국면 점검(팔로스루 데이·고점 위험). `vendor/tradermonty/`의 MIT 감지기를 CBOE 데이터로 실행
