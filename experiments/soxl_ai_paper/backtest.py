@@ -164,19 +164,23 @@ def target(name: str, s: dict) -> str:
     raise ValueError(name)
 
 
-def simulate(name: str, sigs: list[dict], px: dict[str, dict[str, dict]], stop_pct: float | None) -> dict:
-    """sigs[i] 신호 → dates[i+1] 시가에 실행."""
+def simulate(name: str, sigs: list[dict], px: dict[str, dict[str, dict]], stop_pct: float | None,
+             long_sym: str = "SOXL") -> dict:
+    """sigs[i] 신호 → dates[i+1] 시가에 실행. long_sym: 'SOXL' 자리에 대신 들고 갈 종목."""
     eq, cash, sym, shares, entry_stop = 1.0, 1.0, "CASH", 0.0, None
     curve, trades, cooldown = [], [], False
     entry_val = 0.0
     for i in range(len(sigs) - 1):
         d = sigs[i + 1]["date"]
         want = target(name, sigs[i])
+        if want == "SOXL":
+            want = long_sym
         if cooldown and want != "CASH":
             want = "CASH"
         cooldown = False
-        bars = {k: px[k].get(d) for k in ("SOXL", "SOXS", "SOXX")}
-        if any(bars[k] is None for k in ("SOXL", "SOXS", "SOXX")):
+        need = {long_sym, "SOXS", "SOXX"} if name in ("결합 + SOXS", "SOXX 단순 보유") else {long_sym}
+        bars = {k: px[k].get(d) for k in need}
+        if any(v is None for v in bars.values()):
             curve.append((d, curve[-1][1] if curve else 1.0))
             continue
         # 시가 매매
@@ -262,6 +266,26 @@ def table(rows: list[dict], title: str) -> str:
     return "\n".join(out)
 
 
+def universe_report(sigs: list[dict], cache_dir: Path, assets: list[str]) -> str:
+    """같은 신호를 다른 종목에 적용 (SOXL 자리에 해당 종목)."""
+    syms = [a for a in assets if a != "SOXL"]
+    data = load_all(syms, cache_dir)
+    data["SOXL"] = clean_spikes(json.loads((cache_dir / "SOXL.json").read_text()))
+    px = {k: {r["date"]: r for r in rows} for k, rows in data.items()}
+    out = [f"### 종목 확장: 같은 규칙을 다른 종목에 ({sigs[0]['date']} ~ {sigs[-1]['date']})", "",
+           "| 종목 | 전략 | 손절 | 총수익률 | 연평균 | 최대낙폭 | 시장노출 | 매매수 |",
+           "|---|---|---|---:|---:|---:|---:|---:|"]
+    for a in assets:
+        sub = [x for x in sigs if x["date"] in px[a]]
+        for name, stop in (("SOXL 단순 보유", None), ("FTD 필터", None), ("FTD 필터", 0.10),
+                           ("고점위험 필터", None), ("결합 필터", None)):
+            m = metrics(simulate(name, sub, px, stop, long_sym=a), sub)
+            label = "단순 보유" if "단순" in name else name
+            out.append(f"| {a} | {label} | {'-10%' if stop else '없음'} | {m['total']:+.0%} | {m['cagr']:+.1%} | "
+                       f"{m['mdd']:.0%} | {m['exposure']:.0%} | {m['trades']} |")
+    return "\n".join(out)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--start", default="2015-01-01")
@@ -270,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
                                         "2022-01-01:2022-12-31,2023-01-01:2024-12-31,2025-01-01:2026-12-31")
     p.add_argument("--cache-dir", default=os.path.expanduser("~/.cache/soxl_paper_cboe"))
     p.add_argument("--out")
+    p.add_argument("--universe", default="SOXL,USD,TQQQ,UPRO,SOXX,QQQ,SPY",
+                   help="같은 규칙을 적용해 볼 종목들 (빈 문자열이면 생략)")
     args = p.parse_args(argv)
     sigs, _ = run(args.start, args.end, Path(args.cache_dir))
     parts = [f"# 규칙 전략 백테스트 ({sigs[0]['date']} ~ {sigs[-1]['date']})", "",
@@ -288,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
                 res = simulate(name, sub, px, stop)
                 rows.append({"name": name, "stop": stop, **metrics(res, sub)})
         parts += [table(rows, f"{sub[0]['date']} ~ {sub[-1]['date']}"), ""]
+    if args.universe:
+        parts += [universe_report(sigs, cache, [a.strip() for a in args.universe.split(",") if a.strip()]), ""]
     from collections import Counter
     st = Counter(s["ftd_state"] for s in sigs)
     parts += ["### 신호 분포", "", "FTD 상태: " + ", ".join(f"{k} {v}일" for k, v in st.most_common()),
