@@ -40,3 +40,15 @@ def test_clean_spikes_removes_one_day_glitch():
     rows = [{"date": str(i), "open": 1, "high": 1, "low": 1, "close": c} for i, c in
             enumerate([10, 10.5, 1000, 10.4, 10.6])]
     assert [r["close"] for r in B.clean_spikes(rows)] == [10, 10.5, 10.4, 10.6]
+
+
+def test_stock_rotation_buys_top_momentum_next_open():
+    import stocks_backtest as S
+    dates = [f"d{i:03d}" for i in range(140)]
+    mk = lambda f: [{"date": d, "open": f(i), "high": f(i), "low": f(i), "close": f(i), "volume": 1}  # noqa: E731
+                    for i, d in enumerate(dates)]
+    data = {"UP": mk(lambda i: 100 + i), "FLAT": mk(lambda i: 100.0), "DOWN": mk(lambda i: 200 - i)}
+    px = S.Prices(data)
+    r = S.run_strategy(px, dates, ["UP", "FLAT", "DOWN"], None, top_n=1)
+    # 점수 계산이 가능한 첫날(126) 종가에 UP 선택 → 127 시가 매수, 이후 UP 가격을 따라감
+    assert r["curve"][-1] == pytest.approx(239 / 227 * (1 - S.COST), rel=1e-6)

@@ -59,6 +59,9 @@ def clean_spikes(rows: list[dict]) -> list[dict]:
                 up, back = r["close"] / p, n / r["close"]
                 if (up > 2.5 or up < 0.4) and (back > 2.5 or back < 0.4) and 0.6 < n / p < 1.6:
                     continue
+                # 반대 방향으로 25% 넘게 튀었다가 다음 날 거의 원복(±10%) → 오류값
+                if ((up > 1.25 and back < 0.8) or (up < 0.8 and back > 1.25)) and 0.9 < n / p < 1.1:
+                    continue
         if r["close"] > 0 and r["low"] > 0:
             out.append(r)
     return out
