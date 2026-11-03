@@ -1,0 +1,22 @@
+{
+  "start_date": "2026-11-03",
+  "start_krw": "10000000",
+  "start_fx": "1341.0",
+  "start_usd": "7457.12",
+  "cash_usd": "7457.12",
+  "position": null,
+  "pending": {
+    "date": "2026-11-03",
+    "action": "CASH",
+    "weight": "0",
+    "stop_pct": "0.10",
+    "reason": "AMD 실적(장 마감 후)·중간선거 결과 직전 + 시장 국면 조정·고점위험 Red·반등 미확인 → 이벤트 전 현금 대기"
+  },
+  "forced_exit": null,
+  "cooldown": null,
+  "intraday": null,
+  "benchmarks": null,
+  "last_settled": null,
+  "last_fx": "1341.0",
+  "closed": []
+}
