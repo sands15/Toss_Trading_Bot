@@ -5,13 +5,7 @@
   "start_usd": "7457.12",
   "cash_usd": "7457.12",
   "position": null,
-  "pending": {
-    "date": "2026-11-04",
-    "action": "CASH",
-    "weight": "0",
-    "stop_pct": "0.10",
-    "reason": "AMD 호실적에도 장전 반도체 약세 전환(AMD 하락 반전, NVDA·MU -1%↑), 데이터센터 규제 우려(민주당 압승·텍사스 신규 주지사 모라토리엄 공약) → 가이드 C(엇갈림). 시장 국면 반등 시도 1일차·FTD 없음·고점위험 67 Red"
-  },
+  "pending": null,
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
@@ -19,7 +13,7 @@
     "SOXX": "16.008587",
     "SOXL": "101.168363"
   },
-  "last_settled": "2026-11-03",
-  "last_fx": "1341.0",
+  "last_settled": "2026-11-04",
+  "last_fx": "1341.5",
   "closed": []
 }
