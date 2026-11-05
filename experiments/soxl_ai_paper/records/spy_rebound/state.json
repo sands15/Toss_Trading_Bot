@@ -1,0 +1,29 @@
+{
+ "start": "2026-10-01",
+ "start_krw": 10000000,
+ "start_fx": 1341.5,
+ "capital_usd": 7454.34,
+ "cash_usd": 0.0,
+ "spy": {
+  "shares": 9.747360122514692,
+  "cost": 7454.34
+ },
+ "positions": {},
+ "pending_buys": [],
+ "last_date": "2026-11-04",
+ "last_fx": 1341.5,
+ "spy_start": 763.99,
+ "realized": {
+  "2026": 0.0
+ },
+ "params": {
+  "slots": 2,
+  "rsi_max": 5.0,
+  "vix_min": 25.0,
+  "entry_disc": 0.02,
+  "max_hold": 10,
+  "stop_pct": 0.1,
+  "comm": 0.001,
+  "slip": 0.0005
+ }
+}
