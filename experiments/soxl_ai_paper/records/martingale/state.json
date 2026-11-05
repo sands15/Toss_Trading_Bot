@@ -1,0 +1,19 @@
+{
+ "start": "2026-11-05",
+ "start_krw": 10000000,
+ "start_fx": 1341.5,
+ "capital_usd": 7454.34,
+ "cash_usd": 7454.34,
+ "positions": {},
+ "last_date": null,
+ "last_fx": 1341.5,
+ "spy_start": null,
+ "params": {
+  "base": 0.001,
+  "drop": 0.05,
+  "mult": 2.0,
+  "tp": 0.02,
+  "ma": 200,
+  "cost": 0.0015
+ }
+}

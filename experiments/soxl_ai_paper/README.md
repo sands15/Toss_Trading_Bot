@@ -103,6 +103,8 @@
 - `sp500_pit.py` 본체 모멘텀 엔진용 과거 S&P 500 구성 종목 + CBOE 일봉 생성 → 결과 `momentum_engine_results.md`
 - `stocks_backtest.py` 개별 주식(+ETF) 모멘텀 순환 백테스트 → `stocks_backtest_results.md`
 - `backtest.py` 규칙 전략 백테스트(CBOE 일봉, 미래 데이터 사용 금지) → `backtest_results.md`
+- `martingale_ledger.py` 비교용 규칙 장부: S&P 500 종목별 추세 조건 마틴게일(0.1% 시작, 5% 하락마다 2배,
+  +2% 익절, 종목·SPY 200일선 위에서만 매수). 2026-11-05 종가부터 `records/martingale/`에 기록
 - `regime.py` 시장 국면 점검(팔로스루 데이·고점 위험). `vendor/tradermonty/`의 MIT 감지기를 CBOE 데이터로 실행
 - `records/state.json` 현재 상태, `records/daily.csv` 일별 평가액, `records/trades.csv` 매매 기록
 - `journal/YYYY-MM-DD.md` 일별 뉴스 요약, 판단, 복기
