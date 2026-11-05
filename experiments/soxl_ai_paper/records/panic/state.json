@@ -14,6 +14,8 @@
   "rsi_max": 5.0,
   "vix_min": 25.0,
   "entry_disc": 0.02,
-  "comm": 0.001
+  "comm": 0.001,
+  "max_hold": 10,
+  "stop_pct": 0.1
  }
 }

@@ -90,3 +90,41 @@ def test_unfilled_limit_is_cancelled(tmp_path):
     P.cmd_run(tmp_path, d1, prov=prov, symbols=["AAA"])
     st = P.load_state(tmp_path)
     assert st["positions"] == {} and st["pending_buys"] == []
+
+
+def _hold_setup(tmp_path):
+    days, closes, quotes = build()
+    P.cmd_init(tmp_path, days[-1], 1_341_500, 1341.5)
+    prov = Prov(closes, quotes)
+    P.cmd_run(tmp_path, days[-1], prov=prov, symbols=["AAA"])
+    d1 = "d0230"
+    closes["AAA"].append((d1, 80.0)); closes["SPY"].append((d1, 100.0))
+    quotes[("AAA", d1)] = q(85.0, 85.0, 79.0, 80.0)
+    quotes[("^VIX", d1)] = q(20, 20, 20, 20)
+    P.cmd_run(tmp_path, d1, prov=prov, symbols=["AAA"])
+    return closes, quotes, prov
+
+
+def test_stop_loss(tmp_path):
+    closes, quotes, prov = _hold_setup(tmp_path)  # entry 82.32
+    d2 = "d0231"
+    closes["AAA"].append((d2, 72.0)); closes["SPY"].append((d2, 100.0))
+    quotes[("AAA", d2)] = q(78.0, 78.0, 70.0, 72.0)  # low below 74.09 stop
+    quotes[("^VIX", d2)] = q(20, 20, 20, 20)
+    P.cmd_run(tmp_path, d2, prov=prov, symbols=["AAA"])
+    assert P.load_state(tmp_path)["positions"] == {}
+    assert "stop" in (tmp_path / "trades.csv").read_text()
+
+
+def test_max_hold_exit(tmp_path):
+    closes, quotes, prov = _hold_setup(tmp_path)
+    price = 80.0
+    for i in range(11):
+        d = f"d{231 + i:04d}"
+        price -= 0.1  # slow drift down, never above sma5, never hits stop
+        closes["AAA"].append((d, price)); closes["SPY"].append((d, 100.0))
+        quotes[("AAA", d)] = q(price + 0.05, price + 0.06, price - 0.05, price)
+        quotes[("^VIX", d)] = q(20, 20, 20, 20)
+        P.cmd_run(tmp_path, d, prov=prov, symbols=["AAA"])
+    assert P.load_state(tmp_path)["positions"] == {}
+    assert "max_hold" in (tmp_path / "trades.csv").read_text()

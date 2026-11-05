@@ -1,14 +1,18 @@
 """공포장 급락 반등 규칙봇 (가상 장부, AI 판단 없음, 실제 주문 없음).
 
-scratchpad 백테스트 "RSI<5, VIX≥25, 매수 지정가 −2%, 매도 5일선 지정가, 동시 3종목"과 같은 규칙.
+scratchpad 백테스트 "RSI<5, VIX≥25, 매수 지정가 −2%, 매도 5일선 지정가, 동시 3종목, 최대 10거래일, 손절 −10%"와 같은 규칙.
+(최대 보유·손절 추가 후 12년: 거래당 +2.08%, 연 +8.6%, 최대낙폭 −10%)
 2015~2020에서 고르고 2021~2026에서 확인: 거래당 순이익 +2.4% / +1.4%(토스 수수료 0.1% 반영),
 12년 연 +8.7%(쉬는 현금 국채 이자 포함), 최대낙폭 −12%. 거래 수가 적다(연 9회 안팎).
 
 매 거래일 장 마감 후(정산일 D) 처리 순서
 1) 어제 건 매수 지정가: D 저가 ≤ 지정가 → min(D 시가, 지정가)에 체결. 안 닿으면 취소
-2) 매도 지정가(5일선): D 고가 ≥ 지정가 → max(D 시가, 지정가)에 체결. 안 닿으면 유지
+2) 매도: (a) 손절 — D 저가 ≤ 매수가 × 0.9 → min(D 시가, 손절가)에 체결(체결 손해 0.05%)
+   (b) 보유 기간 초과로 예약된 시장가 매도 → D 시가에 체결(체결 손해 0.05%)
+   (c) 매도 지정가(5일선): D 고가 ≥ 지정가 → max(D 시가, 지정가)에 체결. 안 닿으면 유지
 3) 쉬는 현금에 하루치 국채 이자(--cash-rate, 기본 연 3.8%)
-4) 보유 종목 종가 > 5일선 → 다음 날 5일선 가격에 매도 지정가 (이미 걸려 있으면 가격 갱신)
+4) 보유 종목 종가 > 5일선 → 다음 날 5일선 가격에 매도 지정가 (이미 걸려 있으면 가격 갱신).
+   보유 MAX_HOLD(10)거래일이 지나면 다음 날 시가 시장가 매도 예약
 5) VIX 종가 ≥ 25 이고 빈자리가 있으면: S&P 500(universe 파일) 중 종가 ≥ $5, 종가 > 200일선,
    RSI(2) < 5 인 종목을 RSI 낮은 순으로 → 다음 날 종가 × 0.98 매수 지정가 (1종목 = 평가액 / 3)
 비용: 매수·매도 각 수수료 0.1%(지정가라 체결 손해 없음 가정). 세금·환전 미반영.
@@ -35,7 +39,8 @@ import martingale_ledger as ML
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "records" / "panic"
 SLOTS, RSI_MAX, VIX_MIN, ENTRY_DISC, MIN_PRICE = 3, 5.0, 25.0, 0.02, 5.0
-COMM = 0.001
+MAX_HOLD, STOP_PCT = 10, 0.10
+COMM, SLIP = 0.001, 0.0005
 DAILY_FIELDS = ["date", "vix", "positions", "pending_buys", "cash_usd", "equity_usd", "fx", "equity_krw",
                 "return_pct", "spy_hold_usd", "events"]
 TRADE_FIELDS = ["date", "symbol", "side", "price", "shares", "amount_usd", "pnl_pct", "reason"]
@@ -88,7 +93,8 @@ def cmd_init(d: Path, start: str, krw: float, fx: float) -> dict:
     cap = round(krw / fx, 2)
     st = {"start": start, "start_krw": krw, "start_fx": fx, "capital_usd": cap, "cash_usd": cap, "positions": {},
           "pending_buys": [], "last_date": None, "last_fx": fx, "spy_start": None,
-          "params": {"slots": SLOTS, "rsi_max": RSI_MAX, "vix_min": VIX_MIN, "entry_disc": ENTRY_DISC, "comm": COMM}}
+          "params": {"slots": SLOTS, "rsi_max": RSI_MAX, "vix_min": VIX_MIN, "entry_disc": ENTRY_DISC, "comm": COMM,
+                     "max_hold": MAX_HOLD, "stop_pct": STOP_PCT}}
     save_state(d, st)
     return st
 
@@ -127,29 +133,41 @@ def cmd_run(d: Path, date: str, fx: float | None = None, cash_rate: float = 0.03
                 continue
             sh = amt * (1 - COMM) / px
             st["cash_usd"] -= amt
-            pos[s] = {"shares": sh, "cost": amt, "entry": px, "opened": date, "sell_limit": None, "last": q["close"]}
+            pos[s] = {"shares": sh, "cost": amt, "entry": px, "opened": date, "sell_limit": None, "last": q["close"],
+                      "days": 0, "sell_open": False}
             append(d / "trades.csv", TRADE_FIELDS, {"date": date, "symbol": s, "side": "BUY", "price": round(px, 4),
                    "shares": round(sh, 6), "amount_usd": round(amt, 2), "pnl_pct": "", "reason": f"limit {lim:.2f}"})
             events.append(f"BUY {s}@{px:.2f}")
     st["pending_buys"] = []
 
-    # 2) 매도 지정가 체결 + 종가 갱신
+    # 2) 매도: 손절 → 시가 시장가(보유 기간 초과) → 5일선 지정가
+    def sell(s: str, px: float, reason: str) -> None:
+        p = pos.pop(s)
+        proceeds = p["shares"] * px * (1 - COMM)
+        st["cash_usd"] += proceeds
+        pnl = proceeds / p["cost"] - 1
+        append(d / "trades.csv", TRADE_FIELDS, {"date": date, "symbol": s, "side": "SELL", "price": round(px, 4),
+               "shares": round(p["shares"], 6), "amount_usd": round(proceeds, 2), "pnl_pct": f"{pnl * 100:.2f}",
+               "reason": reason})
+        events.append(f"SELL {s}@{px:.2f} ({pnl:+.1%}, {reason.split()[0]})")
+
     for s in sorted(pos):
         p = pos[s]
         q = prov.quote_on(s, date)
         if not q:
             continue
+        p.setdefault("days", 0)
+        p.setdefault("sell_open", False)
+        if p["opened"] != date:
+            p["days"] += 1
         p["last"] = q["close"]
-        if p["sell_limit"] is not None and q["high"] >= p["sell_limit"]:
-            px = max(q["open"], p["sell_limit"])
-            proceeds = p["shares"] * px * (1 - COMM)
-            st["cash_usd"] += proceeds
-            pnl = proceeds / p["cost"] - 1
-            append(d / "trades.csv", TRADE_FIELDS, {"date": date, "symbol": s, "side": "SELL", "price": round(px, 4),
-                   "shares": round(p["shares"], 6), "amount_usd": round(proceeds, 2), "pnl_pct": f"{pnl * 100:.2f}",
-                   "reason": f"sma5 limit {p['sell_limit']:.2f}"})
-            events.append(f"SELL {s}@{px:.2f} ({pnl:+.1%})")
-            del pos[s]
+        stop = p["entry"] * (1 - STOP_PCT)
+        if p["opened"] != date and q["low"] <= stop:
+            sell(s, min(q["open"], stop) * (1 - SLIP), f"stop {stop:.2f}")
+        elif p["sell_open"]:
+            sell(s, q["open"] * (1 - SLIP), f"max_hold {MAX_HOLD}d")
+        elif p["sell_limit"] is not None and q["high"] >= p["sell_limit"]:
+            sell(s, max(q["open"], p["sell_limit"]), f"sma5 limit {p['sell_limit']:.2f}")
 
     # 3) 현금 이자
     st["cash_usd"] *= 1 + cash_rate / 252
@@ -162,6 +180,8 @@ def cmd_run(d: Path, date: str, fx: float | None = None, cash_rate: float = 0.03
             continue
         if p["sell_limit"] is not None or ind["close"] > ind["sma5"]:
             p["sell_limit"] = round(ind["sma5"], 4)
+        if p.get("days", 0) >= MAX_HOLD:
+            p["sell_open"] = True
 
     # 5) 신규 매수 신호
     held = sum(p["shares"] * p["last"] for p in pos.values())
