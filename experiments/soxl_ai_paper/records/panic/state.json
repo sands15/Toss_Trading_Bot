@@ -1,0 +1,19 @@
+{
+ "start": "2026-11-05",
+ "start_krw": 10000000,
+ "start_fx": 1341.5,
+ "capital_usd": 7454.34,
+ "cash_usd": 7454.34,
+ "positions": {},
+ "pending_buys": [],
+ "last_date": null,
+ "last_fx": 1341.5,
+ "spy_start": null,
+ "params": {
+  "slots": 3,
+  "rsi_max": 5.0,
+  "vix_min": 25.0,
+  "entry_disc": 0.02,
+  "comm": 0.001
+ }
+}

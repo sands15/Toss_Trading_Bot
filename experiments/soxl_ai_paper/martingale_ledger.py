@@ -110,8 +110,13 @@ class CboePrices:
     def save_history(self, sym: str, rows: list[tuple[str, float]]) -> None:
         (self.cache / f"{sym.replace('/', '_')}.json").write_text(json.dumps(rows[-(MA + 30):]))
 
-    def close_on(self, sym: str, date: str) -> float | None:
+    def quote_on(self, sym: str, date: str) -> dict | None:
+        """정산일의 확정 시가·고가·저가·종가. 같은 날 다시 부르면 캐시에서 읽는다(다른 장부와 공유)."""
         from prices import session_info
+        qdir = self.cache / "quotes" / date
+        f = qdir / f"{sym.replace('/', '_').replace('^', '_')}.json"
+        if f.exists():
+            return json.loads(f.read_text())
         raw = self._fetch(self._quote_url.format(self._sym(sym)))
         if not raw or not raw.get("data") or not raw["data"].get("last_trade_time"):
             return None
@@ -119,7 +124,14 @@ class CboePrices:
         qd, final = session_info({"last_trade_time": q["last_trade_time"], "timestamp_utc": raw.get("timestamp")})
         if qd != date or not final or not q.get("close"):
             return None
-        return float(q["close"])
+        out = {k: float(q[k]) for k in ("open", "high", "low", "close")}
+        qdir.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(out))
+        return out
+
+    def close_on(self, sym: str, date: str) -> float | None:
+        q = self.quote_on(sym, date)
+        return q["close"] if q else None
 
 
 def series_for(prov, sym: str, date: str, prev_date: str | None) -> list[tuple[str, float]] | None:

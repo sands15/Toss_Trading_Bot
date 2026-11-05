@@ -105,6 +105,9 @@
 - `backtest.py` 규칙 전략 백테스트(CBOE 일봉, 미래 데이터 사용 금지) → `backtest_results.md`
 - `martingale_ledger.py` 비교용 규칙 장부: S&P 500 종목별 추세 조건 마틴게일(0.1% 시작, 5% 하락마다 2배,
   +2% 익절, 종목·SPY 200일선 위에서만 매수). `records/martingale/`에 기록. 2026-10-01 시작으로, 10/1~11/3은 2026-11-05(KST)에 CBOE 일봉으로 되돌려 채웠고(환율은 1,341.5원 고정), 11/4부터는 그날 확정 종가로 기록
+- `panic_ledger.py` 비교용 규칙봇: 공포장 급락 반등(VIX ≥ 25일 때 200일선 위·RSI(2) < 5 종목을 종가 −2% 지정가로 매수,
+  5일선 지정가로 매도, 동시 3종목, 쉬는 현금 국채 이자). 백테스트: 거래당 순이익 +2.4%(2015~20) / +1.4%(2021~26),
+  12년 연 +8.7%, 최대낙폭 −12%. 2026-11-05 종가부터 `records/panic/`에 기록
 - `regime.py` 시장 국면 점검(팔로스루 데이·고점 위험). `vendor/tradermonty/`의 MIT 감지기를 CBOE 데이터로 실행
 - `records/state.json` 현재 상태, `records/daily.csv` 일별 평가액, `records/trades.csv` 매매 기록
 - `journal/YYYY-MM-DD.md` 일별 뉴스 요약, 판단, 복기
