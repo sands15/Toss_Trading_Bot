@@ -59,6 +59,9 @@ DAILY_FIELDS = [
 ]
 TRADE_FIELDS = ["date", "side", "symbol", "shares", "price", "fee_usd", "reason"]
 
+# 액면분할: (종목, 분할 반영 첫 거래일) -> 배수. 그날부터 가격이 1/배수가 되므로 보유 수량을 배수만큼 늘린다.
+SPLITS = {("SOXX", "2026-11-05"): Decimal("3")}
+
 
 class LedgerError(Exception):
     pass
@@ -331,6 +334,12 @@ def cmd_settle(data_dir: Path, date: str, opens: dict, highs: dict, lows: dict, 
     intraday = state["intraday"] if state["intraday"] and state["intraday"]["date"] == date else None
     state["intraday"] = None
 
+    # 0) 벤치마크 액면분할 반영 (분할 첫 거래일 시가 전에)
+    if state["benchmarks"]:
+        for (sym, sdate), ratio in SPLITS.items():
+            if sdate == date and sym in state["benchmarks"]:
+                state["benchmarks"][sym] = str(qty(D(state["benchmarks"][sym]) * ratio))
+                events.append(f"split:{sym}x{ratio}")
     # 0) 벤치마크: 첫 정산일 시가에 전액 매수 후 보유
     if state["benchmarks"] is None:
         start = D(state["cash_usd"])

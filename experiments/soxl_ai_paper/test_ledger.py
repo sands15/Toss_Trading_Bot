@@ -165,3 +165,15 @@ def test_gate_loss_streak_then_rest(tmp):
 def test_gate_pass_fresh(tmp):
     g = L.discipline_gate(tmp, L.load_state(tmp), "SOXL", Decimal("0.5"))
     assert g["level"] == "PASS"
+
+
+def test_soxx_split_adjusts_benchmark(tmp):
+    L.cmd_decide(tmp, "2026-11-02", "CASH", Decimal("0"), "x")
+    settle(tmp, "2026-11-02")  # SOXX 250 → benchmark shares
+    before = Decimal(L.load_state(tmp)["benchmarks"]["SOXX"])
+    split_px = px(SOXX=Decimal("250") / 3)
+    s = L.cmd_settle(tmp, "2026-11-05", split_px, {k: split_px[k] for k in L.SYMBOLS},
+                     {k: split_px[k] for k in L.SYMBOLS}, split_px, None)
+    assert Decimal(s["benchmarks"]["SOXX"]) == pytest.approx(before * 3, rel=Decimal("1e-6"))
+    row = (tmp / "daily.csv").read_text().splitlines()[-1]
+    assert "split:SOXX" in row
