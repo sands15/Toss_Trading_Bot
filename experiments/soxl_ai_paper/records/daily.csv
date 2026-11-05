@@ -1,3 +1,4 @@
 date,position,shares,close,stop_price,cash_usd,equity_usd,fx,equity_krw,return_pct,soxx_hold_usd,soxl_hold_usd,event
 2026-11-03,CASH,0,0,,7457.12,7457.12,1341.0,9999998,0.00,7443.99,7397.43,hold:CASH
 2026-11-04,CASH,0,0,,7457.12,7457.12,1341.5,10003726,0.00,7210.43,6745.91,hold:CASH
+2026-11-05,CASH,0,0,,7457.12,7457.12,1342.1,10008201,0.00,6334.60,4134.75,split:SOXXx3;hold:CASH

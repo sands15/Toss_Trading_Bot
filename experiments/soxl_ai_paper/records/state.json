@@ -5,21 +5,15 @@
   "start_usd": "7457.12",
   "cash_usd": "7457.12",
   "position": null,
-  "pending": {
-    "date": "2026-11-05",
-    "action": "CASH",
-    "weight": "0",
-    "stop_pct": "0.10",
-    "reason": "반도체 3일째 약세 지속(퀄컴 실적 실망 장전 -10%, 데이터센터 규제 우려·UBS 2028 증설 30% 위험) → SOXL 근거 없음. 다만 고점 대비 -30% 과매도·VIX 16.6로 공포 없음 → SOXS 근거도 약함(가이드: 규칙적 SOXS 금지). 시장 국면 반등 시도·FTD 없음"
-  },
+  "pending": null,
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
   "benchmarks": {
-    "SOXX": "16.008587",
+    "SOXX": "48.025761",
     "SOXL": "101.168363"
   },
-  "last_settled": "2026-11-04",
-  "last_fx": "1341.5",
+  "last_settled": "2026-11-05",
+  "last_fx": "1342.1",
   "closed": []
 }
