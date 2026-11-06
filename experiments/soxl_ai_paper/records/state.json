@@ -5,7 +5,13 @@
   "start_usd": "7457.12",
   "cash_usd": "7457.12",
   "position": null,
-  "pending": null,
+  "pending": {
+    "date": "2026-11-06",
+    "action": "CASH",
+    "weight": "0",
+    "stop_pct": "0.10",
+    "reason": "장전 반도체 급반등(+4~8%) 이미 반영 + 08:30 ET 고용지표 직전(12월 인상 확률 65%) + 국면 CORRECTION·고점위험 72.9 Red·FTD 없음 → 이벤트 전 현금. 반등 노림은 규칙봇 몫"
+  },
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
