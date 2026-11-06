@@ -5,31 +5,31 @@
  "capital_usd": 7454.34,
  "cash_usd": 0.0,
  "spy": {
-  "shares": 9.747360122514692,
-  "cost": 7454.34
+  "shares": 9.711745529502316,
+  "cost": 7152.210750504191
  },
  "positions": {},
  "pending_buys": [
   {
-   "symbol": "PLTR",
-   "limit": 151.8902,
-   "amount": 3572.4074849016347,
-   "rsi2": 0.07,
-   "signal_date": "2026-11-05"
+   "symbol": "PANW",
+   "limit": 307.5632,
+   "amount": 3570.474685193879,
+   "rsi2": 0.47,
+   "signal_date": "2026-11-06"
   },
   {
-   "symbol": "PANW",
-   "limit": 308.3766,
-   "amount": 3572.4074849016347,
-   "rsi2": 0.49,
-   "signal_date": "2026-11-05"
+   "symbol": "MPC",
+   "limit": 365.2852,
+   "amount": 3570.474685193879,
+   "rsi2": 1.95,
+   "signal_date": "2026-11-06"
   }
  ],
- "last_date": "2026-11-05",
- "last_fx": 1342.1,
+ "last_date": "2026-11-06",
+ "last_fx": 1356.6,
  "spy_start": 763.99,
  "realized": {
-  "2026": 0.0
+  "2026": -409868.53986601427
  },
  "params": {
   "slots": 2,
