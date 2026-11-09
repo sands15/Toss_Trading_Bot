@@ -5,13 +5,7 @@
   "start_usd": "7457.12",
   "cash_usd": "7457.12",
   "position": null,
-  "pending": {
-    "date": "2026-11-09",
-    "action": "CASH",
-    "weight": "0",
-    "stop_pct": "0.10",
-    "reason": "NVDA 장전 -5%(CEO 스파이 연루 의혹·이사회 조사), 11/10 CPI·12월 인상 우려, No FTD+고점위험 Red → 현금 대기"
-  },
+  "pending": null,
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
@@ -19,7 +13,7 @@
     "SOXX": "48.025761",
     "SOXL": "101.168363"
   },
-  "last_settled": "2026-11-06",
-  "last_fx": "1356.6",
+  "last_settled": "2026-11-09",
+  "last_fx": "1347.1",
   "closed": []
 }

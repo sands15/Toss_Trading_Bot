@@ -5,31 +5,16 @@
  "capital_usd": 7454.34,
  "cash_usd": 0.0,
  "spy": {
-  "shares": 9.711745529502316,
-  "cost": 7152.210750504191
+  "shares": 9.545643226403078,
+  "cost": 7194.272197205179
  },
  "positions": {},
- "pending_buys": [
-  {
-   "symbol": "PANW",
-   "limit": 307.5632,
-   "amount": 3570.474685193879,
-   "rsi2": 0.47,
-   "signal_date": "2026-11-06"
-  },
-  {
-   "symbol": "MPC",
-   "limit": 365.2852,
-   "amount": 3570.474685193879,
-   "rsi2": 1.95,
-   "signal_date": "2026-11-06"
-  }
- ],
- "last_date": "2026-11-06",
- "last_fx": 1356.6,
+ "pending_buys": [],
+ "last_date": "2026-11-09",
+ "last_fx": 1347.1,
  "spy_start": 763.99,
  "realized": {
-  "2026": -409868.53986601427
+  "2026": -353207.5650151149
  },
  "params": {
   "slots": 2,
