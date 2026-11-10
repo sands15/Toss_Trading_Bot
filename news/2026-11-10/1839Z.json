@@ -1,0 +1,197 @@
+{
+ "collected_at": "2026-11-10T18:39:29.256179+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Palladyne AI signals $25M-$27M 2026 revenue as SwarmOS earns top Army ratings and Fanuc channel expands",
+   "link": "https://seekingalpha.com/news/4670021-palladyne-ai-signals-25m-27m-2026-revenue-as-swarmos-earns-top-army-ratings-and-fanuc-channel?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T18:32:50+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Consolidated Water anticipates Hawaii construction start in first half 2027 with more than $150M backlog still unrecognized",
+   "link": "https://seekingalpha.com/news/4670017-consolidated-water-anticipates-hawaii-construction-start-in-first-half-2027-with-more-than?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T18:32:42+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "REFI outlines $0.015 per share quarterly distributable earnings lift per 25 bp hike while expecting Q4 2026 originations to slow",
+   "link": "https://seekingalpha.com/news/4670020-refi-outlines-0_015-per-share-quarterly-distributable-earnings-lift-per-25-bp-hike-while?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T18:32:42+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Hemab expects cash to fund operations into 2029 while advancing ~75-patient SOLARA Phase III",
+   "link": "https://seekingalpha.com/news/4670018-hemab-expects-cash-to-fund-operations-into-2029-while-advancing-75-patient-solara-phase-iii?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T18:32:38+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Ondas advances attack drone production with new order; shares tumble",
+   "link": "https://seekingalpha.com/news/4670011-ondas-advances-attack-drone-production-with-new-order-shares-tumble?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T18:32:35+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Oura acquires Counsel Health; sees revenue nearly double in FY26",
+   "link": "https://seekingalpha.com/news/4670002-oura-acquires-counsel-health-sees-revenue-nearly-double-in-fy26?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T18:32:34+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Exagen reiterates $72M-$75M 2026 revenue outlook as myositis launch targets early 2027",
+   "link": "https://seekingalpha.com/news/4670019-exagen-reiterates-72m-75m-2026-revenue-outlook-as-myositis-launch-targets-early-2027?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T18:32:34+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "The FDA now says Ozempic, Zepbound and other GLP-1 drugs have a possible risk of vision loss",
+   "link": "https://www.marketwatch.com/story/ozempic-zepbound-and-other-glp-1-drugs-have-a-possible-risk-of-vision-loss-b3738f36?mod=mw_rss_topstories",
+   "summary": "Several medical studies have found that people taking GLP-1 medications have an elevated risk for nonarteritic anterior ischemic optic neuropathy, or NAION.",
+   "published": "2026-11-10T18:21:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Even Wall Street’s lone Nvidia bear says forcing out CEO Jensen Huang ‘would be a mistake for everyone’",
+   "link": "https://www.marketwatch.com/story/wall-streets-only-nvidia-bear-says-forcing-out-ceo-jensen-huang-would-be-a-mistake-for-everyone-78043738?mod=mw_rss_topstories",
+   "summary": "Nvidia’s board is investigating CEO Jensen Huang over his relationship with an alleged spy.",
+   "published": "2026-11-10T18:16:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Troubled US debt levels ticked up in third quarter, New York Fed report says",
+   "link": "https://www.investing.com/news/stock-market-news/ny-fed-finds-troubled-debt-levels-ticked-up-in-third-quarter-5016249",
+   "summary": "",
+   "published": "2026-11-10T18:13:21+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Intel stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-intel-stock-sliding-today-93CH-5016483",
+   "summary": "",
+   "published": "2026-11-10T18:12:27+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Exclusive: Qualcomm begins job cuts; India and California among regions impacted",
+   "link": "https://www.investing.com/news/stock-market-news/exclusive-qualcomm-begins-job-cuts-india-and-california-among-regions-impacted-5016480",
+   "summary": "",
+   "published": "2026-11-10T18:11:12+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Super Micro Computer stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-super-micro-computer-stock-sliding-today-93CH-5016479",
+   "summary": "",
+   "published": "2026-11-10T18:10:14+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is ServiceNow stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-servicenow-stock-sliding-today-93CH-5016476",
+   "summary": "",
+   "published": "2026-11-10T18:07:29+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "OpenAI lets businesses claim ChatGPT profiles, adds AI agents for US e-commerce firms",
+   "link": "https://www.investing.com/news/stock-market-news/openai-lets-businesses-claim-chatgpt-profiles-adds-ai-agents-for-us-ecommerce-firms-5016475",
+   "summary": "",
+   "published": "2026-11-10T18:06:28+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Nebius stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-nebius-stock-sliding-today-93CH-5016474",
+   "summary": "",
+   "published": "2026-11-10T18:05:10+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Akamai Technologies stock rallying today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-akamai-technologies-stock-rallying-today-93CH-5016468",
+   "summary": "",
+   "published": "2026-11-10T18:01:28+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nasdaq slides over 1% as hot CPI, Waller drive up odds for supersized Fed hike",
+   "link": "https://www.investing.com/news/stock-market-news/us-stock-futures-steady-after-techled-rebound-cpi-in-focus-5013763",
+   "summary": "",
+   "published": "2026-11-10T18:00:32+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Beauty firm Coty to restructure its business in France",
+   "link": "https://www.investing.com/news/stock-market-news/beauty-firm-coty-to-restructure-its-business-in-france-5016466",
+   "summary": "",
+   "published": "2026-11-10T18:00:31+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘We had the worst fight’: I want my husband to retire at 65, but I don’t want to lose his $280,000 salary. Is that unreasonable?",
+   "link": "https://www.marketwatch.com/story/we-had-the-worst-fight-weve-ever-had-i-want-my-husband-to-retire-at-65-but-i-dont-want-to-lose-his-280-000-salary-48511469?mod=mw_rss_topstories",
+   "summary": "“We have $2.6 million, most of it in his 401(k) and IRAs, plus $450,000 in a brokerage account.”",
+   "published": "2026-11-10T17:45:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Stocks fall as the 10-year Treasury yield reclaims 5%",
+   "link": "https://www.marketwatch.com/story/why-stocks-are-falling-and-10-year-yields-are-climbing-back-near-5-after-tuesdays-inflation-report-389b8392?mod=mw_rss_topstories",
+   "summary": "“I don’t think they should be raising another 25 basis points,” one portfolio manager said about the Federal Reserve’s benchmark interest rate.",
+   "published": "2026-11-10T17:34:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Anthropic officially sets the stage for an IPO valuing the company north of $1 trillion",
+   "link": "https://www.marketwatch.com/story/anthropic-reportedly-retracts-ipo-terms-sent-to-banks-by-mistake-exposing-jitters-over-ai-investments-6116578d?mod=mw_rss_topstories",
+   "summary": "Anthropic could raise up to $63 billion in an IPO expected to take place next week.",
+   "published": "2026-11-10T17:33:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘Boneless couches’ are the new futons",
+   "link": "https://www.marketwatch.com/story/why-renters-are-obsessed-with-these-300-boneless-couches-65a2e4fe?mod=mw_rss_topstories",
+   "summary": "They’ve gone viral on Amazon and TikTok for being cheap and convenient, as well as cute and cozy.",
+   "published": "2026-11-10T16:01:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Should a widow leave her late partner’s home to her stepkids — or cut off contact with them?",
+   "link": "https://www.marketwatch.com/story/she-can-always-change-her-mind-should-a-widow-leave-the-family-home-to-her-stepchildren-649b06af?mod=mw_rss_topstories",
+   "summary": "“It would be a less drastic step than selling the home now and splitting the proceeds.”",
+   "published": "2026-11-10T16:01:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘I’m sick of flying’: I paid for priority boarding, but the overhead bins were full. Was I duped?",
+   "link": "https://www.marketwatch.com/story/im-sick-of-flying-i-paid-for-priority-boarding-but-the-overhead-bins-were-full-was-i-duped-0badcc80?mod=mw_rss_topstories",
+   "summary": "“Maybe next time I’ll try the other approach: I’ll board whenever I feel like it and drop my suitcase in the first open slot I see.”",
+   "published": "2026-11-10T15:45:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘The thought of living to 100 terrifies me’: Is Social Security a giant Ponzi scheme?",
+   "link": "https://www.marketwatch.com/story/the-thought-of-living-to-100-terrifies-me-is-social-security-a-giant-ponzi-scheme-84a64e7e?mod=mw_rss_topstories",
+   "summary": "There’s already a demographic ‘run’ on Social Security.",
+   "published": "2026-11-10T15:30:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Elon Musk was half right in his comment last week about SoftBank backpedaling on a gas-turbine order",
+   "link": "https://www.marketwatch.com/story/elon-musk-was-half-right-in-his-comment-last-week-about-softbank-back-pedaling-on-a-gas-turbine-order-c293d335?mod=mw_rss_topstories",
+   "summary": "Elon Musk in a social-media post last week said that SoftBank “defaulted” on a gas-turbine order. The truth, revealed Tuesday in the Japanese’s investment company’s second-quarter earnings, wasn’t far off.",
+   "published": "2026-11-10T15:30:00+00:00"
+  }
+ ]
+}
