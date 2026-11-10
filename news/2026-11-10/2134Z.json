@@ -1,0 +1,197 @@
+{
+ "collected_at": "2026-11-10T21:34:52.330485+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Agree Realty declares $0.271 dividend",
+   "link": "https://seekingalpha.com/news/4670214-agree-realty-declares-0_271-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T21:33:07+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Tilray Brands falls 7%, extending month-long selloff",
+   "link": "https://seekingalpha.com/news/4670151-tilray-brands-falls-7-extending-month-long-selloff?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T21:32:56+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Embraer projects $700M+ 2026 free cash flow while raising revenue guidance to $8.4B-$8.6B",
+   "link": "https://seekingalpha.com/news/4670211-embraer-projects-700m-2026-free-cash-flow-while-raising-revenue-guidance-to-8_4b-8_6b?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T21:32:27+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Gladstone Land Q3 earnings blow past consensus, helped by higher pistachio and almond prices",
+   "link": "https://seekingalpha.com/news/4670147-gladstone-land-q3-earnings-blows-past-consensus-helped-by-higher-pistachio-and-almond-prices?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T21:32:26+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Legend Biotech targets 2026 adjusted profitability as it revises Q4 gross margin outlook to high 50% range",
+   "link": "https://seekingalpha.com/news/4670212-legend-biotech-targets-2026-adjusted-profitability-as-it-revises-q4-gross-margin-outlook-to?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T21:32:25+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Angel Studios, Inc. GAAP EPS of -$0.03 beats by $0.04, revenue of $159M beats by $19.36M",
+   "link": "https://seekingalpha.com/news/4670210-angel-studios-inc-gaap-eps-of--003-beats-by-004-revenue-of-159m-beats-by-1936m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T21:32:11+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Telefonica Brasil GAAP EPS of R$0.77, revenue of R$16B",
+   "link": "https://seekingalpha.com/news/4670209-telefonica-brasil-gaap-eps-of-r077-revenue-of-r16b?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T21:31:52+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "How the stock market has performed after Veterans Day over the past decade",
+   "link": "https://www.marketwatch.com/story/how-the-stock-market-has-performed-after-veterans-day-over-the-past-decade-7b47233e?mod=mw_rss_topstories",
+   "summary": "The stock market is open Wednesday on Veterans Day, but not the bond market",
+   "published": "2026-11-10T21:29:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "My friend feels trapped at her job but won’t do anything about it. Am I supposed to step in?",
+   "link": "https://www.marketwatch.com/story/my-friend-feels-trapped-at-her-job-but-wont-do-anything-about-it-am-i-supposed-to-step-in-7e55604e?mod=mw_rss_topstories",
+   "summary": "“She’s handed over the fate of her happiness to this job.”",
+   "published": "2026-11-10T21:22:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Russia stocks lower at close of trade; MOEX Russia Index down 1.21%",
+   "link": "https://www.investing.com/news/stock-market-news/russia-stocks-lower-at-close-of-trade-moex-russia-index-down-121-5016862",
+   "summary": "",
+   "published": "2026-11-10T21:20:03+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Retirees should be big beneficiaries of the midterms: ‘Democrats will hold every gavel that matters for aging and public policy’",
+   "link": "https://www.marketwatch.com/story/retirees-should-be-big-beneficiaries-of-the-midterms-democrats-will-hold-every-gavel-that-matters-for-aging-and-public-policy-71e966f0?mod=mw_rss_topstories",
+   "summary": "Here’s what might be coming for Social Security, Medicare and long-term care.",
+   "published": "2026-11-10T21:20:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Hagerty stock falls on secondary share offering",
+   "link": "https://www.investing.com/news/stock-market-news/hagerty-stock-falls-on-secondary-share-offering-5016830",
+   "summary": "",
+   "published": "2026-11-10T21:15:11+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Wall St ends lower as hot inflation data, Fed comments heighten rate worries",
+   "link": "https://www.investing.com/news/stock-market-news/sp-500-dow-futures-climb-as-oil-slide-lifts-sentiment-5014579",
+   "summary": "",
+   "published": "2026-11-10T21:13:57+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "IBM to end visa, green card sponsorship for most roles in its Consulting arm",
+   "link": "https://www.investing.com/news/stock-market-news/ibm-to-end-visa-green-card-sponsorship-for-most-roles-in-its-consulting-arm-5016379",
+   "summary": "",
+   "published": "2026-11-10T21:12:54+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Anthropic backers offer IPO shares with 3%-5% fee via JonesTrading - Bloomberg",
+   "link": "https://www.investing.com/news/stock-market-news/anthropic-backers-offer-ipo-shares-with-35-fee-via-jonestrading--bloomberg-432SI-5016744",
+   "summary": "",
+   "published": "2026-11-10T21:10:02+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Neuronetics stock tumbles 10% on stock offering launch",
+   "link": "https://www.investing.com/news/stock-market-news/neuronetics-stock-tumbles-10-on-stock-offering-launch-5016793",
+   "summary": "",
+   "published": "2026-11-10T21:09:37+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Wall Street ends lower as hot CPI, Waller drive up odds for supersized Fed hike",
+   "link": "https://www.investing.com/news/stock-market-news/us-stock-futures-steady-after-techled-rebound-cpi-in-focus-5013763",
+   "summary": "",
+   "published": "2026-11-10T21:09:31+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Ignore the wild swings in chip stocks until they reach these ‘lines in the sand’",
+   "link": "https://www.marketwatch.com/story/ignore-the-wild-swings-in-chip-stocks-until-they-reach-these-lines-in-the-sand-feb6e00f?mod=mw_rss_topstories",
+   "summary": "Investors shouldn’t pay much attention to how the SOX chip-sector index trades until it reaches key technical battleground areas above and below current levels.",
+   "published": "2026-11-10T20:53:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nvidia selloff deepens, adding to AI jitters",
+   "link": "https://www.investing.com/news/stock-market-news/nvidia-selloff-deepens-adding-toai-jitters-5016732",
+   "summary": "",
+   "published": "2026-11-10T20:49:36+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Hims & Hers to offer peptides as soon as November after US eases curbs",
+   "link": "https://www.investing.com/news/stock-market-news/hims--hers-narrows-2026-revenue-forecast-as-margins-contract-5013239",
+   "summary": "",
+   "published": "2026-11-10T20:48:38+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Analysis-Nvidia’s clubby board faces a sticky ’honey pot’ test",
+   "link": "https://www.investing.com/news/stock-market-news/analysisnvidias-clubby-board-faces-a-sticky-honey-pot-test-5014779",
+   "summary": "",
+   "published": "2026-11-10T20:42:40+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia could soon face tougher export rules, making it harder to sell chips to China after scandal",
+   "link": "https://www.marketwatch.com/story/nvidia-could-soon-face-tougher-export-rules-making-it-harder-to-sell-chips-to-china-69c88cc8?mod=mw_rss_topstories",
+   "summary": "“There is growing momentum for these bills in light of the Jensen Huang spy scandal,” one analyst says.",
+   "published": "2026-11-10T20:37:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Aggressive Fed rate hikes are quickly becoming the biggest risk to stocks in 2027, says economist",
+   "link": "https://www.marketwatch.com/story/an-overzealous-fed-is-quickly-becoming-the-biggest-risk-to-stocks-in-2027-ba28e51d?mod=mw_rss_topstories",
+   "summary": "The Fed remains too optimistic on its ability to tame inflation, and markets may be too complacent, economist Neil Dutta warns.",
+   "published": "2026-11-10T20:27:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Anthropic officially sets the stage for an IPO valuing the company north of $1 trillion",
+   "link": "https://www.marketwatch.com/story/anthropic-reportedly-retracts-ipo-terms-sent-to-banks-by-mistake-exposing-jitters-over-ai-investments-6116578d?mod=mw_rss_topstories",
+   "summary": "Anthropic could raise up to $63 billion in an IPO expected to take place next week.",
+   "published": "2026-11-10T19:47:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Should a widow leave her late partner’s home to her stepkids — or cut off contact with them?",
+   "link": "https://www.marketwatch.com/story/she-can-always-change-her-mind-should-a-widow-leave-the-family-home-to-her-stepchildren-649b06af?mod=mw_rss_topstories",
+   "summary": "“It would be a less drastic step than selling the home now and splitting the proceeds.”",
+   "published": "2026-11-10T19:30:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Corporate America is making a trillion-dollar mistake about retirement",
+   "link": "https://www.marketwatch.com/story/corporate-america-is-making-a-trillion-dollar-mistake-about-retirement-234c8996?mod=mw_rss_topstories",
+   "summary": "The market is dramatically underpricing the economic impact of Americans age 50 and older.",
+   "published": "2026-11-10T19:29:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "AMD’s stock fades as investors weigh whether Nvidia’s turmoil will mean lasting wins",
+   "link": "https://www.marketwatch.com/story/amds-stock-fades-as-investors-weigh-whether-nvidias-turmoil-will-mean-lasting-wins-1ecfbc5e?mod=mw_rss_topstories",
+   "summary": "It’s one thing for money to shift between stocks,  but it’s another thing for customers to shift their supplier relationships.",
+   "published": "2026-11-10T19:17:00+00:00"
+  }
+ ]
+}
