@@ -1,0 +1,190 @@
+{
+ "collected_at": "2026-11-10T12:35:28.750063+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia couldn’t derail the stock market’s rally. Hot inflation might.",
+   "link": "https://www.marketwatch.com/story/nvidia-couldnt-derail-the-stock-markets-rally-hot-inflation-might-8a572024?mod=mw_rss_topstories",
+   "summary": "A Fed official raises the prospect of a half-a-percentage-point rate hike. Plus, fresh valuation focus on Anthropic’s blockbuster IPO.",
+   "published": "2026-11-10T12:33:00+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Hive Digital Q2 earnings, HPC revenue miss as revenue holds broadly stable",
+   "link": "https://seekingalpha.com/news/4669214-hive-digital-q2-earnings-hpc-revenue-miss-as-revenue-holds-broadly-stable?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T12:32:31+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Anthropic officially sets the stage for an IPO valuing the company north of $1 trillion",
+   "link": "https://www.marketwatch.com/story/anthropic-reportedly-retracts-ipo-terms-sent-to-banks-by-mistake-exposing-jitters-over-ai-investments-6116578d?mod=mw_rss_topstories",
+   "summary": "Anthropic could raise up to $63 billion in an IPO expected to take place next week.",
+   "published": "2026-11-10T12:32:00+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "LENSAR GAAP EPS of -$0.38 misses by $0.28, revenue of $14.13M misses by $0.17M",
+   "link": "https://seekingalpha.com/news/4669688-lensar-gaap-eps-of--038-misses-by-028-revenue-of-1413m-misses-by-017m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T12:31:06+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Redwire selected for $40M NASA contract",
+   "link": "https://seekingalpha.com/news/4669684-redwire-selected-for-40m-nasa-contract?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T12:30:38+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Wix shares down as it cuts cash flow margin outlook on marketing spend",
+   "link": "https://seekingalpha.com/news/4669670-wix-shares-down-as-it-cuts-cash-flow-margin-outlook-on-marketing-spend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T12:29:47+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Amentum, TaskUs among industrial stocks with bullish Quant ratings despite YTD losses",
+   "link": "https://seekingalpha.com/news/4669665-amentum-taskus-among-industrial-stocks-with-bullish-quant-ratings-despite-ytd-losses?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T12:28:09+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "AAON declares $0.10 dividend",
+   "link": "https://seekingalpha.com/news/4669683-aaon-declares-0_10-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T12:27:44+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "D-Wave Quantum falls amid mixed Q3 results, weak bookings",
+   "link": "https://seekingalpha.com/news/4669676-d-wave-quantum-falls-amid-mixed-q3-results-weak-bookings?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-10T12:27:40+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘We had the worst fight’: I want my husband to retire at 65, but I don’t want to lose his $280,000 salary. Is that unreasonable?",
+   "link": "https://www.marketwatch.com/story/we-had-the-worst-fight-weve-ever-had-i-want-my-husband-to-retire-at-65-but-i-dont-want-to-lose-his-280-000-salary-48511469?mod=mw_rss_topstories",
+   "summary": "“We have $2.6 million, most of it in his 401(k) and IRAs, plus $450,000 in a brokerage account.”",
+   "published": "2026-11-10T12:16:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Anthropic’s IPO: A close look at AI frontrunner’s rapid growth, spiraling costs",
+   "link": "https://www.investing.com/news/stock-market-news/anthropics-ipo-a-close-look-at-ai-frontrunners-rapid-growth-spiraling-costs-5015034",
+   "summary": "",
+   "published": "2026-11-10T12:06:41+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nasdaq futures slip with Nvidia woes, Anthropic IPO in focus",
+   "link": "https://www.investing.com/news/stock-market-news/sp-500-dow-futures-climb-as-oil-slide-lifts-sentiment-5014579",
+   "summary": "",
+   "published": "2026-11-10T12:02:41+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Analysis-Nvidia’s clubby board faces a sticky ’honey pot’ test",
+   "link": "https://www.investing.com/news/stock-market-news/analysisnvidias-clubby-board-faces-a-sticky-honey-pot-test-5014779",
+   "summary": "",
+   "published": "2026-11-10T12:01:34+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Alice Huang, Chinese businesswoman tied to Nvidia CEO, went from finance to chips",
+   "link": "https://www.investing.com/news/stock-market-news/alice-huang-chinese-businesswoman-tied-to-nvidia-ceo-went-from-finance-to-chips-5014096",
+   "summary": "",
+   "published": "2026-11-10T12:01:20+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "What we know about Megaspeed, Singapore-based customer of Nvidia",
+   "link": "https://www.investing.com/news/stock-market-news/factboxwhat-we-know-about-megaspeed-singaporebased-customer-of-nvidia-5014126",
+   "summary": "",
+   "published": "2026-11-10T12:01:02+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Anthropic’s path from AI startup to industry-defining IPO",
+   "link": "https://www.investing.com/news/stock-market-news/anthropics-path-from-ai-startup-to-industrydefining-ipo-5014991",
+   "summary": "",
+   "published": "2026-11-10T12:00:47+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Amazon faces potential trial in Italy over Chinese imports - Reuters",
+   "link": "https://www.investing.com/news/stock-market-news/amazon-faces-potential-trial-in-italy-over-chinese-imports--reuters-93CH-5014964",
+   "summary": "",
+   "published": "2026-11-10T11:59:21+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Deutsche Bank cuts Hugo Boss on falling sales, distribution reset",
+   "link": "https://www.investing.com/news/stock-market-news/deutsche-bank-cuts-hugo-boss-on-falling-sales-distribution-reset-5014925",
+   "summary": "",
+   "published": "2026-11-10T11:45:53+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Microsoft presses Trump to scuttle expected ban on Chinese data center technology",
+   "link": "https://www.investing.com/news/stock-market-news/exclusivemicrosoft-presses-trump-to-scuttle-expected-ban-on-chinese-data-center-technology-5014745",
+   "summary": "",
+   "published": "2026-11-10T11:43:17+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Sanmina stock surging today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-sanmina-stock-surging-today-93CH-5014898",
+   "summary": "",
+   "published": "2026-11-10T11:40:07+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Should a widow leave her late partner’s home to her stepkids — or cut off contact with them?",
+   "link": "https://www.marketwatch.com/story/she-can-always-change-her-mind-should-a-widow-leave-the-family-home-to-her-stepchildren-649b06af?mod=mw_rss_topstories",
+   "summary": "“It would be a less drastic step than selling the home now and splitting the proceeds.”",
+   "published": "2026-11-10T11:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘I’m sick of flying’: I paid for priority boarding, but the overhead bins were full. Was I duped?",
+   "link": "https://www.marketwatch.com/story/im-sick-of-flying-i-paid-for-priority-boarding-but-the-overhead-bins-were-full-was-i-duped-0badcc80?mod=mw_rss_topstories",
+   "summary": "“Maybe next time I’ll try the other approach: I’ll board whenever I feel like it and drop my suitcase in the first open slot I see.”",
+   "published": "2026-11-10T10:45:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘The thought of living to 100 terrifies me’: Is Social Security a giant Ponzi scheme?",
+   "link": "https://www.marketwatch.com/story/the-thought-of-living-to-100-terrifies-me-is-social-security-a-giant-ponzi-scheme-84a64e7e?mod=mw_rss_topstories",
+   "summary": "There’s already a demographic ‘run’ on Social Security.",
+   "published": "2026-11-10T10:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "N.Y. Knicks star Josh Hart relists Florida home for $5.7 million",
+   "link": "https://www.marketwatch.com/story/n-y-knicks-star-josh-hart-relists-florida-home-for-5-7-million-5fd3f18c?mod=mw_rss_topstories",
+   "summary": "New York Knicks star Josh Hart has relisted his sprawling Florida mansion for $5.69 million—just one year after removing the home from the selling block.",
+   "published": "2026-11-10T10:01:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Actor Justin Baldoni quietly sold his L.A. home for $2.1 million after moving to Nashville",
+   "link": "https://www.marketwatch.com/story/actor-justin-baldoni-quietly-sold-his-l-a-home-for-2-1-million-after-moving-to-nashville-4cb8041e?mod=mw_rss_topstories",
+   "summary": "Actor Justin Baldoni discreetly offloaded his former Los Angeles home months after relocating to Nashville, Tenn., for a “fresh start.”",
+   "published": "2026-11-10T09:58:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Fed’s Waller puts half-point rate hike into the mix for December",
+   "link": "https://www.marketwatch.com/story/feds-waller-puts-half-point-rate-hike-into-the-mix-for-december-1bebdffc?mod=mw_rss_topstories",
+   "summary": "It all depends on how hot the consumer-price data for October comes in.",
+   "published": "2026-11-10T09:45:00+00:00"
+  }
+ ]
+}
