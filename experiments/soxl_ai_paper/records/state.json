@@ -5,7 +5,13 @@
   "start_usd": "7457.12",
   "cash_usd": "7457.12",
   "position": null,
-  "pending": null,
+  "pending": {
+    "date": "2026-11-10",
+    "action": "CASH",
+    "weight": "0",
+    "stop_pct": "0.10",
+    "reason": "CPI 발표 당일(08:30 ET, 근원 예상 +0.2%), 월러 0.5%p 언급, 전일 SOXL +22% 직후, No FTD+고점위험 Red → 현금"
+  },
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
