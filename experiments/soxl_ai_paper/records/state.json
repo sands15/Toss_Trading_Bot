@@ -5,7 +5,13 @@
   "start_usd": "7457.12",
   "cash_usd": "7457.12",
   "position": null,
-  "pending": null,
+  "pending": {
+    "date": "2026-11-11",
+    "action": "SOXL",
+    "weight": "0.2",
+    "stop_pct": "0.07",
+    "reason": "A 상황: CoreWeave 연간 매출 전망 상향, 장전 NVDA +3.5~5%·MU/AMD/AVGO +4~6.5%, 나스닥 선물 +1.9%. No FTD+Red라 비중 하단 20%, 손절 7%"
+  },
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
