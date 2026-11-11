@@ -1,0 +1,134 @@
+{
+ "collected_at": "2026-11-11T09:35:31.479783+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "European stocks advance as investors read inflation, oil and AI developments",
+   "link": "https://seekingalpha.com/news/4670501-european-stocks-advance-as-investors-read-inflation-oil-and-ai-developments?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T09:23:38+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Fed Speak: Goolsbee calls CPI 'borderline disturbing,' Paulson backs gradual tightening",
+   "link": "https://seekingalpha.com/news/4670490-fed-rate-outlook-inflation-goolsbee-paulson?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T09:14:46+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "uCloudlink Group beats top-line and bottom-line estimates; gives Q4 and updates FY2026 outlook",
+   "link": "https://seekingalpha.com/news/4670514-ucloudlink-group-beats-top-line-and-bottom-line-estimates-gives-q4-and-updates-fy2026-outlook?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T09:14:05+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "CoreWeave’s stock pops as new financing playbook eases debt concerns",
+   "link": "https://www.marketwatch.com/story/coreweaves-stock-pops-as-new-financing-playbook-eases-debt-concerns-70241525?mod=mw_rss_topstories",
+   "summary": "A third-quarter revenue beat and $9 billion in planned prepayments gave investors renewed confidence in CoreWeave’s business.",
+   "published": "2026-11-11T09:11:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nomura weighs rebuilding Hong Kong equity capital markets business - Reuters",
+   "link": "https://www.investing.com/news/stock-market-news/nomura-weighs-rebuilding-hong-kong-equity-capital-markets-business--reuters-93CH-5018086",
+   "summary": "",
+   "published": "2026-11-11T09:09:11+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is CSG stock collapsing today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-csg-stock-collapsing-today-93CH-5018085",
+   "summary": "",
+   "published": "2026-11-11T09:08:52+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "German inflation eases to 2.8% in October from September",
+   "link": "https://www.investing.com/news/stock-market-news/german-inflation-eases-to-28-in-october-from-september-93CH-5018083",
+   "summary": "",
+   "published": "2026-11-11T09:08:29+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "The Tel-Aviv Stock Exchange reports Q3 results",
+   "link": "https://seekingalpha.com/news/4670512-the-tel-aviv-stock-exchange-reports-q3-results?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T09:08:18+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "India garment makers rethink reliance on US after tariff shock",
+   "link": "https://www.investing.com/news/stock-market-news/india-garment-makers-rethink-reliance-onusafter-tariff-shock-5017723",
+   "summary": "",
+   "published": "2026-11-11T09:00:20+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Worksport GAAP EPS of -$0.26 misses by $0.02, revenue of $7.23M misses by $5.27M",
+   "link": "https://seekingalpha.com/news/4670511-worksport-gaap-eps-of--026-misses-by-002-revenue-of-723m-misses-by-527m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T08:55:54+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "+102%, +40%: As CoreWeave lifts tech, earnings beats power these AI-picked winners",
+   "link": "https://www.investing.com/news/stock-market-news/102-40-as-coreweave-lifts-tech-earnings-beats-power-these-aipicked-winners-5018063",
+   "summary": "",
+   "published": "2026-11-11T08:55:32+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Alphabet eyes $3 billion Hong Kong, Singapore bond sale, sources say",
+   "link": "https://www.investing.com/news/stock-market-news/alphabet-eyes-3-billion-hong-kong-singapore-bond-sale-sources-say-5018062",
+   "summary": "",
+   "published": "2026-11-11T08:54:23+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "As banks retreat, why Blue Owl’s 8.7% dividend yield stands out",
+   "link": "https://www.investing.com/news/stock-market-news/as-banks-retreat-why-blue-owls-87-dividend-yield-stands-out-5016730",
+   "summary": "",
+   "published": "2026-11-11T08:46:49+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Up 42% since January: Why Merck is defeating the patent cliff",
+   "link": "https://www.investing.com/news/stock-market-news/up-42-since-january-why-merck-is-defeating-the-patent-cliff-5016722",
+   "summary": "",
+   "published": "2026-11-11T08:46:35+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Albertsons deal or no deal: Why Kroger’s grocery moat is winning",
+   "link": "https://www.investing.com/news/stock-market-news/albertsons-deal-or-no-deal-why-krogers-grocery-moat-is-winning-5016223",
+   "summary": "",
+   "published": "2026-11-11T08:46:23+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why did Stryker surge 19% after cutting full-year guidance?",
+   "link": "https://www.investing.com/news/stock-market-news/why-did-stryker-surge-19-after-cutting-fullyear-guidance-5016171",
+   "summary": "",
+   "published": "2026-11-11T08:46:11+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Sunrise Communications GAAP EPS of CHF 0.00, revenue of CHF 732M; reaffirms FY2026 outlook",
+   "link": "https://seekingalpha.com/news/4670509-sunrise-communications-gaap-eps-of-chf-000-revenue-of-chf-732m-reaffirms-fy2026-outlook?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T08:32:11+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Electromed targets $1.05M–$1.15M home care revenue per rep as CEO plans April 2027 retirement",
+   "link": "https://seekingalpha.com/news/4670508-electromed-targets-1_05m-1_15m-home-care-revenue-per-rep-as-ceo-plans-april-2027-retirement?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T08:31:49+00:00"
+  }
+ ]
+}
