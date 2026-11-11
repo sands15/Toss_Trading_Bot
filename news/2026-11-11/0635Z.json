@@ -1,0 +1,148 @@
+{
+ "collected_at": "2026-11-11T06:35:13.177675+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "RWE and KKR form 50:50 joint venture for 2.8 GW UK wind farm development",
+   "link": "https://seekingalpha.com/news/4670448-rwe-and-kkr-form-5050-joint-venture-for-28-gw-uk-wind-farm-development?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T06:32:28+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "CoreWeave targets H1 2028 profitability, cites higher pricing and GPU renewals",
+   "link": "https://seekingalpha.com/news/4670409-coreweave-targets-h1-2028-profitability-cites-higher-pricing-and-gpu-renewals?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T06:31:01+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Citizens & Northern Corporation Non-GAAP EPS of $1.72, revenue of $116.30M",
+   "link": "https://seekingalpha.com/news/4670452-citizens-northern-corporation-non-gaap-eps-of-172-revenue-of-11630m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T06:29:08+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "CitroTech Inc. reports Q3 results",
+   "link": "https://seekingalpha.com/news/4670451-citrotech-inc-reports-q3-results?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T06:20:20+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "China’s Singles Day shopping festival puts AI selling power to the test",
+   "link": "https://www.investing.com/news/stock-market-news/chinas-singles-day-shopping-festival-puts-ai-selling-power-to-the-test-5017773",
+   "summary": "",
+   "published": "2026-11-11T06:18:23+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Stran & Company GAAP EPS of $0.00, revenue of $28.1M",
+   "link": "https://seekingalpha.com/news/4670450-stran-company-gaap-eps-of-000-revenue-of-281m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T06:17:45+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nomura considers rebuilding Hong Kong equity capital markets unit- Reuters",
+   "link": "https://www.investing.com/news/stock-market-news/nomura-considers-rebuilding-hong-kong-equity-capital-markets-unit-reuters-93CH-5017765",
+   "summary": "",
+   "published": "2026-11-11T06:14:09+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Firefly updates 2026 revenue outlook to $440m-$450m amid $1.3b AST SpaceMobile partnership",
+   "link": "https://seekingalpha.com/news/4670449-firefly-updates-2026-revenue-outlook-to-440m-450m-amid-1_3b-ast-spacemobile-partnership?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T06:11:51+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Michael Burry calls Nvidia 'a heck of a trade' while betting big on MercadoLibre",
+   "link": "https://seekingalpha.com/news/4670413-michael-burry-calls-nvidia-a-heck-of-a-trade-while-betting-big-on-mercadolibre?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T06:08:56+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nasdaq futures jump on CoreWeave earnings; hot CPI reinforces Fed hike bets",
+   "link": "https://www.investing.com/news/stock-market-news/us-stock-futures-tick-higher-after-wall-st-slips-on-hot-cpi-nvidia-losses-5017417",
+   "summary": "",
+   "published": "2026-11-11T06:02:45+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "China optical stocks rally as Microsoft challenges proposed U.S. import curbs",
+   "link": "https://www.investing.com/news/stock-market-news/china-optical-stocks-rally-as-microsoft-challenges-proposed-us-import-curbs-5017749",
+   "summary": "",
+   "published": "2026-11-11T06:00:31+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Taiwan stocks higher at close of trade; Taiwan Weighted up 3.11%",
+   "link": "https://www.investing.com/news/stock-market-news/taiwan-stocks-higher-at-close-of-trade-taiwan-weighted-up-311-5017744",
+   "summary": "",
+   "published": "2026-11-11T06:00:05+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Ganfeng Lithium says battery metal prices harder to predict",
+   "link": "https://www.investing.com/news/stock-market-news/ganfeng-lithium-says-battery-metal-prices-harder-to-predict-93CH-5017740",
+   "summary": "",
+   "published": "2026-11-11T05:53:15+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "China PLA-linked university bought Nvidia H200 chips despite U.S. curbs - Reuters",
+   "link": "https://www.investing.com/news/stock-market-news/china-plalinked-university-bought-nvidia-h200-chips-despite-us-curbs--reuters-5017739",
+   "summary": "",
+   "published": "2026-11-11T05:51:02+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is TSMC stock rallying today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-tsmc-stock-rallying-today-93CH-5017738",
+   "summary": "",
+   "published": "2026-11-11T05:50:46+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "TSMC board approves $1 bln  investment in Anthropic, OpenAI; shares rise",
+   "link": "https://www.investing.com/news/stock-market-news/tsmc-board-approves-1-bln--investment-in-anthropic-openai-shares-rise-93CH-5017730",
+   "summary": "",
+   "published": "2026-11-11T05:48:35+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is PEXA stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-pexa-stock-sliding-today-93CH-5017725",
+   "summary": "",
+   "published": "2026-11-11T05:43:20+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘The thought of living to 100 terrifies me’: Is Social Security a giant Ponzi scheme?",
+   "link": "https://www.marketwatch.com/story/the-thought-of-living-to-100-terrifies-me-is-social-security-a-giant-ponzi-scheme-84a64e7e?mod=mw_rss_topstories",
+   "summary": "There is already a demographic ‘run’ on Social Security.",
+   "published": "2026-11-11T02:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "One reason Children’s Place is filing for bankruptcy? Not enough children.",
+   "link": "https://www.marketwatch.com/story/one-reason-the-childrens-place-is-going-bankrupt-not-enough-children-b275eab0?mod=mw_rss_topstories",
+   "summary": "The chain has been contending with falling birth rates, cautious consumers, stiff competition and $881 million in debt.",
+   "published": "2026-11-11T01:54:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "CoreWeave’s stock pops as new financing playbook eases debt concerns",
+   "link": "https://www.marketwatch.com/story/coreweaves-stock-pops-as-new-financing-playbook-eases-debt-concerns-70241525?mod=mw_rss_topstories",
+   "summary": "A third-quarter revenue beat and $9 billion in planned prepayments gave investors renewed confidence in CoreWeave’s business.",
+   "published": "2026-11-11T01:12:00+00:00"
+  }
+ ]
+}
