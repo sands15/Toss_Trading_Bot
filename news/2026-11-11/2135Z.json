@@ -1,0 +1,197 @@
+{
+ "collected_at": "2026-11-11T21:35:32.812631+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Guardant Health plans $500M convertible note offering and related 2027 note repurchases",
+   "link": "https://seekingalpha.com/news/4671018-guardant-health-plans-500m-convertible-note-offering-and-related-2027-note-repurchases?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T21:31:31+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Cargojet Non-GAAP EPS of C$1.21, revenue of C$286.5M",
+   "link": "https://seekingalpha.com/news/4671022-cargojet-non-gaap-eps-of-c121-revenue-of-c2865m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T21:28:24+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "EastGroup says Q4 to date tracking in line with or slightly ahead of expectations",
+   "link": "https://seekingalpha.com/news/4671013-eastgroup-says-q4-to-date-tracking-in-line-with-or-slightly-ahead-of-expectations?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T21:26:41+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Microsoft plans to 'pay our own way' to power data centers",
+   "link": "https://seekingalpha.com/news/4670988-microsoft-plans-to-pay-our-own-way-to-power-data-centers?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T21:26:35+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Helius Medical Technologies GAAP EPS of $1.17 beats by $1.18, revenue of $3.36M beats by $0.51M",
+   "link": "https://seekingalpha.com/news/4671021-helius-medical-technologies-gaap-eps-of-1_17-beats-by-1_18-revenue-of-3_36m-beats-by-0_51m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T21:26:30+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Fidelis Insurance Holdings Non-GAAP EPS of $1.00 beats by $0.29, revenue of $800.9M beats by $92.89M",
+   "link": "https://seekingalpha.com/news/4671020-fidelis-insurance-holdings-non-gaap-eps-of-1_00-beats-by-0_29-revenue-of-800_9m-beats-by?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T21:25:27+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Alvotech reports Q3 results",
+   "link": "https://seekingalpha.com/news/4671017-alvotech-reports-q3-results?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T21:23:20+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Why this ‘big idea’ to fix Social Security relies on a massive stock-market gamble",
+   "link": "https://www.marketwatch.com/story/why-this-big-idea-to-fix-social-security-relies-on-a-massive-stock-market-gamble-5423f50f?mod=mw_rss_topstories",
+   "summary": "From a long-term perspective, the past 50 years of strong market gains are the exception rather than the rule",
+   "published": "2026-11-11T21:21:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Russia stocks higher at close of trade; MOEX Russia Index up 1.84%",
+   "link": "https://www.investing.com/news/stock-market-news/russia-stocks-higher-at-close-of-trade-moex-russia-index-up-184-5019874",
+   "summary": "",
+   "published": "2026-11-11T21:20:03+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Wall Street ends higher, Nasdaq adds over 1.5% as AI trade comes back to life",
+   "link": "https://www.investing.com/news/stock-market-news/us-stock-futures-tick-higher-after-wall-st-slips-on-hot-cpi-nvidia-losses-5017417",
+   "summary": "",
+   "published": "2026-11-11T21:14:44+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Bloom Energy’s stock is rallying as data-center jitters subside",
+   "link": "https://www.marketwatch.com/story/bloom-energys-stock-is-soaring-as-data-center-jitters-subside-5fda5689?mod=mw_rss_topstories",
+   "summary": "CoreWeave’s upbeat outlook helped calm nerves around the energy company.",
+   "published": "2026-11-11T21:14:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "How Nvidia CEO Jensen Huang got entangled in a China chip and spy scandal",
+   "link": "https://www.investing.com/news/stock-market-news/how-nvidia-ceo-jensen-huang-got-entangled-in-a-china-chip-and-spy-scandal-5019824",
+   "summary": "",
+   "published": "2026-11-11T21:00:49+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Nomura stock rallying today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-nomura-stock-rallying-today-93CH-5019814",
+   "summary": "",
+   "published": "2026-11-11T20:53:48+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "It’s not ‘Medicare for All,’ but ‘Medicare for More.’ What this could mean for workers over 50.",
+   "link": "https://www.marketwatch.com/story/its-not-medicare-for-all-but-medicare-for-more-what-this-could-mean-for-workers-over-50-4a5c51a3?mod=mw_rss_topstories",
+   "summary": "A new bill would lower the Medicare age to 50, expanding coverage to an additional 60 million adults",
+   "published": "2026-11-11T20:53:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "The trillion-dollar mistake corporate America is making about retirement",
+   "link": "https://www.marketwatch.com/story/corporate-america-is-making-a-trillion-dollar-mistake-about-retirement-234c8996?mod=mw_rss_topstories",
+   "summary": "The market is dramatically underpricing the economic impact of Americans age 50 and older.",
+   "published": "2026-11-11T20:46:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘We had the worst fight’: I want my husband to retire at 65, but I don’t want to lose his $280,000 salary. Is that unreasonable?",
+   "link": "https://www.marketwatch.com/story/we-had-the-worst-fight-weve-ever-had-i-want-my-husband-to-retire-at-65-but-i-dont-want-to-lose-his-280-000-salary-48511469?mod=mw_rss_topstories",
+   "summary": "“We have $2.6 million, most of it in his 401(k) and IRAs, plus $450,000 in a brokerage account.”",
+   "published": "2026-11-11T20:45:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "JetBlue debuts BlueFirst, the key to its return-to-profitability goal",
+   "link": "https://www.investing.com/news/stock-market-news/jetblue-debuts-bluefirst-the-key-to-its-returntoprofitability-goal-5019802",
+   "summary": "",
+   "published": "2026-11-11T20:42:19+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Canadian AI-buildout stocks: hardware, power, engineering and software",
+   "link": "https://www.investing.com/news/stock-market-news/canadian-aibuildout-stocks-hardware-power-engineering-and-software-93CH-5019807",
+   "summary": "",
+   "published": "2026-11-11T20:41:35+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Anthropic Bankers Mull Raising IPO Valuation To Min. $1.5T - FT",
+   "link": "https://www.investing.com/news/stock-market-news/anthropic-bankers-mull-raising-ipo-valuation-to-min-15t--ft-432SI-5019795",
+   "summary": "",
+   "published": "2026-11-11T20:40:02+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "US auto workers union urges Congress to keep its eye on Chinese automakers",
+   "link": "https://www.investing.com/news/stock-market-news/us-auto-workers-union-urges-congress-to-keep-its-eye-on-chinese-automakers-5019803",
+   "summary": "",
+   "published": "2026-11-11T20:36:39+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Semiconductor equipment stocks: fundamentals, fair value, and the top pick",
+   "link": "https://www.investing.com/news/stock-market-news/semiconductor-equipment-stocks-fundamentals-fair-value-and-the-top-pick-93CH-5019801",
+   "summary": "",
+   "published": "2026-11-11T20:30:35+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Brazil stocks higher at close of trade; Bovespa up 0.58%",
+   "link": "https://www.investing.com/news/stock-market-news/brazil-stocks-higher-at-close-of-trade-bovespa-up-058-5019797",
+   "summary": "",
+   "published": "2026-11-11T20:30:04+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Sandisk’s stock is soaring, and these three trends could send it even higher",
+   "link": "https://www.marketwatch.com/story/sandisks-stock-is-soaring-and-these-three-trends-could-send-it-even-higher-b0d7d5ec?mod=mw_rss_topstories",
+   "summary": "Various “structural changes” afoot in the memory industry could help Sandisk shares more than double from here, according to an Evercore analyst.",
+   "published": "2026-11-11T20:25:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Should a widow leave her late partner’s home to her stepkids — or cut off contact with them?",
+   "link": "https://www.marketwatch.com/story/she-can-always-change-her-mind-should-a-widow-leave-the-family-home-to-her-stepchildren-649b06af?mod=mw_rss_topstories",
+   "summary": "“It would be a less drastic step than selling the home now and splitting the proceeds.”",
+   "published": "2026-11-11T20:00:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "I’m 63 and spending $95,000 on a roof deck for my $500,000 home. Am I being extravagant?",
+   "link": "https://www.marketwatch.com/story/im-63-and-want-to-spend-95-000-on-a-roof-deck-for-my-500-000-home-is-that-a-good-investment-f1a59c27?mod=mw_rss_topstories",
+   "summary": "“I have a net worth of $2.3 million and my only debt is a 15-year mortgage.”",
+   "published": "2026-11-11T19:41:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia is spending more than ever on Washington lobbying. It may not stop Congress from limiting China chip sales now.",
+   "link": "https://www.marketwatch.com/story/nvidia-is-spending-more-than-ever-on-washington-lobbying-it-still-may-not-be-able-to-stop-congress-from-limiting-its-china-chip-sales-now-d4c34c66?mod=mw_rss_topstories",
+   "summary": "‘There’s no question that Congress is going to push for a complete ban on the sale of advanced semiconductors into China,’ says a former U.S. ambassador to Beijing",
+   "published": "2026-11-11T18:48:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Oracle’s stock is totally misunderstood and should be a ‘go-to’ AI play, says this analyst",
+   "link": "https://www.marketwatch.com/story/oracles-stock-is-totally-misunderstood-and-should-be-a-go-to-ai-play-says-this-analyst-2a87e80d?mod=mw_rss_topstories",
+   "summary": "A Bernstein analyst thinks two key investor concerns will soon subside.",
+   "published": "2026-11-11T18:13:00+00:00"
+  }
+ ]
+}
