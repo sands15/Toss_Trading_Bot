@@ -1,0 +1,197 @@
+{
+ "collected_at": "2026-11-11T18:34:58.747898+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Anterix signals 16 active opportunities as it stresses $107.5M cash flexibility and spectrum scarcity",
+   "link": "https://seekingalpha.com/news/4670911-anterix-signals-16-active-opportunities-as-it-stresses-107_5m-cash-flexibility-and-spectrum?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T18:30:11+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Amprius targets $145M 2026 revenue as it plans 12 million annual U.S. pouch-cell capacity by early 2028",
+   "link": "https://seekingalpha.com/news/4670908-amprius-targets-145m-2026-revenue-as-it-plans-12-million-annual-u-s-pouch-cell-capacity-by?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T18:20:22+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Oracle’s stock is totally misunderstood and should be a ‘go-to’ AI play, says this analyst",
+   "link": "https://www.marketwatch.com/story/oracles-stock-is-totally-misunderstood-and-should-be-a-go-to-ai-play-says-this-analyst-2a87e80d?mod=mw_rss_topstories",
+   "summary": "A Bernstein analyst thinks two key investor concerns will soon subside.",
+   "published": "2026-11-11T18:13:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Ternium weighs more anti-dumping cases as steel snarls trade talks with US",
+   "link": "https://www.investing.com/news/stock-market-news/ternium-weighs-more-antidumping-cases-as-steel-snarls-trade-talks-with-us-5018353",
+   "summary": "",
+   "published": "2026-11-11T18:12:56+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Apple iPhone 18 Pro wait times near zero: UBS data",
+   "link": "https://seekingalpha.com/news/4670897-apple-iphone-18-pro-wait-times-near-zero-ubs-data?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T18:07:38+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Tech rally takes Dell Technologies higher by 14%",
+   "link": "https://seekingalpha.com/news/4670856-tech-rally-takes-dell-technologies-higher-by-14?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T18:06:31+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "GAMCO Global Gold, Natural Resources & Income Trust declares $0.035 dividend",
+   "link": "https://seekingalpha.com/news/4670906-gamco-global-gold-natural-resources-and-income-trust-declares-0_035-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T18:06:16+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Gabelli Convertible & Income Securities Fund Inc declares $0.12 dividend",
+   "link": "https://seekingalpha.com/news/4670905-gabelli-convertible-and-income-securities-fund-inc-declares-0_12-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T18:04:01+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Gabelli Equity Trust Inc declares $0.15 dividend",
+   "link": "https://seekingalpha.com/news/4670904-gabelli-equity-trust-inc-declares-0_15-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T18:02:48+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Wachtell, Nvidia’s pick for Huang probe, built reputation in boardroom battles",
+   "link": "https://www.investing.com/news/stock-market-news/wachtell-nvidias-pick-for-huang-probe-built-reputation-in-boardroom-battles-5019665",
+   "summary": "",
+   "published": "2026-11-11T17:48:48+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Meta’s longtime infrastructure head Janardhan to depart in early 2027",
+   "link": "https://www.investing.com/news/stock-market-news/metas-longtime-infrastructure-headjanardhan-to-depart-in-early-2027-5019662",
+   "summary": "",
+   "published": "2026-11-11T17:43:35+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Cerebras Systems Q3 2026 earnings preview: key metrics and risks to watch",
+   "link": "https://www.investing.com/news/stock-market-news/cerebras-systems-q3-2026-earnings-preview-key-metrics-and-risks-to-watch-93CH-5019659",
+   "summary": "",
+   "published": "2026-11-11T17:39:21+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nebius earnings preview: what to watch when Q3 results hit Thursday",
+   "link": "https://www.investing.com/news/stock-market-news/nebius-earnings-preview-what-to-watch-when-q3-results-hit-thursday-93CH-5019658",
+   "summary": "",
+   "published": "2026-11-11T17:38:33+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Applied Materials fiscal Q4 2026 earnings preview: what to watch for in the print",
+   "link": "https://www.investing.com/news/stock-market-news/applied-materials-fiscal-q4-2026-earnings-preview-what-to-watch-for-in-the-print-93CH-5019657",
+   "summary": "",
+   "published": "2026-11-11T17:37:59+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Cisco earnings preview: EPS, margins, and guidance in focus",
+   "link": "https://www.investing.com/news/stock-market-news/cisco-earnings-preview-eps-margins-and-guidance-in-focus-93CH-5019656",
+   "summary": "",
+   "published": "2026-11-11T17:37:25+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "StubHub earnings analysis: questions answered and next catalysts",
+   "link": "https://www.investing.com/news/stock-market-news/stubhub-earnings-analysis-questions-answered-and-next-catalysts-93CH-5019654",
+   "summary": "",
+   "published": "2026-11-11T17:34:11+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Rigetti Computing earnings analysis: questions answered and next catalysts",
+   "link": "https://www.investing.com/news/stock-market-news/rigetti-computing-earnings-analysis-questions-answered-and-next-catalysts-93CH-5019653",
+   "summary": "",
+   "published": "2026-11-11T17:32:47+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Mercury Systems earnings analysis: questions answered and next catalysts",
+   "link": "https://www.investing.com/news/stock-market-news/mercury-systems-earnings-analysis-questions-answered-and-next-catalysts-93CH-5019651",
+   "summary": "",
+   "published": "2026-11-11T17:32:12+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Has Nvidia flown too close to the sun? One analyst warns of major scrutiny ahead.",
+   "link": "https://www.marketwatch.com/story/has-nvidia-flown-too-close-to-the-sun-one-analyst-warns-of-major-scrutiny-ahead-a323c4dd?mod=mw_rss_topstories",
+   "summary": "A Baird analyst no longer recommends buying the chip maker’s stock as its problems mount.",
+   "published": "2026-11-11T17:13:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Need money for a down payment? More employers are offering to help.",
+   "link": "https://www.marketwatch.com/story/need-money-for-a-down-payment-more-employers-are-offering-to-help-59c57da3?mod=mw_rss_topstories",
+   "summary": "The rise in home-buying help from employers “speaks volumes about how difficult buying a home has become, even for people with steady jobs.”",
+   "published": "2026-11-11T17:06:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Anthropic’s IPO roadshow kicks off — and the big money is already lining up",
+   "link": "https://www.marketwatch.com/story/anthropics-ipo-roadshow-kicks-off-and-the-big-money-is-already-lining-up-7cdd4f8b?mod=mw_rss_topstories",
+   "summary": "Despite nagging concerns over the AI trade, Anthropic’s IPO is reportedly seeing very strong demand.",
+   "published": "2026-11-11T16:03:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘I’m sick of flying’: I paid for priority boarding, but the overhead bins were full. Was I duped?",
+   "link": "https://www.marketwatch.com/story/im-sick-of-flying-i-paid-for-priority-boarding-but-the-overhead-bins-were-full-was-i-duped-0badcc80?mod=mw_rss_topstories",
+   "summary": "“Maybe next time I’ll try the other approach: I’ll board whenever I feel like it and drop my suitcase in the first open slot I see.”",
+   "published": "2026-11-11T15:30:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "CoreWeave just gave a shot in the arm to Micron, Lumentum and the rest of the AI trade",
+   "link": "https://www.marketwatch.com/story/micron-and-other-ai-stocks-surge-as-coreweave-calms-wall-streets-worst-fears-0a18152a?mod=mw_rss_topstories",
+   "summary": "CoreWeave’s improved AI economics and its vow to show some discipline around debt are sparking a broad rally across the chip sector.",
+   "published": "2026-11-11T15:26:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "I’m 63 and want to spend $95,000 on a roof deck for my $500,000 home. Is that a good investment?",
+   "link": "https://www.marketwatch.com/story/im-63-and-want-to-spend-95-000-on-a-roof-deck-for-my-500-000-home-is-that-a-good-investment-f1a59c27?mod=mw_rss_topstories",
+   "summary": "“I have a net worth of $2.3 million and my only debt is a 15-year mortgage with an outstanding balance of $295,000.”",
+   "published": "2026-11-11T15:25:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Market angst is driving investors into low-volatility stocks as AI trade stumbles",
+   "link": "https://www.marketwatch.com/story/market-angst-is-driving-investors-into-low-volatility-stocks-as-ai-trade-stumbles-23d905e9?mod=mw_rss_topstories",
+   "summary": "Anxiety in the U.S. stock market has surged amid a sharp selloff in artificial intelligence names and stubbornly high bond yields.",
+   "published": "2026-11-11T15:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "From living in his car to a 756 credit score: How one veteran rebuilt his finances",
+   "link": "https://www.marketwatch.com/story/from-living-in-his-car-to-a-756-credit-score-how-one-veteran-rebuilt-his-finances-026c3336?mod=mw_rss_topstories",
+   "summary": "Many service members face an often invisible financial trap when they step out of uniform.",
+   "published": "2026-11-11T15:08:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "My friend hates her job but shuts down when I give her advice. How can I help her?",
+   "link": "https://www.marketwatch.com/story/my-friend-feels-trapped-at-her-job-but-wont-do-anything-about-it-am-i-supposed-to-step-in-7e55604e?mod=mw_rss_topstories",
+   "summary": "It’s counterintuitive, but the worst thing you could do is give your friend advice, says one career coach.",
+   "published": "2026-11-11T14:24:00+00:00"
+  }
+ ]
+}
