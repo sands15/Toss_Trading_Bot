@@ -1,0 +1,197 @@
+{
+ "collected_at": "2026-11-11T03:34:56.648443+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Satellogic outlines mid-2027 transfers for $37M sovereign deal while booking launch slots through H1 2029",
+   "link": "https://seekingalpha.com/news/4670385-satellogic-outlines-midminus-2027-transfers-for-37m-sovereign-deal-while-booking-launch-slots?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T03:12:23+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Grocery Outlet outlines Q4 comp of 1.5% to 2.5% as opportunistic mix drives return to positive comps",
+   "link": "https://seekingalpha.com/news/4670384-grocery-outlet-outlines-q4-comp-of-1_5-percent-to-2_5-percent-as-opportunistic-mix-drives?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T03:11:48+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Energy Vault projects $600M-$700M 2027 revenue with $40M-$50M EBITDA",
+   "link": "https://seekingalpha.com/news/4670383-energy-vault-projects-600m-700m-2027-revenue-with-40m-50m-ebitda?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T03:01:49+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "U.S. crude stockpiles rose 9M barrels last week, API says",
+   "link": "https://seekingalpha.com/news/4670382-u-s-crude-stockpiles-rose-9m-barrels-last-week-api-says?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T02:57:17+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Zcash slips toward $1,000 amid derivative liquidations, outflows",
+   "link": "https://seekingalpha.com/news/4670377-zcash-slips-toward-1000-amid-derivative-liquidations-outflows?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T02:54:51+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Western Union purchase of Intermex gets conditional California approval",
+   "link": "https://seekingalpha.com/news/4670376-western-union-purchase-of-intermex-gets-conditional-california-approval?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T02:44:45+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Capricor outlines 2027 manufacturing validation as Deramiocel BLA heads toward Nov. 22 PDUFA date",
+   "link": "https://seekingalpha.com/news/4670381-capricor-outlines-2027-manufacturing-validation-as-deramiocel-bla-heads-toward-nov-22-pdufa?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T02:42:04+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is SoftBank Group stock tumbling today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-softbank-group-stock-tumbling-today-93CH-5017528",
+   "summary": "",
+   "published": "2026-11-11T02:25:50+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘The thought of living to 100 terrifies me’: Is Social Security a giant Ponzi scheme?",
+   "link": "https://www.marketwatch.com/story/the-thought-of-living-to-100-terrifies-me-is-social-security-a-giant-ponzi-scheme-84a64e7e?mod=mw_rss_topstories",
+   "summary": "There is already a demographic ‘run’ on Social Security.",
+   "published": "2026-11-11T02:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "One reason Children’s Place is filing for bankruptcy? Not enough children.",
+   "link": "https://www.marketwatch.com/story/one-reason-the-childrens-place-is-going-bankrupt-not-enough-children-b275eab0?mod=mw_rss_topstories",
+   "summary": "The chain has been contending with falling birth rates, cautious consumers, stiff competition and $881 million in debt.",
+   "published": "2026-11-11T01:54:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Five US states join FTC suit against Hims & Hers over privacy practices",
+   "link": "https://www.investing.com/news/stock-market-news/five-us-states-join-ftc-suit-over-alleged-hims--hers-unlawful-practices-5016982",
+   "summary": "",
+   "published": "2026-11-11T01:48:34+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "What could drive India’s Nifty higher? BofA outlines key risks",
+   "link": "https://www.investing.com/news/stock-market-news/what-could-drive-indias-nifty-higher-bofa-outlines-key-risks-5017483",
+   "summary": "",
+   "published": "2026-11-11T01:37:47+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "US lawmakers push China chip rules after Nvidia CEO allegations",
+   "link": "https://www.investing.com/news/stock-market-news/schumer-says-congress-must-have-answers-on-trump-defense-of-nvidia-ceo-5016683",
+   "summary": "",
+   "published": "2026-11-11T01:18:53+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "SoftBank shares tumble after $7 bln quarterly loss",
+   "link": "https://www.investing.com/news/stock-market-news/softbank-shares-tumble-after-7-bln-quarterly-loss-5017452",
+   "summary": "",
+   "published": "2026-11-11T01:14:08+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "CoreWeave’s stock pops as new financing playbook eases debt concerns",
+   "link": "https://www.marketwatch.com/story/coreweaves-stock-pops-as-new-financing-playbook-eases-debt-concerns-70241525?mod=mw_rss_topstories",
+   "summary": "A third-quarter revenue beat and $9 billion in planned prepayments gave investors renewed confidence in CoreWeave’s business.",
+   "published": "2026-11-11T01:12:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Exclusive-Microsoft presses Trump to scuttle ban on Chinese data center tech",
+   "link": "https://www.investing.com/news/stock-market-news/exclusivemicrosoft-presses-trump-to-scuttle-expected-ban-on-chinese-data-center-technology-5014745",
+   "summary": "",
+   "published": "2026-11-11T01:06:40+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "U.S. stock futures tick higher after Wall St slips on hot CPI, Nvidia losses",
+   "link": "https://www.investing.com/news/stock-market-news/us-stock-futures-tick-higher-after-wall-st-slips-on-hot-cpi-nvidia-losses-5017417",
+   "summary": "",
+   "published": "2026-11-11T00:42:41+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Wall St ends lower as hot inflation data, Fed comments heighten rate worries",
+   "link": "https://www.investing.com/news/stock-market-news/sp-500-dow-futures-climb-as-oil-slide-lifts-sentiment-5014579",
+   "summary": "",
+   "published": "2026-11-11T00:31:10+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Russia shoots down 92 drones over Leningrad region",
+   "link": "https://www.investing.com/news/stock-market-news/russia-shoots-down-92-drones-over-leningrad-region-5017399",
+   "summary": "",
+   "published": "2026-11-11T00:30:58+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘We had the worst fight’: I want my husband to retire at 65, but I don’t want to lose his $280,000 salary. Is that unreasonable?",
+   "link": "https://www.marketwatch.com/story/we-had-the-worst-fight-weve-ever-had-i-want-my-husband-to-retire-at-65-but-i-dont-want-to-lose-his-280-000-salary-48511469?mod=mw_rss_topstories",
+   "summary": "“We have $2.6 million, most of it in his 401(k) and IRAs, plus $450,000 in a brokerage account.”",
+   "published": "2026-11-11T00:30:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Petrobras Q3 profit rises 34% but misses expectations",
+   "link": "https://www.investing.com/news/stock-market-news/petrobras-q3-profit-rises-34-but-misses-expectations-93CH-5017371",
+   "summary": "",
+   "published": "2026-11-11T00:09:32+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Should a widow leave her late partner’s home to her stepkids — or cut off contact with them?",
+   "link": "https://www.marketwatch.com/story/she-can-always-change-her-mind-should-a-widow-leave-the-family-home-to-her-stepchildren-649b06af?mod=mw_rss_topstories",
+   "summary": "“It would be a less drastic step than selling the home now and splitting the proceeds.”",
+   "published": "2026-11-11T00:00:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘I’m sick of flying’: I paid for priority boarding, but the overhead bins were full. Was I duped?",
+   "link": "https://www.marketwatch.com/story/im-sick-of-flying-i-paid-for-priority-boarding-but-the-overhead-bins-were-full-was-i-duped-0badcc80?mod=mw_rss_topstories",
+   "summary": "“Maybe next time I’ll try the other approach: I’ll board whenever I feel like it and drop my suitcase in the first open slot I see.”",
+   "published": "2026-11-10T23:25:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "AMD’s stock fades as investors weigh whether Nvidia’s turmoil will mean lasting wins",
+   "link": "https://www.marketwatch.com/story/amds-stock-fades-as-investors-weigh-whether-nvidias-turmoil-will-mean-lasting-wins-1ecfbc5e?mod=mw_rss_topstories",
+   "summary": "It’s one thing for money to shift between stocks,  but it’s another thing for customers to shift their supplier relationships.",
+   "published": "2026-11-10T22:37:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Looking to buy the dip in chip stocks? Here’s how to avoid buying too soon.",
+   "link": "https://www.marketwatch.com/story/ignore-the-wild-swings-in-chip-stocks-until-they-reach-these-lines-in-the-sand-feb6e00f?mod=mw_rss_topstories",
+   "summary": "Investors shouldn’t pay much attention to how the SOX chip-sector index trades until it reaches key “lines in the sand,” that define technical battleground areas above and below current levels.",
+   "published": "2026-11-10T22:30:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Meet the former prosecutor Nvidia hired to investigate the Jensen Huang spy scandal",
+   "link": "https://www.marketwatch.com/story/meet-the-former-prosecutor-nvidia-hired-to-investigate-the-jensen-huang-spy-scandal-e8078f67?mod=mw_rss_topstories",
+   "summary": "Joon Kim just joined the Wachtell Lipton law firm last month and now will lead an independent investigation into whether Nvidia’s CEO was the target of a China spy operation",
+   "published": "2026-11-10T22:05:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Stocks fall as the 10-year Treasury yield nears 5% mark",
+   "link": "https://www.marketwatch.com/story/why-stocks-are-falling-and-10-year-yields-are-climbing-back-near-5-after-tuesdays-inflation-report-389b8392?mod=mw_rss_topstories",
+   "summary": "“I don’t think they should be raising another 25 basis points,” one portfolio manager said about the Federal Reserve’s benchmark interest rate.",
+   "published": "2026-11-10T21:42:00+00:00"
+  }
+ ]
+}
