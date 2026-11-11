@@ -1,0 +1,197 @@
+{
+ "collected_at": "2026-11-11T12:34:59.002668+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "MarketWatch Top",
+   "title": "Keep Jensen Huang at Nvidia — but end the one-man show",
+   "link": "https://www.marketwatch.com/story/keep-jensen-huang-at-nvidia-but-end-the-one-man-show-305c19a2?mod=mw_rss_topstories",
+   "summary": "Nvidia can’t afford to lose its CEO, but it’s time for the company to grow up and get serious about governance.",
+   "published": "2026-11-11T12:30:00+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Lithium Americas eyes 2027 start for Thacker Pass as phase 1 construction progresses",
+   "link": "https://seekingalpha.com/news/4670588-lithium-americas-eyes-2027-start-for-thacker-pass-as-phase-1-construction-progresses?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T12:23:20+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia’s valuation tumbles to a 15-year low. A bargain or a falling knife?",
+   "link": "https://www.marketwatch.com/story/nvidias-valuation-tumbles-to-a-15-year-low-a-bargain-or-a-falling-knife-2ebf6085?mod=mw_rss_topstories",
+   "summary": "The AI giant now trades at a discount to the S&P 500, by one measure. Plus, CoreWeave’s answer to its debt problem and a Veterans Day breather for bonds.",
+   "published": "2026-11-11T12:16:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Anthropic Discloses Over $10B In New Deals - Information",
+   "link": "https://www.investing.com/news/stock-market-news/anthropic-discloses-over-10b-in-new-deals--information-432SI-5018517",
+   "summary": "",
+   "published": "2026-11-11T12:15:03+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Should a widow leave her late partner’s home to her stepkids — or cut off contact with them?",
+   "link": "https://www.marketwatch.com/story/she-can-always-change-her-mind-should-a-widow-leave-the-family-home-to-her-stepchildren-649b06af?mod=mw_rss_topstories",
+   "summary": "“It would be a less drastic step than selling the home now and splitting the proceeds.”",
+   "published": "2026-11-11T12:15:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Satellogic stock surging today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-satellogic-stock-surging-today-93CH-5018579",
+   "summary": "",
+   "published": "2026-11-11T12:14:57+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Phillips Edison declares $0.115 dividend",
+   "link": "https://seekingalpha.com/news/4670587-phillips-edison-declares-0_115-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T12:14:06+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Talen Energy stock surging today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-talen-energy-stock-surging-today-93CH-5018575",
+   "summary": "",
+   "published": "2026-11-11T12:13:45+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Capri appoints ex-luxury beauty executive Justin Boxford as CEO",
+   "link": "https://seekingalpha.com/news/4670572-capri-appoints-ex-luxury-beauty-executive-justin-boxford-as-ceo?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T12:13:34+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Aebi Schmidt Holding AG GAAP EPS of $0.14 misses by $0.08, revenue of $493.1M misses by $27.17M",
+   "link": "https://seekingalpha.com/news/4670586-aebi-schmidt-holding-ag-gaap-eps-of-0_14-misses-by-0_08-revenue-of-493_1m-misses-by-27_17m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T12:13:24+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "EasyJet investors back Apollo buyout as deal moves closer to completion",
+   "link": "https://www.investing.com/news/stock-market-news/easyjet-investors-back-apollo-buyout-as-deal-moves-closer-to-completion-5018573",
+   "summary": "",
+   "published": "2026-11-11T12:13:02+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Lilly sued over alleged firing of sales rep for complaints about Mounjaro misbranding",
+   "link": "https://seekingalpha.com/news/4670583-lilly-sued-over-alleged-firing-sales-rep?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T12:12:55+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "German grocery chain Lidl continues its slow pace of expansion in the U.S.",
+   "link": "https://seekingalpha.com/news/4670581-german-grocery-chain-lidl-continues-its-slow-pace-of-expansion-in-the-u-s?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T12:10:51+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Caesarstone Non-GAAP EPS of -$0.05, revenue of $96.3M",
+   "link": "https://seekingalpha.com/news/4670584-caesarstone-non-gaap-eps-of--005-revenue-of-963m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T12:10:17+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "EasyJet shareholders approve £5.7 billion Apollo takeover",
+   "link": "https://www.investing.com/news/stock-market-news/easyjet-shareholders-approve-57-billion-apollo-takeover-5018468",
+   "summary": "",
+   "published": "2026-11-11T12:06:53+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nvidia stock gets a rare Wall Street downgrade on supply issues",
+   "link": "https://www.investing.com/news/stock-market-news/nvidia-stock-gets-a-rare-wall-street-downgrade-on-supply-issues-5018471",
+   "summary": "",
+   "published": "2026-11-11T12:04:47+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nasdaq futures climb amid upbeat CoreWeave outlook, Anthropic IPO hopes",
+   "link": "https://www.investing.com/news/stock-market-news/us-stock-futures-tick-higher-after-wall-st-slips-on-hot-cpi-nvidia-losses-5017417",
+   "summary": "",
+   "published": "2026-11-11T12:03:55+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "TSX futures rise as CoreWeave outlook provides relief after bond market selloff",
+   "link": "https://www.investing.com/news/stock-market-news/tsx-futures-rise-as-coreweave-outlook-provides-relief-after-bond-market-selloff-5018506",
+   "summary": "",
+   "published": "2026-11-11T12:02:17+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "BofA says the October CPI report opens the door to a 50bp December hike",
+   "link": "https://www.investing.com/news/stock-market-news/bofa-says-the-october-cpi-report-opens-the-door-to-a-50bp-december-hike-5018493",
+   "summary": "",
+   "published": "2026-11-11T12:01:05+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Market angst is driving investors into low-volatility stocks as AI trade stumbles",
+   "link": "https://www.marketwatch.com/story/market-angst-is-driving-investors-into-low-volatility-stocks-as-ai-trade-stumbles-23d905e9?mod=mw_rss_topstories",
+   "summary": "Anxiety in the U.S. stock market has surged amid a sharp selloff in artificial intelligence names and stubbornly high bond yields.",
+   "published": "2026-11-11T12:00:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Jefferies cuts Evonik as Middle East disruption boost to earnings fades",
+   "link": "https://www.investing.com/news/stock-market-news/jefferies-cuts-evonik-as-middle-east-disruption-boost-to-earnings-fades-5018474",
+   "summary": "",
+   "published": "2026-11-11T11:57:48+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "CoreWeave’s stock pops as new financing playbook eases debt concerns",
+   "link": "https://www.marketwatch.com/story/coreweaves-stock-pops-as-new-financing-playbook-eases-debt-concerns-70241525?mod=mw_rss_topstories",
+   "summary": "A third-quarter revenue beat and $9 billion in planned prepayments gave investors renewed confidence in CoreWeave’s business.",
+   "published": "2026-11-11T11:27:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Why Goldman Sachs is now changing its Federal Reserve interest-rate forecast",
+   "link": "https://www.marketwatch.com/story/why-goldman-sachs-is-now-changing-its-federal-reserve-interest-rate-forecast-3753f968?mod=mw_rss_topstories",
+   "summary": "Following Tuesday’s hot CPI data , Goldman Sachs is now pencilling in additional Fed tightening.",
+   "published": "2026-11-11T10:37:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "I’m 63 and want to spend $95,000 on a roof deck for my $500,000 home. Is that a good investment?",
+   "link": "https://www.marketwatch.com/story/im-63-and-want-to-spend-95-000-on-a-roof-deck-for-my-500-000-home-is-that-a-good-investment-f1a59c27?mod=mw_rss_topstories",
+   "summary": "“I have a net worth of $2.3 million and my only debt is a 15-year mortgage with an outstanding balance of $295,000.”",
+   "published": "2026-11-11T10:30:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘The thought of living to 100 terrifies me’: Is Social Security a giant Ponzi scheme?",
+   "link": "https://www.marketwatch.com/story/the-thought-of-living-to-100-terrifies-me-is-social-security-a-giant-ponzi-scheme-84a64e7e?mod=mw_rss_topstories",
+   "summary": "There is already a demographic ‘run’ on Social Security.",
+   "published": "2026-11-11T10:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Tiger Woods has another private, 18-hole golf destination in the works — this one for Long Island’s Gold Coast",
+   "link": "https://www.marketwatch.com/story/tiger-woods-has-another-private-18-hole-golf-destination-in-the-works-this-one-for-long-islands-gold-coast-7e8e669c?mod=mw_rss_topstories",
+   "summary": "Golf legend Tiger Woods is heading up a new private golf destination on the North Shore of Long Island in Brookville, N.Y.",
+   "published": "2026-11-11T10:03:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Among full-size SUVs, the 2027 Ford Expedition is worth a look for its spacious seating and mighty engine",
+   "link": "https://www.marketwatch.com/story/among-full-size-suvs-the-2027-ford-expedition-is-worth-a-look-for-its-spacious-seating-and-mighty-engine-2c169852?mod=mw_rss_topstories",
+   "summary": "The Ford Expedition has modern tech, a big third row, clever features, and a muscular engine, adding up to make it our favorite full-size SUV.",
+   "published": "2026-11-11T09:59:00+00:00"
+  }
+ ]
+}
