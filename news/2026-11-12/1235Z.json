@@ -1,0 +1,176 @@
+{
+ "collected_at": "2026-11-12T12:35:54.105172+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "NetSol GAAP EPS of $0.16, revenue of $16.4M misses by $0.11M",
+   "link": "https://seekingalpha.com/news/4671342-netsol-gaap-eps-of-0_16-revenue-of-16_4m-misses-by-0_11m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T12:30:20+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia’s Jensen Huang crisis tests how much of the AI industry depends on one man",
+   "link": "https://www.marketwatch.com/story/nvidias-jensen-huang-dilemma-is-a-test-of-the-ai-industrys-dependence-on-one-flawed-man-a9a1d99c?mod=mw_rss_topstories",
+   "summary": "Huang’s exit could fray tight bonds among AI businesses. Plus, Oracle’s potential AI catalyst, a $1.5 trillion Social Security stock proposal and what the oil-yield split may mean for inflation.",
+   "published": "2026-11-12T12:29:00+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Cyngn GAAP EPS of -$0.41, revenue of $0.15M misses by $0.15M",
+   "link": "https://seekingalpha.com/news/4671341-cyngn-gaap-eps-of-0_41-revenue-of-0_15m-misses-by-0_15m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T12:28:57+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Mobility Global authorizes $800M share repurchase program",
+   "link": "https://seekingalpha.com/news/4671337-mobility-global-authorizes-800m-share-repurchase-program?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T12:28:15+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Kiora Pharmaceuticals GAAP EPS of -$0.28 beats by $0.10, revenue of $1M",
+   "link": "https://seekingalpha.com/news/4671340-kiora-pharmaceuticals-gaap-eps-of-0_28-beats-by-0_10-revenue-of-1m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T12:27:26+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "BP in talks to sell stake in Brazil oil discovery to Petrobras - Bloomberg",
+   "link": "https://seekingalpha.com/news/4671313-bp-in-talks-to-sell-stake-in-brazil-oil-discovery-to-petrobras-bloomberg?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T12:27:09+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Century Therapeutics GAAP EPS of -$0.11 beats by $0.01",
+   "link": "https://seekingalpha.com/news/4671339-century-therapeutics-gaap-eps-of-0_11-beats-by-0_01?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T12:25:58+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Bristol Myers to operate R&D under one organization",
+   "link": "https://seekingalpha.com/news/4671334-bristol-myers-run-rd-under-one-organization?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T12:25:55+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Gainsight cuts jobs as it refounds business around AI agents",
+   "link": "https://www.investing.com/news/stock-market-news/gainsight-cuts-jobs-as-it-refounds-business-around-ai-agents-5021270",
+   "summary": "",
+   "published": "2026-11-12T12:05:05+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Broadcom stock rallying today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-broadcom-stock-rallying-today-93CH-5021185",
+   "summary": "",
+   "published": "2026-11-12T11:56:11+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Advanced Micro Devices stock rallying today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-advanced-micro-devices-stock-rallying-today-93CH-5021183",
+   "summary": "",
+   "published": "2026-11-12T11:55:57+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is WH Smith stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-wh-smith-stock-sliding-today-93CH-5021177",
+   "summary": "",
+   "published": "2026-11-12T11:55:21+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nvidia shares slump 7% as report says board preparing to oust CEO Jensen Huang",
+   "link": "https://www.investing.com/news/stock-market-news/nvidia-expected-to-oust-jensen-huang---report-5020001",
+   "summary": "",
+   "published": "2026-11-12T11:51:57+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Premarket movers: Nvidia sinks; Lilly gains on China approval",
+   "link": "https://www.investing.com/news/stock-market-news/premarket-movers-nvidia-sinks-lilly-gains-on-china-approval-5021050",
+   "summary": "",
+   "published": "2026-11-12T11:48:33+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "SMIC Q4 margin forecast falls short of Q3 level despite revenue growth outlook",
+   "link": "https://www.investing.com/news/stock-market-news/smic-q4-margin-forecast-falls-short-of-q3-level-despite-revenue-growth-outlook-93CH-5021126",
+   "summary": "",
+   "published": "2026-11-12T11:43:18+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Mid Penn Bancorp stock climbing today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-mid-penn-bancorp-stock-climbing-today-93CH-5021127",
+   "summary": "",
+   "published": "2026-11-12T11:43:18+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "TSX futures subdued amid reports Nvidia board preparing ouster of CEO Jensen Huang",
+   "link": "https://www.investing.com/news/stock-market-news/tsx-futures-subdued-amid-reports-nvidia-board-preparing-ouster-of-ceo-jensen-huang-5021099",
+   "summary": "",
+   "published": "2026-11-12T11:40:09+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Aevex stock surging today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-aevex-stock-surging-today-93CH-5021089",
+   "summary": "",
+   "published": "2026-11-12T11:38:47+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Tech stocks may soon enjoy a ‘violent bounce’ — but one strategist warns investors not to take the bait",
+   "link": "https://www.marketwatch.com/story/tech-stocks-may-soon-enjoy-a-violent-bounce-but-one-strategist-warns-investors-not-to-take-the-bait-1a41f9c4?mod=mw_rss_topstories",
+   "summary": "Jim Thorne, Wellington-Altus Private Wealth’s chief market strategist, says investors should not get tempted too fast into a tech stock bounce.",
+   "published": "2026-11-12T11:34:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Here’s what Megaspeed, the company at the forefront of the Nvidia scandal, is now saying",
+   "link": "https://www.marketwatch.com/story/heres-what-megaspeed-the-company-at-the-forefront-of-the-nvidia-scandal-is-now-saying-b73f8d0b?mod=mw_rss_topstories",
+   "summary": "The Singaporean company Megaspeed, at the center of the scandal engulfing Nvidia, on Thursday issued its first public statement since the scandal erupted.",
+   "published": "2026-11-12T10:57:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "I inherited $1.4 million from my father. Am I wrong to ask my husband of 25 years for a postnuptial agreement?",
+   "link": "https://www.marketwatch.com/story/i-inherited-1-4-million-from-my-father-am-i-wrong-to-ask-my-husband-of-25-years-for-a-postnuptial-agreement-b739c51d?mod=mw_rss_topstories",
+   "summary": "“He has always said he wants his daughter to inherit a chunk of his estate, and I’ve never objected to that.”",
+   "published": "2026-11-12T10:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia’s stock drops as the board reportedly prepares to remove CEO Jensen Huang",
+   "link": "https://www.marketwatch.com/story/nvidias-stock-drops-as-the-board-reportedly-prepares-to-remove-ceo-jensen-huang-9edee58d?mod=mw_rss_topstories",
+   "summary": "Nvidia’s board of directors reportedly met late Wednesday to determine the CEO’s fate.",
+   "published": "2026-11-12T10:07:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Prince Harry and Meghan Markle move into new home in Cotswolds",
+   "link": "https://www.marketwatch.com/story/prince-harry-and-meghan-markle-move-into-new-home-in-cotswolds-e9bb0739?mod=mw_rss_topstories",
+   "summary": "Prince Harry and Meghan Markle have reportedly moved into a new Cotswolds home on their friend’s estate after returning to the U.K. with their children in August.",
+   "published": "2026-11-12T10:03:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Jensen Huang built Nvidia into a behemoth. His scandal puts the entire AI boom in jeopardy.",
+   "link": "https://www.marketwatch.com/story/jensen-huang-built-nvidia-into-a-behemoth-his-scandal-puts-the-entire-ai-boom-in-jeopardy-c374b079?mod=mw_rss_topstories",
+   "summary": "Huang fueled his company and the AI ecosystem with advanced chips and creative financing deals across the supply chain. What happens if he’s gone?",
+   "published": "2026-11-12T07:30:00+00:00"
+  }
+ ]
+}
