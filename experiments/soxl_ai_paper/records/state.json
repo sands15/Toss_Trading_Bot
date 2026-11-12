@@ -3,25 +3,9 @@
   "start_krw": "10000000",
   "start_fx": "1341.0",
   "start_usd": "7457.12",
-  "cash_usd": "5965.70",
-  "position": {
-    "symbol": "SOXL",
-    "shares": "23.268585",
-    "entry_price": "64.032000",
-    "entry_date": "2026-11-11",
-    "days_held": 1,
-    "stop_pct": "0.07",
-    "stop_price": "59.549760",
-    "weight": "0.2",
-    "buy_fee": "1.49"
-  },
-  "pending": {
-    "date": "2026-11-12",
-    "action": "CASH",
-    "weight": "0",
-    "stop_pct": "0.10",
-    "reason": "NVDA 장전 −6.6~7%(이사회 CEO 해임 검토 보도), 반도체 대중 수출통제 강화 보도, 나스닥 선물 −0.6~0.8% → 시가 청산, 이익 확정"
-  },
+  "cash_usd": "7354.84",
+  "position": null,
+  "pending": null,
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
@@ -29,7 +13,14 @@
     "SOXX": "48.025761",
     "SOXL": "101.168363"
   },
-  "last_settled": "2026-11-11",
-  "last_fx": "1333.6",
-  "closed": []
+  "last_settled": "2026-11-12",
+  "last_fx": "1330.7",
+  "closed": [
+    {
+      "date": "2026-11-12",
+      "symbol": "SOXL",
+      "pnl_usd": "-102.28",
+      "weight": "0.2"
+    }
+  ]
 }
