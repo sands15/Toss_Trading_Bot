@@ -1,0 +1,169 @@
+{
+ "collected_at": "2026-11-12T06:35:09.154737+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "CareTrust REIT prices $637.5M stock offering",
+   "link": "https://seekingalpha.com/news/4671118-caretrust-reit-prices-6375m-stock-offering?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T06:31:34+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Nikkei leads Asian sell-off after reports of Nvidia shake-up weigh on U.S. futures; Japan PPI beats forecasts",
+   "link": "https://seekingalpha.com/news/4671105-asian-markets-retreat-as-nvidia-leadership-turmoil-rattles-tech-sector-japan-ppi-beats-forecasts?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T06:26:21+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "China chip stocks rally as U.S. weighs curbs on remote AI access",
+   "link": "https://www.investing.com/news/stock-market-news/china-chip-stocks-rally-as-us-weighs-curbs-on-remote-ai-access-5020425",
+   "summary": "",
+   "published": "2026-11-12T06:08:31+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Security National reports Q3 results",
+   "link": "https://seekingalpha.com/news/4671116-security-national-reports-q3-results?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T06:07:05+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Alphabet reportedly pulls in $5B in orders for landmark Hong Kong and Singapore dollar bond sale",
+   "link": "https://seekingalpha.com/news/4671115-alphabet-reportedly-pulls-in-5b-in-orders-for-landmark-hong-kong-and-singapore-dollar-bond-sale?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T06:04:29+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Xero stock surging today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-xero-stock-surging-today-93CH-5020421",
+   "summary": "",
+   "published": "2026-11-12T06:02:16+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Yadea stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-yadea-stock-sliding-today-93CH-5020420",
+   "summary": "",
+   "published": "2026-11-12T06:02:14+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Taiwan stocks lower at close of trade; Taiwan Weighted down 2.79%",
+   "link": "https://www.investing.com/news/stock-market-news/taiwan-stocks-lower-at-close-of-trade-taiwan-weighted-down-279-5020418",
+   "summary": "",
+   "published": "2026-11-12T06:00:04+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Hankyu Hanshin stock rallying today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-hankyu-hanshin-stock-rallying-today-93CH-5020417",
+   "summary": "",
+   "published": "2026-11-12T05:59:14+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is PLDT stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-pldt-stock-sliding-today-93CH-5020416",
+   "summary": "",
+   "published": "2026-11-12T05:59:03+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "China’s central bank vows ample liquidity and yuan stability in Q3 monetary policy report",
+   "link": "https://seekingalpha.com/news/4671106-chinas-central-bank-vows-ample-liquidity-and-yuan-stability-in-q3-monetary-policy-report?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T05:53:56+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Ingram Micro set to join S&P SmallCap 600 following Viatris-Pacira deal",
+   "link": "https://seekingalpha.com/news/4671113-ingram-micro-set-to-join-sp-smallcap-600-following-viatris-pacira-deal?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T05:47:43+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Portman Ridge Finance declares $0.09 dividend",
+   "link": "https://seekingalpha.com/news/4671114-portman-ridge-finance-declares-0_09-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T05:47:42+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nvidia faces governance risks; watch these 2 chip stocks for buy opportunities",
+   "link": "https://www.investing.com/news/stock-market-news/nvidia-faces-governance-risks-watch-these-2-chip-stocks-for-buy-opportunities-93CH-5020413",
+   "summary": "",
+   "published": "2026-11-12T05:44:29+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Australia stocks lower at close of trade; S&P/ASX 200 down 0.07%",
+   "link": "https://www.investing.com/news/stock-market-news/australia-stocks-lower-at-close-of-trade-spasx-200-down-007-5020392",
+   "summary": "",
+   "published": "2026-11-12T05:30:03+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Aristocrat Leisure stock falling today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-aristocrat-leisure-stock-falling-today-93CH-5020386",
+   "summary": "",
+   "published": "2026-11-12T05:26:11+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Analysis-From SpaceX to Anthropic, markets have a new playbook for mega-share debuts",
+   "link": "https://www.investing.com/news/stock-market-news/analysisfrom-spacex-to-anthropic-markets-have-a-new-playbook-for-megashare-debuts-5020374",
+   "summary": "",
+   "published": "2026-11-12T05:24:37+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nasdaq futures fall as Nvidia sinks 8% after hours on report board may oust Huang",
+   "link": "https://www.marketwatch.com/story/nasdaq-futures-fall-as-nvidia-sinks-8-after-hours-on-report-board-may-oust-huang-e99b898d?mod=mw_rss_topstories",
+   "summary": "Stock futures were sliding Wednesday evening as a selloff in shares of Nvidia after the closing bell weighed on the Nasdaq-100 and dragged down shares of other chip makers.",
+   "published": "2026-11-12T04:41:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘The thought of living to 100 terrifies me’: Is Social Security a giant Ponzi scheme?",
+   "link": "https://www.marketwatch.com/story/the-thought-of-living-to-100-terrifies-me-is-social-security-a-giant-ponzi-scheme-84a64e7e?mod=mw_rss_topstories",
+   "summary": "There is already a demographic ‘run’ on Social Security.",
+   "published": "2026-11-12T03:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Here’s how Bernie Sanders wants to keep Social Security solvent ‘for generations’",
+   "link": "https://www.marketwatch.com/story/heres-how-bernie-sanders-wants-to-keep-social-security-solvent-for-generations-f5666a38?mod=mw_rss_topstories",
+   "summary": "The Vermont senator aims to eliminate the taxable maximum, making the wealthy pay more in taxes",
+   "published": "2026-11-12T03:10:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia’s stock drops as the board reportedly prepares to remove CEO Jensen Huang",
+   "link": "https://www.marketwatch.com/story/nvidias-stock-drops-as-the-board-reportedly-prepares-to-remove-ceo-jensen-huang-9edee58d?mod=mw_rss_topstories",
+   "summary": "Nvidia’s board of directors reportedly met late Wednesday to determine the CEO’s fate.",
+   "published": "2026-11-12T02:52:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘I’m sick of flying’: I paid for priority boarding, but the overhead bins were full. Was I duped?",
+   "link": "https://www.marketwatch.com/story/im-sick-of-flying-i-paid-for-priority-boarding-but-the-overhead-bins-were-full-was-i-duped-0badcc80?mod=mw_rss_topstories",
+   "summary": "“Maybe next time I’ll try the other approach: I’ll board whenever I feel like it and drop my suitcase in the first open slot I see.”",
+   "published": "2026-11-12T02:45:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "I’m 63 and spending $95,000 on a roof deck for my $500,000 home. Am I being extravagant?",
+   "link": "https://www.marketwatch.com/story/im-63-and-want-to-spend-95-000-on-a-roof-deck-for-my-500-000-home-is-that-a-good-investment-f1a59c27?mod=mw_rss_topstories",
+   "summary": "“I have a net worth of $2.3 million and my only debt is a 15-year mortgage.”",
+   "published": "2026-11-12T02:31:00+00:00"
+  }
+ ]
+}
