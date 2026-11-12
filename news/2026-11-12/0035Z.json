@@ -1,0 +1,197 @@
+{
+ "collected_at": "2026-11-12T00:35:59.344936+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nvidia board meets to decide CEO Huang’s future, source says",
+   "link": "https://www.investing.com/news/stock-market-news/nvidia-is-preparing-to-oust-ceo-jensen-huang-wsj-reports-5019991",
+   "summary": "",
+   "published": "2026-11-12T00:24:22+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "AEVEX shares jump as drone maker tops revenue estimates, raises outlook",
+   "link": "https://seekingalpha.com/news/4671071-aevex-shares-jump-as-drone-maker-tops-revenue-estimates-raises-outlook?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T00:18:55+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is NVIDIA stock tumbling after hours today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-nvidia-stock-tumbling-after-hours-today-93CH-5020104",
+   "summary": "",
+   "published": "2026-11-12T00:15:31+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Strategy stock falling after hours today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-strategy-stock-falling-after-hours-today-93CH-5020096",
+   "summary": "",
+   "published": "2026-11-12T00:11:01+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia’s stock drops as the board reportedly prepares to remove CEO Jensen Huang",
+   "link": "https://www.marketwatch.com/story/nvidias-stock-drops-as-the-board-reportedly-prepares-to-remove-ceo-jensen-huang-9edee58d?mod=mw_rss_topstories",
+   "summary": "Nvidia’s board of directors reportedly could meet as soon as today to determine the CEO’s fate.",
+   "published": "2026-11-12T00:06:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Instant View: Nvidia is preparing to oust CEO Jensen Huang, WSJ reports",
+   "link": "https://www.investing.com/news/stock-market-news/instant-view-nvidia-is-preparing-to-oust-ceo-jensen-huang-wsj-reports-5020061",
+   "summary": "",
+   "published": "2026-11-11T23:42:23+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Mosaic downgraded by Freedom Broker as sulfur costs squeeze profits",
+   "link": "https://seekingalpha.com/news/4671068-mosaic-downgraded-by-freedom-broker-as-sulfur-costs-squeeze-profits?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T23:41:10+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Hyliion forecasts $18M 2026 revenue while targeting 200-kilowatt output by year-end",
+   "link": "https://seekingalpha.com/news/4671070-hyliion-forecasts-18m-2026-revenue-while-targeting-200-kilowatt-output-by-year-end?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T23:40:03+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Seastar Medical anticipates NEUTRALIZE-AKI enrollment completion by midyear 2027 while preparing modular PMA submissions",
+   "link": "https://seekingalpha.com/news/4671069-seastar-medical-anticipates-neutralize-aki-enrollment-completion-by-midyear-2027-while?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T23:40:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Polymarket cuts jobs, contracts as prediction market competition heats up",
+   "link": "https://www.investing.com/news/stock-market-news/polymarket-cuts-jobs-contracts-as-prediction-market-competition-heats-up-5020060",
+   "summary": "",
+   "published": "2026-11-11T23:30:20+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Your holiday credit-card bills are going up. What you can do to ease the pain.",
+   "link": "https://www.marketwatch.com/story/your-holiday-credit-card-bills-are-going-up-what-you-can-do-to-ease-the-pain-5ddeb446?mod=mw_rss_topstories",
+   "summary": "The government may have lost a month of inflation data, but don’t expect your credit card’s annual percentage rate to decline because of it.",
+   "published": "2026-11-11T23:30:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "CoreWeave plans $4 billion high-grade loan, Bloomberg reports",
+   "link": "https://www.investing.com/news/stock-market-news/coreweave-plans-4-billion-highgrade-loan-bloomberg-reports-5020048",
+   "summary": "",
+   "published": "2026-11-11T23:13:23+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "MSCI to drop Strategy from global indexes, putting billions in fund inflows at risk",
+   "link": "https://www.investing.com/news/stock-market-news/msci-to-drop-strategy-from-global-indexes-putting-billions-in-passive-fund-inflows-at-risk-5020015",
+   "summary": "",
+   "published": "2026-11-11T23:13:12+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Strategy shares fall after MSCI confirms deletion from US large-cap benchmark",
+   "link": "https://www.investing.com/news/stock-market-news/strategy-shares-fall-after-msci-confirms-deletion-from-us-largecap-benchmark-5020038",
+   "summary": "",
+   "published": "2026-11-11T23:02:18+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Here are the major earnings before the open Thursday",
+   "link": "https://seekingalpha.com/news/4670591-here-are-the-major-earnings-before-the-open-thursday?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T23:00:52+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Integra Resources Corp. Non-GAAP EPS of $0.06 in-line, revenue of $72.4M beats by $1.03M",
+   "link": "https://seekingalpha.com/news/4671066-integra-resources-corp-non-gaap-eps-of-0_06-in-line-revenue-of-72_4m-beats-by-1_03m?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T22:57:56+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "NVIDIA shares slide over 7% as report says board preparing to oust CEO Huang",
+   "link": "https://www.investing.com/news/stock-market-news/nvidia-expected-to-oust-jensen-huang---report-5020001",
+   "summary": "",
+   "published": "2026-11-11T22:56:35+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Pfizer secures up to $1.5 billion from Blackstone for obesity drug development",
+   "link": "https://www.investing.com/news/stock-market-news/pfizer-secures-up-to-15-billion-from-blackstone-for-obesity-drug-development-5019917",
+   "summary": "",
+   "published": "2026-11-11T22:54:39+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Bioceres reports Q1 results",
+   "link": "https://seekingalpha.com/news/4671065-bioceres-reports-q1-results?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-11T22:53:06+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "I’m 63 and spending $95,000 on a roof deck for my $500,000 home. Am I being extravagant?",
+   "link": "https://www.marketwatch.com/story/im-63-and-want-to-spend-95-000-on-a-roof-deck-for-my-500-000-home-is-that-a-good-investment-f1a59c27?mod=mw_rss_topstories",
+   "summary": "“I have a net worth of $2.3 million and my only debt is a 15-year mortgage.”",
+   "published": "2026-11-11T22:30:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "CoreWeave just gave a shot in the arm to Micron, Lumentum and the rest of the AI trade",
+   "link": "https://www.marketwatch.com/story/micron-and-other-ai-stocks-surge-as-coreweave-calms-wall-streets-worst-fears-0a18152a?mod=mw_rss_topstories",
+   "summary": "CoreWeave’s improved AI economics and its vow to show some discipline around debt are sparking a broad rally across the chip sector.",
+   "published": "2026-11-11T22:05:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Opening trading-card packs has become a $2 billion market. New apps are trying to cash in.",
+   "link": "https://www.marketwatch.com/story/opening-trading-card-packs-has-become-a-2-billion-market-new-apps-are-trying-to-cash-in-b7ba11f5?mod=mw_rss_topstories",
+   "summary": "Pack-ripping apps are changing the way people buy and sell cards. But analysts say their “slot-like payoff” raises risks.",
+   "published": "2026-11-11T21:55:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Falling oil prices are no longer enough to bring down borrowing costs in the world’s most important bond market",
+   "link": "https://www.marketwatch.com/story/falling-oil-prices-are-no-longer-enough-to-bring-down-borrowing-costs-in-the-worlds-most-important-bond-market-3176d25a?mod=mw_rss_topstories",
+   "summary": "The tight trading relationship between oil prices and Treasury yields has broken down. It’s a sign that inflation concerns are extending beyond the energy shock.",
+   "published": "2026-11-11T21:42:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Sandisk’s stock just staged a big gain. Here’s how it could march even higher.",
+   "link": "https://www.marketwatch.com/story/sandisks-stock-is-soaring-and-these-three-trends-could-send-it-even-higher-b0d7d5ec?mod=mw_rss_topstories",
+   "summary": "Various “structural changes” afoot in the memory industry could help Sandisk shares more than double from here, according to an Evercore analyst.",
+   "published": "2026-11-11T21:40:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Why this ‘big idea’ to fix Social Security relies on a massive stock-market gamble",
+   "link": "https://www.marketwatch.com/story/why-this-big-idea-to-fix-social-security-relies-on-a-massive-stock-market-gamble-5423f50f?mod=mw_rss_topstories",
+   "summary": "From a long-term perspective, the past 50 years of strong market gains are the exception rather than the rule",
+   "published": "2026-11-11T21:21:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Bloom Energy’s stock rallies as data-center jitters subside",
+   "link": "https://www.marketwatch.com/story/bloom-energys-stock-is-soaring-as-data-center-jitters-subside-5fda5689?mod=mw_rss_topstories",
+   "summary": "CoreWeave’s upbeat outlook helped calm nerves around the energy company.",
+   "published": "2026-11-11T21:14:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "It’s not ‘Medicare for All,’ but ‘Medicare for More.’ What this could mean for workers over 50.",
+   "link": "https://www.marketwatch.com/story/its-not-medicare-for-all-but-medicare-for-more-what-this-could-mean-for-workers-over-50-4a5c51a3?mod=mw_rss_topstories",
+   "summary": "A new bill would lower the Medicare age to 50, expanding coverage to an additional 60 million adults",
+   "published": "2026-11-11T20:53:00+00:00"
+  }
+ ]
+}
