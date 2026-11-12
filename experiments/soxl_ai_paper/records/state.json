@@ -15,7 +15,13 @@
     "weight": "0.2",
     "buy_fee": "1.49"
   },
-  "pending": null,
+  "pending": {
+    "date": "2026-11-12",
+    "action": "CASH",
+    "weight": "0",
+    "stop_pct": "0.10",
+    "reason": "NVDA 장전 −6.6~7%(이사회 CEO 해임 검토 보도), 반도체 대중 수출통제 강화 보도, 나스닥 선물 −0.6~0.8% → 시가 청산, 이익 확정"
+  },
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
