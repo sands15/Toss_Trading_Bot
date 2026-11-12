@@ -1,0 +1,197 @@
+{
+ "collected_at": "2026-11-12T03:40:07.822904+00:00",
+ "errors": {
+  "Nasdaq Markets": "GET failed: https://www.nasdaq.com/feed/rssoutbound?category=Markets: HTTP Error 403: Forbidden"
+ },
+ "items": [
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Sagicor Financial declares $0.075 dividend",
+   "link": "https://seekingalpha.com/news/4671096-sagicor-financial-declares-0_075-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T03:37:19+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Franco-Nevada declares $0.44 dividend",
+   "link": "https://seekingalpha.com/news/4671095-franco-nevada-declares-0_44-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T03:34:25+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Tetra Tech declares $0.072 dividend",
+   "link": "https://seekingalpha.com/news/4671094-tetra-tech-declares-0_072-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T03:32:34+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Allspring Utilities and High Income Fund declares $0.0859 dividend declines by 1.3% to $0.0859",
+   "link": "https://seekingalpha.com/news/4671093-allspring-utilities-and-high-income-fund-declares-00859-dividend-declines-by-13-to-00859?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T03:29:31+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Allspring Multi-Sector Income Fund declares $0.0719 dividend",
+   "link": "https://seekingalpha.com/news/4671092-allspring-multi-sector-income-fund-declares-0_0719-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T03:29:17+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Allspring Income Opportunities Fund declares $0.0523 dividend",
+   "link": "https://seekingalpha.com/news/4671091-allspring-income-opportunities-fund-declares-0_0523-dividend?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T03:28:29+00:00"
+  },
+  {
+   "source": "Seeking Alpha Currents",
+   "title": "Allspring Global Dividend Opportunity Fund raises dividend by 3.2% to $0.153",
+   "link": "https://seekingalpha.com/news/4671090-allspring-global-dividend-opportunity-fund-raises-dividend-by-32-to-0153?utm_source=feed_news_all&utm_medium=referral&feed_item_type=news",
+   "summary": "",
+   "published": "2026-11-12T03:25:02+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘The thought of living to 100 terrifies me’: Is Social Security a giant Ponzi scheme?",
+   "link": "https://www.marketwatch.com/story/the-thought-of-living-to-100-terrifies-me-is-social-security-a-giant-ponzi-scheme-84a64e7e?mod=mw_rss_topstories",
+   "summary": "There is already a demographic ‘run’ on Social Security.",
+   "published": "2026-11-12T03:15:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Here’s how Bernie Sanders wants to keep Social Security solvent ‘for generations’",
+   "link": "https://www.marketwatch.com/story/heres-how-bernie-sanders-wants-to-keep-social-security-solvent-for-generations-f5666a38?mod=mw_rss_topstories",
+   "summary": "The Vermont senator aims to eliminate the taxable maximum, making the wealthy pay more in taxes",
+   "published": "2026-11-12T03:10:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Alphabet sets initial price guidance for Hong Kong, Singapore bond sales, term sheet shows",
+   "link": "https://www.investing.com/news/stock-market-news/alphabet-sets-initial-price-guidance-for-hong-kong-singapore-bond-sales-term-sheet-shows-5020243",
+   "summary": "",
+   "published": "2026-11-12T03:00:19+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Pls stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-pls-stock-sliding-today-93CH-5020239",
+   "summary": "",
+   "published": "2026-11-12T03:00:12+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Yunnan Lincang Xinyuan Germanium Industrial stock climbing today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-yunnan-lincang-xinyuan-germanium-industrial-stock-climbing-today-93CH-5020237",
+   "summary": "",
+   "published": "2026-11-12T03:00:10+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nvidia’s stock drops as the board reportedly prepares to remove CEO Jensen Huang",
+   "link": "https://www.marketwatch.com/story/nvidias-stock-drops-as-the-board-reportedly-prepares-to-remove-ceo-jensen-huang-9edee58d?mod=mw_rss_topstories",
+   "summary": "Nvidia’s board of directors reportedly could meet as soon as today to determine the CEO’s fate.",
+   "published": "2026-11-12T02:52:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "‘I’m sick of flying’: I paid for priority boarding, but the overhead bins were full. Was I duped?",
+   "link": "https://www.marketwatch.com/story/im-sick-of-flying-i-paid-for-priority-boarding-but-the-overhead-bins-were-full-was-i-duped-0badcc80?mod=mw_rss_topstories",
+   "summary": "“Maybe next time I’ll try the other approach: I’ll board whenever I feel like it and drop my suitcase in the first open slot I see.”",
+   "published": "2026-11-12T02:45:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Nissan Motor stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-nissan-motor-stock-sliding-today-93CH-5020217",
+   "summary": "",
+   "published": "2026-11-12T02:40:56+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is MINISO stock sliding today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-miniso-stock-sliding-today-93CH-5020216",
+   "summary": "",
+   "published": "2026-11-12T02:40:51+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "JetBlue president says airlines should follow customers’ lead on AI booking agents",
+   "link": "https://www.investing.com/news/stock-market-news/jetblue-president-says-airlines-should-follow-customers-lead-on-ai-booking-agents-5020151",
+   "summary": "",
+   "published": "2026-11-12T02:36:32+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Zhongji Innolight stock rising today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-zhongji-innolight-stock-rising-today-93CH-5020211",
+   "summary": "",
+   "published": "2026-11-12T02:31:17+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "I’m 63 and spending $95,000 on a roof deck for my $500,000 home. Am I being extravagant?",
+   "link": "https://www.marketwatch.com/story/im-63-and-want-to-spend-95-000-on-a-roof-deck-for-my-500-000-home-is-that-a-good-investment-f1a59c27?mod=mw_rss_topstories",
+   "summary": "“I have a net worth of $2.3 million and my only debt is a 15-year mortgage.”",
+   "published": "2026-11-12T02:31:00+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Why is Resonac stock surging today?",
+   "link": "https://www.investing.com/news/stock-market-news/why-is-resonac-stock-surging-today-93CH-5020210",
+   "summary": "",
+   "published": "2026-11-12T02:30:33+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Nvidia board meets to decide CEO Huang’s future as leadership crisis deepens",
+   "link": "https://www.investing.com/news/stock-market-news/nvidia-is-preparing-to-oust-ceo-jensen-huang-wsj-reports-5019991",
+   "summary": "",
+   "published": "2026-11-12T02:30:23+00:00"
+  },
+  {
+   "source": "Investing.com Stocks",
+   "title": "Susquehanna Financial names its AI-era winners: 9 IT stocks to watch",
+   "link": "https://www.investing.com/news/stock-market-news/susquehanna-financial-names-its-aiera-winners-9-it-stocks-to-watch-5020199",
+   "summary": "",
+   "published": "2026-11-12T02:26:06+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Nasdaq futures fall as Nvidia sinks 8% after hours on report board may oust Huang",
+   "link": "https://www.marketwatch.com/story/nasdaq-futures-fall-as-nvidia-sinks-8-after-hours-on-report-board-may-oust-huang-e99b898d?mod=mw_rss_topstories",
+   "summary": "Stock futures were sliding Wednesday evening as a selloff in shares of Nvidia after the closing bell weighed on the Nasdaq-100 and dragged down shares of other chip makers.",
+   "published": "2026-11-12T01:12:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Your holiday credit-card bills are going up. What you can do to ease the pain.",
+   "link": "https://www.marketwatch.com/story/your-holiday-credit-card-bills-are-going-up-what-you-can-do-to-ease-the-pain-5ddeb446?mod=mw_rss_topstories",
+   "summary": "The government may have lost a month of inflation data, but don’t expect your credit card’s annual percentage rate to decline because of it.",
+   "published": "2026-11-11T23:30:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "CoreWeave just gave a shot in the arm to Micron, Lumentum and the rest of the AI trade",
+   "link": "https://www.marketwatch.com/story/micron-and-other-ai-stocks-surge-as-coreweave-calms-wall-streets-worst-fears-0a18152a?mod=mw_rss_topstories",
+   "summary": "CoreWeave’s improved AI economics and its vow to show some discipline around debt are sparking a broad rally across the chip sector.",
+   "published": "2026-11-11T22:05:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Opening trading-card packs has become a $2 billion market. New apps are trying to cash in.",
+   "link": "https://www.marketwatch.com/story/opening-trading-card-packs-has-become-a-2-billion-market-new-apps-are-trying-to-cash-in-b7ba11f5?mod=mw_rss_topstories",
+   "summary": "Pack-ripping apps are changing the way people buy and sell cards. But analysts say their “slot-like payoff” raises risks.",
+   "published": "2026-11-11T21:55:00+00:00"
+  },
+  {
+   "source": "MarketWatch Top",
+   "title": "Falling oil prices are no longer enough to bring down borrowing costs in the world’s most important bond market",
+   "link": "https://www.marketwatch.com/story/falling-oil-prices-are-no-longer-enough-to-bring-down-borrowing-costs-in-the-worlds-most-important-bond-market-3176d25a?mod=mw_rss_topstories",
+   "summary": "The tight trading relationship between oil prices and Treasury yields has broken down. It’s a sign that inflation concerns are extending beyond the energy shock.",
+   "published": "2026-11-11T21:42:00+00:00"
+  }
+ ]
+}
