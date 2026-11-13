@@ -1,0 +1,79 @@
+{
+  "start": "2026-11-13",
+  "start_krw": 10000000,
+  "start_fx": 1336.7,
+  "capital_usd": 7481.11,
+  "cash_usd": 3555.3401650000005,
+  "positions": [
+    {
+      "symbol": "PG",
+      "setup": "20일 돌파",
+      "entry_date": "2026-11-13",
+      "entry": 169.8,
+      "stop": 163.35,
+      "target": 182.7,
+      "shares": 5,
+      "entry_fee": 1.2735,
+      "last_close": 169.8
+    },
+    {
+      "symbol": "PGR",
+      "setup": "20일 돌파",
+      "entry_date": "2026-11-13",
+      "entry": 235.78,
+      "stop": 225.57,
+      "target": 256.2,
+      "shares": 3,
+      "entry_fee": 1.061,
+      "last_close": 235.78
+    },
+    {
+      "symbol": "CB",
+      "setup": "20일 돌파",
+      "entry_date": "2026-11-13",
+      "entry": 375.74,
+      "stop": 362.14,
+      "target": 402.94,
+      "shares": 2,
+      "entry_fee": 1.1272,
+      "last_close": 375.74
+    },
+    {
+      "symbol": "CME",
+      "setup": "20일 돌파",
+      "entry_date": "2026-11-13",
+      "entry": 317.97,
+      "stop": 303.4,
+      "target": 347.12,
+      "shares": 2,
+      "entry_fee": 0.9539,
+      "last_close": 317.97
+    },
+    {
+      "symbol": "ADP",
+      "setup": "20일 돌파",
+      "entry_date": "2026-11-13",
+      "entry": 309.93,
+      "stop": 294.43,
+      "target": 340.93,
+      "shares": 2,
+      "entry_fee": 0.9298,
+      "last_close": 309.93
+    },
+    {
+      "symbol": "AAPL",
+      "setup": "20일 돌파",
+      "entry_date": "2026-11-13",
+      "entry": 356.27,
+      "stop": 337.36,
+      "target": 394.09,
+      "shares": 1,
+      "entry_fee": 0.5344,
+      "last_close": 356.27
+    }
+  ],
+  "last_date": "2026-11-13",
+  "last_fx": 1336.7,
+  "spy_start": 754.37,
+  "realized_usd": 0.0
+}

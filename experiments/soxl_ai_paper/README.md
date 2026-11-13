@@ -111,6 +111,8 @@
 - `spy_rebound_ledger.py` 비교용 규칙봇 3: 평소 전액 SPY, VIX ≥ 25 반등 신호가 오면 SPY를 팔아 급락 종목 매수
   (동시 2종목·50%씩, 손절 −10%, 최대 10거래일, 5일선 지정가 매도) 후 SPY로 복귀. 실현 손익과 추정 양도세(250만원 초과분 22%)도 기록.
   백테스트(동시 3종목) 12년 연 +19.8%, 최대낙폭 −30% (SPY +13.3%, −34%, 세금 미반영). `records/spy_rebound/`, 2026-10-01부터(10/1~11/4는 되돌려 채움)
+- `breakout_ledger.py` 사용자 종목 장부: 사용자가 고른 20일 돌파 종목을 사용자가 정한 진입가·손절가·목표가(2R)·수량으로 기록하고,
+  매일 CBOE 일봉으로 손절·목표 도달만 처리(같은 날 둘 다 닿으면 손절). `records/breakout/`, 2026-11-13 종가 진입 6종목(PG·PGR·CB·CME·ADP·AAPL)
 - `regime.py` 시장 국면 점검(팔로스루 데이·고점 위험). `vendor/tradermonty/`의 MIT 감지기를 CBOE 데이터로 실행
 - `records/state.json` 현재 상태, `records/daily.csv` 일별 평가액, `records/trades.csv` 매매 기록
 - `journal/YYYY-MM-DD.md` 일별 뉴스 요약, 판단, 복기
