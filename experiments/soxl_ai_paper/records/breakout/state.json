@@ -14,7 +14,7 @@
       "target": 182.7,
       "shares": 5,
       "entry_fee": 1.2735,
-      "last_close": 169.8
+      "last_close": 173.02
     },
     {
       "symbol": "PGR",
@@ -25,7 +25,7 @@
       "target": 256.2,
       "shares": 3,
       "entry_fee": 1.061,
-      "last_close": 235.78
+      "last_close": 237.33
     },
     {
       "symbol": "CB",
@@ -36,7 +36,7 @@
       "target": 402.94,
       "shares": 2,
       "entry_fee": 1.1272,
-      "last_close": 375.74
+      "last_close": 381.28
     },
     {
       "symbol": "CME",
@@ -47,7 +47,7 @@
       "target": 347.12,
       "shares": 2,
       "entry_fee": 0.9539,
-      "last_close": 317.97
+      "last_close": 319.37
     },
     {
       "symbol": "ADP",
@@ -58,7 +58,7 @@
       "target": 340.93,
       "shares": 2,
       "entry_fee": 0.9298,
-      "last_close": 309.93
+      "last_close": 313.43
     },
     {
       "symbol": "AAPL",
@@ -69,11 +69,11 @@
       "target": 394.09,
       "shares": 1,
       "entry_fee": 0.5344,
-      "last_close": 356.27
+      "last_close": 352.78
     }
   ],
-  "last_date": "2026-11-13",
-  "last_fx": 1336.7,
+  "last_date": "2026-11-16",
+  "last_fx": 1335.7,
   "spy_start": 754.37,
   "realized_usd": 0.0
 }
