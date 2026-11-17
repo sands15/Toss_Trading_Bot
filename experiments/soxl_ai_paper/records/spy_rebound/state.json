@@ -9,9 +9,24 @@
   "cost": 7194.272197205179
  },
  "positions": {},
- "pending_buys": [],
- "last_date": "2026-11-16",
- "last_fx": 1335.7,
+ "pending_buys": [
+  {
+   "symbol": "VEEV",
+   "limit": 282.6418,
+   "amount": 3495.8054623733356,
+   "rsi2": 0.45,
+   "signal_date": "2026-11-17"
+  },
+  {
+   "symbol": "DOC",
+   "limit": 19.0708,
+   "amount": 3495.8054623733356,
+   "rsi2": 1.55,
+   "signal_date": "2026-11-17"
+  }
+ ],
+ "last_date": "2026-11-17",
+ "last_fx": 1338.2,
  "spy_start": 763.99,
  "realized": {
   "2026": -353207.5650151149

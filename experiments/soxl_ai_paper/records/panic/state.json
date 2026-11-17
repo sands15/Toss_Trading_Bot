@@ -3,11 +3,33 @@
  "start_krw": 10000000,
  "start_fx": 1341.5,
  "capital_usd": 7454.34,
- "cash_usd": 7491.523852482069,
+ "cash_usd": 7492.653526713792,
  "positions": {},
- "pending_buys": [],
- "last_date": "2026-11-16",
- "last_fx": 1335.7,
+ "pending_buys": [
+  {
+   "symbol": "VEEV",
+   "limit": 282.6418,
+   "amount": 2497.551175571264,
+   "rsi2": 0.45,
+   "signal_date": "2026-11-17"
+  },
+  {
+   "symbol": "DOC",
+   "limit": 19.0708,
+   "amount": 2497.551175571264,
+   "rsi2": 1.55,
+   "signal_date": "2026-11-17"
+  },
+  {
+   "symbol": "CTSH",
+   "limit": 58.8,
+   "amount": 2497.551175571264,
+   "rsi2": 1.67,
+   "signal_date": "2026-11-17"
+  }
+ ],
+ "last_date": "2026-11-17",
+ "last_fx": 1338.2,
  "spy_start": 763.99,
  "params": {
   "slots": 3,
