@@ -5,7 +5,13 @@
   "start_usd": "7457.12",
   "cash_usd": "7354.84",
   "position": null,
-  "pending": null,
+  "pending": {
+    "date": "2026-11-17",
+    "action": "CASH",
+    "weight": "0",
+    "stop_pct": "0.10",
+    "reason": "NVDA 실적 오늘 장 마감 후(시가 매수 시 실적을 밤사이 그대로 맞음), 장전 신호 엇갈림, 美 AI칩 원격접속 규제, No FTD+Red, 규율 WARN"
+  },
   "forced_exit": null,
   "cooldown": null,
   "intraday": null,
