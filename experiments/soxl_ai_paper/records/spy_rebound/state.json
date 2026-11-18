@@ -5,31 +5,27 @@
  "capital_usd": 7454.34,
  "cash_usd": 0.0,
  "spy": {
-  "shares": 9.545643226403078,
-  "cost": 7194.272197205179
+  "shares": 4.782580803779142,
+  "cost": 3497.6424220752256
  },
- "positions": {},
- "pending_buys": [
-  {
-   "symbol": "VEEV",
-   "limit": 282.6418,
-   "amount": 3495.8054623733356,
-   "rsi2": 0.45,
-   "signal_date": "2026-11-17"
-  },
-  {
-   "symbol": "DOC",
-   "limit": 19.0708,
-   "amount": 3495.8054623733356,
-   "rsi2": 1.55,
-   "signal_date": "2026-11-17"
+ "positions": {
+  "VEEV": {
+   "shares": 12.34360008765176,
+   "cost": 3492.309656910962,
+   "entry": 282.6418,
+   "opened": "2026-11-18",
+   "days": 0,
+   "sell_limit": null,
+   "sell_open": false,
+   "last": 277.2
   }
- ],
- "last_date": "2026-11-17",
- "last_fx": 1338.2,
+ },
+ "pending_buys": [],
+ "last_date": "2026-11-18",
+ "last_fx": 1333.0,
  "spy_start": 763.99,
  "realized": {
-  "2026": -353207.5650151149
+  "2026": -625566.2826010298
  },
  "params": {
   "slots": 2,

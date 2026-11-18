@@ -3,29 +3,29 @@
   "start_krw": "10000000",
   "start_fx": "1341.0",
   "start_usd": "7457.12",
-  "cash_usd": "7354.84",
+  "cash_usd": "7245.04",
   "position": null,
-  "pending": {
-    "date": "2026-11-18",
-    "action": "SOXL",
-    "weight": "0.2",
-    "stop_pct": "0.07",
-    "reason": "A 상황: NVDA 매출 115.8B·EPS 2.68 예상 상회, 4분기 가이던스 130B(예상 125B), 장후 +4~5%·장전 +3%, AMD/AVGO/MU/MRVL +2~3%. 52주 저점권 반등. 규율 상한 20%"
-  },
+  "pending": null,
   "forced_exit": null,
-  "cooldown": null,
+  "cooldown": "stop_hit 2026-11-18",
   "intraday": null,
   "benchmarks": {
     "SOXX": "48.025761",
     "SOXL": "101.168363"
   },
-  "last_settled": "2026-11-17",
-  "last_fx": "1338.2",
+  "last_settled": "2026-11-18",
+  "last_fx": "1333.0",
   "closed": [
     {
       "date": "2026-11-12",
       "symbol": "SOXL",
       "pnl_usd": "-102.28",
+      "weight": "0.2"
+    },
+    {
+      "date": "2026-11-18",
+      "symbol": "SOXL",
+      "pnl_usd": "-109.79",
       "weight": "0.2"
     }
   ]
