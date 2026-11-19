@@ -3,7 +3,7 @@
  "start_krw": 10000000,
  "start_fx": 1341.5,
  "capital_usd": 7454.34,
- "cash_usd": 2497.9277904310725,
+ "cash_usd": 2498.3044620820106,
  "positions": {
   "VEEV": {
    "shares": 8.827617232821519,
@@ -11,8 +11,8 @@
    "entry": 282.6418,
    "opened": "2026-11-18",
    "sell_limit": null,
-   "last": 277.2,
-   "days": 0,
+   "last": 262.92,
+   "days": 1,
    "sell_open": false
   },
   "CTSH": {
@@ -21,14 +21,22 @@
    "entry": 58.8,
    "opened": "2026-11-18",
    "sell_limit": null,
-   "last": 57.95,
-   "days": 0,
+   "last": 56.31,
+   "days": 1,
    "sell_open": false
   }
  },
- "pending_buys": [],
- "last_date": "2026-11-18",
- "last_fx": 1333.0,
+ "pending_buys": [
+  {
+   "symbol": "ACN",
+   "limit": 214.2084,
+   "amount": 2402.8857754190794,
+   "rsi2": 0.42,
+   "signal_date": "2026-11-19"
+  }
+ ],
+ "last_date": "2026-11-19",
+ "last_fx": 1330.0,
  "spy_start": 763.99,
  "params": {
   "slots": 3,

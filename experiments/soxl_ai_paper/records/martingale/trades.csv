@@ -2959,3 +2959,6 @@ date,symbol,side,amount_usd,price,shares,reason
 2026-11-18,DRI,SELL,7.45,239.22,0.031207,take_profit
 2026-11-18,RMD,SELL,22.27,242.61,0.091929,take_profit
 2026-11-18,TSCO,SELL,7.16,39.01,0.183915,take_profit
+2026-11-19,CRWD,SELL,54.27,243.46,0.223242,take_profit
+2026-11-19,PANW,SELL,119.18,361.73,0.329977,take_profit
+2026-11-19,TGT,SELL,7.38,167.46,0.044124,take_profit

@@ -14,15 +14,23 @@
    "cost": 3492.309656910962,
    "entry": 282.6418,
    "opened": "2026-11-18",
-   "days": 0,
+   "days": 1,
    "sell_limit": null,
    "sell_open": false,
-   "last": 277.2
+   "last": 262.92
   }
  },
- "pending_buys": [],
- "last_date": "2026-11-18",
- "last_fx": 1333.0,
+ "pending_buys": [
+  {
+   "symbol": "ACN",
+   "limit": 214.2084,
+   "amount": 3334.542727523388,
+   "rsi2": 0.42,
+   "signal_date": "2026-11-19"
+  }
+ ],
+ "last_date": "2026-11-19",
+ "last_fx": 1330.0,
  "spy_start": 763.99,
  "realized": {
   "2026": -625566.2826010298
