@@ -5,7 +5,13 @@
   "start_usd": "7457.12",
   "cash_usd": "7245.04",
   "position": null,
-  "pending": null,
+  "pending": {
+    "date": "2026-11-19",
+    "action": "CASH",
+    "weight": "0",
+    "stop_pct": "0.10",
+    "reason": "규율 FAIL(2연패 하루 쉬기)+손절 다음 날 → 현금 강제. 내 판단으로도 장전 반도체 ETF +3%·나스닥 선물 +1~2%가 이미 반영돼 어제와 같은 갭 상단 매수 구조"
+  },
   "forced_exit": null,
   "cooldown": "stop_hit 2026-11-18",
   "intraday": null,
