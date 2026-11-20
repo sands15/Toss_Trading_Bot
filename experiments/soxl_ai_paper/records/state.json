@@ -3,24 +3,18 @@
   "start_krw": "10000000",
   "start_fx": "1341.0",
   "start_usd": "7457.12",
-  "cash_usd": "7245.04",
+  "cash_usd": "7183.76",
   "position": null,
-  "pending": {
-    "date": "2026-11-20",
-    "action": "SOXL",
-    "weight": "0.1",
-    "stop_pct": "0.08",
-    "reason": "역추세 소량: 장전 반도체 −2~6%·나스닥 선물 −1.9%로 갭 하락 시가(갭 상단 매수 반복 회피), VIX 28·SOXL 11/3 대비 −38% 과매도. 주말 위험 있어 10%, 손절 8%"
-  },
+  "pending": null,
   "forced_exit": null,
-  "cooldown": null,
+  "cooldown": "stop_hit 2026-11-20",
   "intraday": null,
   "benchmarks": {
     "SOXX": "48.025761",
     "SOXL": "101.168363"
   },
-  "last_settled": "2026-11-19",
-  "last_fx": "1330.0",
+  "last_settled": "2026-11-20",
+  "last_fx": "1336.2",
   "closed": [
     {
       "date": "2026-11-12",
@@ -33,6 +27,12 @@
       "symbol": "SOXL",
       "pnl_usd": "-109.79",
       "weight": "0.2"
+    },
+    {
+      "date": "2026-11-20",
+      "symbol": "SOXL",
+      "pnl_usd": "-61.28",
+      "weight": "0.1"
     }
   ]
 }
